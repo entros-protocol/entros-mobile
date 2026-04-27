@@ -1,0 +1,22 @@
+diff --git a/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/android/src/main/java/com/solanamobile/mobilewalletadapter/reactnative/SolanaMobileWalletAdapterModule.kt b/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/android/src/main/java/com/solanamobile/mobilewalletadapter/reactnative/SolanaMobileWalletAdapterModule.kt
+index d17cdb8..3e9f590 100644
+--- a/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/android/src/main/java/com/solanamobile/mobilewalletadapter/reactnative/SolanaMobileWalletAdapterModule.kt
++++ b/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/android/src/main/java/com/solanamobile/mobilewalletadapter/reactnative/SolanaMobileWalletAdapterModule.kt
+@@ -97,6 +97,7 @@ class SolanaMobileWalletAdapterModule(reactContext: ReactApplicationContext) :
+             }
+             try {
+                 val uriPrefix = config?.getString("baseUri")?.let { Uri.parse(it) }
++                val walletPackage = config?.getString("walletPackage")
+                 val localAssociation =
+                     LocalAssociationScenario(
+                         CLIENT_TIMEOUT_MS,
+@@ -107,6 +108,9 @@ class SolanaMobileWalletAdapterModule(reactContext: ReactApplicationContext) :
+                         localAssociation.port,
+                         localAssociation.session
+                     )
++                if (walletPackage != null) {
++                    intent.setPackage(walletPackage)
++                }
+                 withContext(Dispatchers.Main) {
+                     sessionTaskId = headlessJsTaskContext.startTask(sessionBackgroundTaskConfig)
+                 }

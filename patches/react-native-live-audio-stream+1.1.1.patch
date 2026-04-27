@@ -1,0 +1,73 @@
+diff --git a/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java b/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
+index 20f454f..886eedc 100644
+--- a/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
++++ b/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
+@@ -28,6 +28,7 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+     private AudioRecord recorder;
+     private int bufferSize;
+     private boolean isRecording;
++    private Promise stopPromise;
+ 
+     public RNLiveAudioStreamModule(ReactApplicationContext reactContext) {
+         super(reactContext);
+@@ -39,8 +40,25 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+         return "RNLiveAudioStream";
+     }
+ 
++    private void releaseRecorder() {
++        if (recorder != null) {
++            try {
++                recorder.stop();
++            } catch (IllegalStateException ignored) {
++                // recorder may already be stopped
++            }
++            recorder.release();
++            recorder = null;
++        }
++    }
++
+     @ReactMethod
+     public void init(ReadableMap options) {
++        // Release any previous recorder before allocating a new one. Without
++        // this, every init() leaks an AudioRecord — kernel audio handles run
++        // out after a few capture cycles.
++        releaseRecorder();
++
+         sampleRateInHz = 44100;
+         if (options.hasKey("sampleRate")) {
+             sampleRateInHz = options.getInt("sampleRate");
+@@ -100,9 +118,16 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+                             eventEmitter.emit("data", base64Data);
+                         }
+                     }
+-                    recorder.stop();
++                    releaseRecorder();
+                 } catch (Exception e) {
+-                    e.printStackTrace();
++                    Log.e("RNLiveAudioStream", "recording thread error", e);
++                } finally {
++                    // Resolve any pending stop() Promise so JS callers can await.
++                    Promise pending = stopPromise;
++                    stopPromise = null;
++                    if (pending != null) {
++                        pending.resolve(null);
++                    }
+                 }
+             }
+         });
+@@ -112,6 +137,15 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+ 
+     @ReactMethod
+     public void stop(Promise promise) {
++        // Capture the promise so the recording thread can resolve it once
++        // the AudioRecord has actually stopped + released.
++        stopPromise = promise;
+         isRecording = false;
++        // If the thread isn't running (start() never called), resolve immediately
++        // so the JS caller doesn't hang forever.
++        if (recorder == null) {
++            stopPromise = null;
++            promise.resolve(null);
++        }
+     }
+ }
