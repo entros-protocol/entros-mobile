@@ -1,0 +1,50 @@
+# Solana dApp Store publishing manifest. Consumed by `@solana-mobile/dapp-store`
+# CLI at submission time. Fields with TODO placeholders must be populated
+# before the first publish — see ./README.md for the full pre-submission
+# checklist.
+
+publisher:
+  name: Entros Protocol
+  address: TODO_PUBLISHER_BASE58_ADDRESS
+  website: https://entros.io
+  email: TODO_CONTACT_EMAIL
+
+app:
+  name: entros-mobile
+  android_package: io.entros.mobile
+  urls:
+    license_url: https://github.com/entros-protocol/entros-mobile/blob/main/LICENSE
+    copyright_url: https://entros.io
+    privacy_policy_url: https://entros.io/privacy
+    website: https://entros.io
+
+release:
+  android_details:
+    android_package: io.entros.mobile
+    min_sdk: 24
+    version_code: TODO_VERSION_CODE
+    version: TODO_VERSION
+  catalog:
+    en-US:
+      name: Entros
+      short_description: Solana-native Proof-of-Personhood for Seeker.
+      long_description: |
+        Entros proves humanness via the dynamic behavioural signature of
+        liveness — voice prosody, hand tremor, and touch dynamics — without
+        ever leaving the device. Raw biometrics are processed locally; only a
+        zero-knowledge proof and a 134-feature statistical summary are
+        submitted on-chain.
+      new_in_version: Initial release.
+      saga_features: TODO_SAGA_FEATURES
+  media:
+    - purpose: icon
+      uri: TODO_512x512_PNG_PATH
+    - purpose: banner
+      uri: TODO_BANNER_PATH
+  files:
+    - purpose: install
+      uri: TODO_RELEASE_APK_PATH
+
+solana_mobile_dapp_publisher_portal:
+  google_store_package: io.entros.mobile
+  testing_instructions: TODO_TESTING_INSTRUCTIONS

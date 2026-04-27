@@ -1,0 +1,54 @@
+name: Bug report
+description: Something isn't working as expected.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in what you can — short and specific is better than long and vague.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. What did you expect, what did you see instead?
+      placeholder: I tapped Connect and the app crashed.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps. Include device, OS version, and which wallet (if applicable).
+      placeholder: |
+        1. Open Entros on Pixel 8 (Android 14) with Phantom 2.x installed.
+        2. Tap Connect → Phantom.
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: e.g. Pixel 8 / Android 14, or iPhone 15 / iOS 17
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: Entros version
+      description: From Settings → About, or the package.json version if running locally.
+      placeholder: "0.1.0"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste any relevant Metro logs or attach screenshots. Strip wallet addresses or signatures if you'd rather keep them private.
+      render: shell
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I confirm this report does not contain my seed phrase or private keys.
+          required: true
