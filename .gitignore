@@ -1,0 +1,65 @@
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+ios/Pods/
+ios/build/
+ios/.xcode.env.local
+ios/*.xcworkspace/xcuserdata/
+ios/*.xcodeproj/xcuserdata/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/app/.kotlin/
+android/local.properties
+android/app/release/
+android/app/debug/
+*.keystore
+!debug.keystore
+google-services.json
+GoogleService-Info.plist
+
+# Metro / Watchman
+.metro-health-check*
+
+# Build artefacts
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.orig.*
+*.tsbuildinfo
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+.idea/
+.vscode/
+*.swp
+coverage/
+
+# EAS
+.easignore
+
+# Internal sprint notes — kept locally, not for the public repo.
+# Re-enable on release.
+docs/
+README.md
