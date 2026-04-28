@@ -1,6 +1,6 @@
 // Verification processing screen.
 //
-// Stages 1–6 are real:
+// Stages 1–7 are all real:
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
 // - Stage 2 (134-feature extraction) runs in the `extracting` step here.
 // - Stage 4 (server-side validation) POSTs the 134-feature vector + cross-
@@ -17,14 +17,17 @@
 //   tight scope. Ciphertext lives in expo-secure-store under
 //   `entros.v1.baseline.envelope`; the AES key under `entros.v1.baseline.key`.
 // - Stage 6 (Groth16 ZK proof) runs ONLY on re-verify (when a previous
-//   baseline exists). The mopro native module proves
-//   HammingDistance(ft_new, ft_prev) ∈ [3, 96) without revealing either
-//   fingerprint, then we serialise to the 256-byte groth16-solana format.
-//   First-verify cycles skip proof generation entirely — `mint_anchor`
-//   takes no proof. The proof byte payload is held in `proofBuffer` for
-//   Stage 7 to consume.
-// Stage 7 (on-chain submit) remains simulated and lands in a subsequent
-// commit.
+//   baseline exists AND flow.intent === "verify"). The mopro native
+//   module proves HammingDistance(ft_new, ft_prev) ∈ [3, 96) without
+//   revealing either fingerprint, then we serialise to the 256-byte
+//   groth16-solana format. First-verify and reset cycles skip proof
+//   generation. The proof byte payload is held in `proofBuffer`.
+// - Stage 7 (on-chain submit via MWA) is the terminal step. Branches on
+//   flow.intent + previousBaseline:
+//   - intent="verify" + no prior baseline → mint_anchor (single ix)
+//   - intent="verify" + prior baseline → ComputeBudget + create_challenge
+//                                        + verify_proof + update_anchor batch
+//   - intent="reset"                    → ComputeBudget + reset_identity_state
 //
 // PRIVACY:
 // - Captured SensorData is taken once from the buffer and dropped the moment
@@ -46,66 +49,53 @@
 //   never fingerprint bits, never salt values.
 
 import { useRouter } from "expo-router";
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { ProcessingStage } from "@/components/pulse/ProcessingStage";
 import { Screen } from "@/components/primitives/Screen";
 import { extractFeatures, MIN_AUDIO_SAMPLES } from "@/extraction";
-import {
-  initialContext,
-  reduce,
-  stageCopy,
-  stageDurationsMs,
-  VerifyState,
-} from "@/flows/verifyMachine";
+import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import { bigintToBytes32, generateTBH, simhash } from "@/hashing";
 import type { TBH } from "@/hashing";
 import { loadBaseline, storeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
 import { generateSolanaProof } from "@/proof/prover";
+import { submitReset, submitVerify } from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import { validateFeatures, ValidateOutcome, ValidateReason } from "@/services/executor";
 import { useAppState } from "@/state/AppState";
 import { clearCapture, takeCapture } from "@/state/captureBuffer";
-import { clearChallenge } from "@/state/challengeBuffer";
-import { clearCommitment, setCommitment } from "@/state/commitmentBuffer";
-import { clearProof, setProof } from "@/state/proofBuffer";
+import { clearChallenge, takeChallenge } from "@/state/challengeBuffer";
+import { clearCommitment, setCommitment, takeCommitment } from "@/state/commitmentBuffer";
+import { clearProof, setProof, takeProof } from "@/state/proofBuffer";
 import { FailureBucket } from "@/state/types";
+import { SecureKeys, setSecure } from "@/storage/secure";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
-
-// Stages that still drive the screen via simulated setTimeout waits. Stages
-// 1–6 are real and dispatched outside this cascade — only the final two
-// Stage 7-bound steps remain simulated until the on-chain wire lands.
-const SIMULATED_STAGES: VerifyState[] = ["signing", "submitting"];
-
-const pickFailureBucket = (): FailureBucket => {
-  const r = Math.random();
-  if (r < 0.5) return "relayer-down";
-  if (r < 0.8) return "baseline-missing";
-  return "generic";
-};
 
 export default function Processing() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { connection, dev, verify, fail, setForceOutcome } = useAppState();
+  const { connection, dev, flow, verify, resetComplete, fail, setForceOutcome, setFlowIntent } =
+    useAppState();
   const [ctx, dispatch] = useReducer(reduce, { ...initialContext, state: "extracting" });
-  const stageRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
 
-    // Snapshot the wallet pubkey at mount-time. /verify/intro already gates
-    // on this, but a parallel disconnect (wallet menu) would otherwise
-    // surface a confusing "executor returned 400" later. If null, redirect
-    // and bail.
+    // Snapshot wallet credentials at mount-time. /verify/intro already
+    // gates on this, but a parallel disconnect (wallet menu) would
+    // otherwise surface a confusing on-chain rejection later. We need
+    // all three (address, kind, authToken) for MWA's signAndSendTransaction.
     const walletId = connection.address;
-    if (!walletId) {
+    const walletKind = connection.wallet;
+    const authToken = connection.authToken;
+    if (!walletId || !walletKind || !authToken) {
       router.replace("/connect");
       return;
     }
+    const flowIntent = flow.intent;
 
     const failOut = (bucket: FailureBucket, message?: string) => {
       if (cancelled) return;
@@ -164,43 +154,34 @@ export default function Processing() {
       }
     };
 
-    const runSimulatedStage = (i: number) => {
-      if (cancelled) return;
-      if (i >= SIMULATED_STAGES.length) {
-        const force = dev.forceOutcome;
-        const isFailure = force && force !== "success";
-        const bucket: FailureBucket | null = isFailure
-          ? (force as FailureBucket)
-          : force === null && Math.random() < 0.05
-            ? pickFailureBucket()
-            : null;
-        if (bucket) {
-          failOut(bucket);
-          return;
-        }
-        const txSig = `${Math.random().toString(36).slice(2, 10)}…rY${Math.floor(Math.random() * 99)}x`;
-        verify(2, txSig);
+    // Dev panel override: lets UI testers skip on-chain submission and
+    // exercise the success / failure routes directly. Returns true if a
+    // dev override fired, false to continue with the real flow.
+    const handleDevOverride = (): boolean => {
+      const force = dev.forceOutcome;
+      if (force === "success") {
+        const fakeTxSig = `dev${Math.random().toString(36).slice(2, 10)}…fake`;
+        verify(2, fakeTxSig);
         setForceOutcome(null);
         router.replace("/verify/success");
-        return;
+        return true;
       }
-      // Bounds-checked above so SIMULATED_STAGES[i] is always defined.
-      const stage = SIMULATED_STAGES[i]!;
-      dispatch({ type: "advance" });
-      stageRef.current = i;
-      const duration = stageDurationsMs[stage] ?? 1_000;
-      setTimeout(() => runSimulatedStage(i + 1), duration);
+      if (force) {
+        failOut(force);
+        return true;
+      }
+      return false;
     };
 
     // Real extraction → real Stage 3 (SimHash + Poseidon) → real Stage 4
-    // (validate-features) → simulated tail (computing/signing/submitting).
+    // (validate-features) → real Stage 5 (encrypted baseline) → real Stage 6
+    // (Groth16 proof, re-verify only) → real Stage 7 (on-chain submit via MWA).
     const runVerify = async () => {
       let captured: ReturnType<typeof takeCapture> = takeCapture();
       if (!captured) {
-        // Direct nav (e.g. dev refresh) lands here. Fall back to the
-        // simulated tail so the screen still flows; without a capture
-        // there's nothing to validate.
-        runSimulatedStage(0);
+        // Direct nav (e.g. dev refresh) lands here without a capture buffer.
+        // Send the user back to /verify/intro to start a fresh cycle.
+        router.replace("/verify/intro");
         return;
       }
 
@@ -260,11 +241,12 @@ export default function Processing() {
         }
         devWarn(`[Entros] /validate-features ok q=${outcome.remainingQuota ?? "?"}`);
 
-        // Load the previous baseline BEFORE the IIFE so the network +
-        // disk I/O happen while ctx.state is still "validating". On a
-        // first verify, loadBaseline returns null and we skip Stage 6
-        // proof generation — `mint_anchor` takes no proof.
-        const previousBaseline = await loadBaseline();
+        // Load the previous baseline BEFORE the IIFE so the disk I/O
+        // happens while ctx.state is still "validating". Skipped for
+        // reset cycles — submitReset takes only the new commitment, no
+        // ft_prev needed. First verifies also return null and we skip
+        // Stage 6 proof generation; mint_anchor takes no proof either.
+        const previousBaseline = flowIntent === "reset" ? null : await loadBaseline();
         if (cancelled) return;
 
         // Advance the state machine into "computing" before the IIFE so
@@ -330,10 +312,95 @@ export default function Processing() {
         })();
         // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
         // 32-byte commitment, never the fingerprint bits, never the salt.
-        devWarn(`[Entros] commitment=${commitmentHexPrefix}… firstVerify=${!previousBaseline}`);
+        devWarn(
+          `[Entros] commitment=${commitmentHexPrefix}… intent=${flowIntent} firstVerify=${!previousBaseline}`,
+        );
         if (cancelled) return;
 
-        runSimulatedStage(0);
+        // Dev panel override fires before any on-chain work — lets UI
+        // testers skip the wallet round-trip. Real path falls through.
+        if (handleDevOverride()) return;
+
+        // Stage 7: on-chain submission via MWA. Take the buffered slots
+        // — none survives past this point.
+        const commitmentBuf = takeCommitment();
+        const proofBuf = takeProof();
+        const challengeBuf = takeChallenge();
+        if (!commitmentBuf) {
+          // Programming error — Stage 3 IIFE always populates this slot.
+          failOut("generic", "Internal error: commitment slot was empty.");
+          return;
+        }
+
+        dispatch({ type: "advance" }); // → "signing"
+
+        try {
+          let result;
+          if (flowIntent === "reset") {
+            result = await submitReset(
+              {
+                walletAddress: walletId,
+                authToken,
+                walletKind,
+                commitment: commitmentBuf.commitmentBytes,
+              },
+              () => dispatch({ type: "advance" }), // → "submitting" once signed
+            );
+          } else {
+            const isFirstVerify = !previousBaseline;
+            const nonce = challengeBuf?.nonce ? Array.from(challengeBuf.nonce) : undefined;
+            result = await submitVerify(
+              {
+                walletAddress: walletId,
+                authToken,
+                walletKind,
+                commitment: commitmentBuf.commitmentBytes,
+                isFirstVerify,
+                proof: proofBuf ?? undefined,
+                nonce,
+              },
+              () => dispatch({ type: "advance" }), // → "submitting" once signed
+            );
+          }
+          if (cancelled) return;
+
+          // Persist the rotated MWA auth token so the next session signs
+          // without prompting for re-authorisation. Token-persist failure
+          // must NOT abort the success path — the on-chain tx already
+          // confirmed; the worst case is the next session re-prompts the
+          // wallet for authorisation.
+          try {
+            await setSecure(SecureKeys.WALLET_AUTH_TOKEN, result.authToken);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            devWarn(`[Entros] auth_token persist failed: ${message}`);
+          }
+
+          devWarn(
+            `[Entros] on-chain ok intent=${flowIntent} sig=${result.txSignature.slice(0, 12)}…`,
+          );
+
+          // Reset the verify-flow intent so the NEXT cycle is a normal
+          // verify by default. Failure path leaves the intent intact so a
+          // retry stays on the reset path.
+          if (flowIntent === "reset") {
+            setFlowIntent("verify");
+            resetComplete(result.txSignature);
+          } else {
+            verify(2, result.txSignature);
+          }
+          setForceOutcome(null);
+          router.replace("/verify/success");
+        } catch (err) {
+          if (cancelled) return;
+          const message = err instanceof Error ? err.message : "On-chain submission failed.";
+          devWarn(`[Entros] on-chain submit failed: ${message}`);
+          // "generic" rather than "relayer-down" because this catch covers
+          // wallet rejection, on-chain program errors, stale blockhash,
+          // and network failures — "relayer-down" would only be honest for
+          // the network subset.
+          failOut("generic", message);
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Verification failed.";
         failOut("generic", message);
@@ -354,14 +421,9 @@ export default function Processing() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // `Math.min(..., length - 1)` clamps to a valid index, and SIMULATED_STAGES
-  // is non-empty, so this is always defined. ctx.state takes precedence
-  // anyway — see `display` below — this is just the fallback when ctx.state
-  // has no copy entry.
-  const currentStage = SIMULATED_STAGES[Math.min(stageRef.current, SIMULATED_STAGES.length - 1)]!;
-  const copy = stageCopy[currentStage];
-  const stageState = ctx.state;
-  const display = stageCopy[stageState] ?? copy;
+  // ctx.state drives the display; the reducer linearly advances
+  // extracting → validating → computing → signing → submitting → success.
+  const display = stageCopy[ctx.state] ?? stageCopy.extracting;
 
   return (
     <Screen>

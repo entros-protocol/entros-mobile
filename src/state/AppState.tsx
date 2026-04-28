@@ -12,6 +12,7 @@ import {
   IdentityState,
   MockPreset,
   VerificationEvent,
+  VerifyIntent,
   WalletKind,
 } from "./types";
 
@@ -38,6 +39,12 @@ interface AppState {
   ui: {
     walletMenuOpen: boolean;
   };
+  flow: {
+    /** Whether the next verify cycle is a normal verify (mint or update) or
+     *  a baseline reset (reset_identity_state). Defaults to "verify"; the
+     *  failure screen flips to "reset" when the user taps Reset baseline. */
+    intent: VerifyIntent;
+  };
   dev: {
     forceOutcome: "success" | FailureBucket | null;
   };
@@ -62,9 +69,11 @@ type Action =
     }
   | { type: "disconnected" }
   | { type: "verify"; trustDelta: number; txSignature: string }
+  | { type: "resetComplete"; txSignature: string }
   | { type: "fail"; bucket: FailureBucket }
   | { type: "resetBaseline" }
   | { type: "setWalletMenuOpen"; open: boolean }
+  | { type: "setFlowIntent"; intent: VerifyIntent }
   | { type: "setForceOutcome"; outcome: "success" | FailureBucket | null };
 
 const initialState: AppState = {
@@ -75,6 +84,7 @@ const initialState: AppState = {
   identity: presets["cold"].identity,
   history: [],
   ui: { walletMenuOpen: false },
+  flow: { intent: "verify" },
   dev: { forceOutcome: null },
 };
 
@@ -152,6 +162,30 @@ const reducer = (state: AppState, action: Action): AppState => {
         history: [event, ...state.history].slice(0, 50),
       };
     }
+    case "resetComplete": {
+      // On-chain reset_identity_state succeeded. Mirrors the on-chain
+      // semantics: trust_score → 0, verifications → 0, recent_timestamps
+      // cleared (we don't track those locally), lastVerifiedAt → now.
+      // hasAnchor stays true (the SPL token mint isn't burned). Stage 8
+      // will replace this mock-state path with an on-chain identity read.
+      const event: VerificationEvent = {
+        id: eventId(),
+        ts: new Date(),
+        outcome: "verified",
+        trustDelta: 0,
+        txSignature: action.txSignature,
+      };
+      return {
+        ...state,
+        identity: {
+          ...state.identity,
+          trustScore: 0,
+          verifications: 0,
+          lastVerifiedAt: new Date(),
+        },
+        history: [event, ...state.history].slice(0, 50),
+      };
+    }
     case "fail": {
       const event: VerificationEvent = {
         id: eventId(),
@@ -170,6 +204,8 @@ const reducer = (state: AppState, action: Action): AppState => {
       };
     case "setWalletMenuOpen":
       return { ...state, ui: { ...state.ui, walletMenuOpen: action.open } };
+    case "setFlowIntent":
+      return { ...state, flow: { intent: action.intent } };
     case "setForceOutcome":
       return { ...state, dev: { forceOutcome: action.outcome } };
     default:
@@ -183,10 +219,12 @@ interface AppStateContextValue extends AppState {
   connect: (walletKind?: WalletKind) => Promise<void>;
   disconnect: () => Promise<void>;
   verify: (trustDelta: number, txSignature: string) => void;
+  resetComplete: (txSignature: string) => void;
   fail: (bucket: FailureBucket) => void;
   resetBaseline: () => void;
   openWalletMenu: () => void;
   closeWalletMenu: () => void;
+  setFlowIntent: (intent: VerifyIntent) => void;
   setForceOutcome: (outcome: "success" | FailureBucket | null) => void;
 }
 
@@ -270,6 +308,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       connect,
       disconnect,
       verify: (trustDelta, txSignature) => dispatch({ type: "verify", trustDelta, txSignature }),
+      resetComplete: (txSignature) => dispatch({ type: "resetComplete", txSignature }),
       fail: (bucket) => dispatch({ type: "fail", bucket }),
       resetBaseline: () => {
         // Fire-and-forget the secure-store wipe. The reducer state change is
@@ -286,6 +325,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       },
       openWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: true }),
       closeWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: false }),
+      setFlowIntent: (intent) => dispatch({ type: "setFlowIntent", intent }),
       setForceOutcome: (outcome) => dispatch({ type: "setForceOutcome", outcome }),
     }),
     [state, connect, disconnect],
