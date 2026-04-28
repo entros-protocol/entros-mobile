@@ -1,0 +1,7 @@
+rust:
+  directory: /Users/johnny/IAM/entros-mopro
+  manifestPath: Cargo.toml
+
+android:
+    apiLevel: 28
+    useSharedLibrary: true

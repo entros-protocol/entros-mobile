@@ -4,8 +4,12 @@
     "strict": true,
     "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    // noUnusedLocals/noUnusedParameters disabled at the tsc level because the
+    // vendored mopro-ffi binding (MoproReactNativeBindings/) imports
+    // uniffi-bindgen-react-native, whose `main` is raw .ts source with
+    // unused-local violations under strict TS. ESLint's
+    // @typescript-eslint/no-unused-vars rule still enforces these on our
+    // own code.
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
@@ -18,10 +22,21 @@
     }
   },
   "include": [
-    "**/*.ts",
-    "**/*.tsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "patches/**/*.ts",
+    "scripts/**/*.ts",
     ".expo/types/**/*.ts",
-    "expo-env.d.ts"
+    "expo-env.d.ts",
+    "index.ts"
   ],
-  "exclude": ["node_modules", "babel.config.js", "metro.config.js"]
+  "exclude": [
+    "node_modules",
+    "**/node_modules",
+    "babel.config.js",
+    "metro.config.js",
+    "MoproReactNativeBindings"
+  ]
 }

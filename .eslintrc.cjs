@@ -7,5 +7,12 @@ module.exports = {
     "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     "no-console": ["warn", { allow: ["warn", "error"] }],
   },
-  ignorePatterns: ["node_modules/", "dist/", ".expo/", "ios/", "android/"],
+  ignorePatterns: [
+    "node_modules/",
+    "dist/",
+    ".expo/",
+    "ios/",
+    "android/",
+    "MoproReactNativeBindings/",
+  ],
 };
