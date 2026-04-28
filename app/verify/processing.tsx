@@ -1,25 +1,33 @@
 // Verification processing screen.
 //
-// Stages 1–4 are real:
+// Stages 1–5 are real:
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
 // - Stage 2 (134-feature extraction) runs in the `extracting` step here.
-// - Stage 3 (SimHash + Poseidon TBH) runs immediately after extraction,
-//   producing the 32-byte commitment that forward stages submit.
 // - Stage 4 (server-side validation) POSTs the 134-feature vector + cross-
 //   modal time-series + audio b64 to the executor's /validate-features
 //   endpoint, surfacing soft-rejects with a friendly retry UX and routing
-//   service / rate-limit errors to the appropriate failure bucket.
-// Stages 5–7 (encrypted baseline, ZK proof, on-chain submit) remain
-// simulated `setTimeout` waits and land in subsequent commits.
+//   service / rate-limit errors to the appropriate failure bucket. Runs
+//   BEFORE Stage 3 hashing so a rejected verification doesn't waste cycles
+//   computing a commitment that won't be submitted.
+// - Stage 3 (SimHash + Poseidon TBH) runs after validate-success, producing
+//   the 32-byte commitment that forward stages submit.
+// - Stage 5 (encrypted baseline persistence) encrypts the
+//   {fingerprint, salt, commitment, timestamp} bundle with AES-256-GCM
+//   inside the same IIFE as Stage 3 so the fingerprint never escapes its
+//   tight scope. Ciphertext lives in expo-secure-store under
+//   `entros.v1.baseline.envelope`; the AES key under `entros.v1.baseline.key`.
+// Stages 6–7 (ZK proof, on-chain submit) remain simulated `setTimeout`
+// waits and land in subsequent commits.
 //
 // PRIVACY:
 // - Captured SensorData is taken once from the buffer and dropped the moment
 //   extractFeatures() returns + the audio is base64-encoded for /validate-
 //   features. After that the typed arrays are GC-eligible immediately
 //   instead of living until the simulated stages finish.
-// - The 256-bit fingerprint is consumed by generateTBH() and the local
-//   reference is dropped immediately after — only the commitment + salt
-//   move forward via commitmentBuffer.
+// - The 256-bit fingerprint is held only inside the Stages 3+5 IIFE
+//   (simhash → generateTBH → storeBaseline). After the IIFE closes, only
+//   the AES ciphertext envelope on disk and the commitment + salt in the
+//   handoff buffer survive — no plaintext fingerprint anywhere.
 // - Audio b64 is the single sanctioned exception (paper §6.8 +
 //   src/sensor/types.ts:7-8). The validation service runs Whisper-tiny on
 //   it ephemerally and the bytes do not outlive the request.
@@ -42,6 +50,7 @@ import {
   VerifyState,
 } from "@/flows/verifyMachine";
 import { generateTBH, simhash } from "@/hashing";
+import { storeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import { validateFeatures, ValidateOutcome, ValidateReason } from "@/services/executor";
@@ -212,31 +221,13 @@ export default function Processing() {
           `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,
         );
 
-        // Stage 3: SimHash → 256-bit fingerprint → Poseidon commitment.
-        // Wrapped in an IIFE so the `fingerprint` and `tbh` locals fall out
-        // of scope before the validate POST runs — they exist only for the
-        // few ms it takes generateTBH to resolve. Only the 16-char hex
-        // prefix survives into the outer closure for the diagnostic log.
-        const commitmentHexPrefix = await (async (): Promise<string> => {
-          const fingerprint = simhash(result.normalized);
-          const tbh = await generateTBH(fingerprint);
-          setCommitment({
-            commitment: tbh.commitment,
-            salt: tbh.salt,
-            commitmentBytes: tbh.commitmentBytes,
-          });
-          return Array.from(tbh.commitmentBytes.slice(0, 8))
-            .map((b) => b.toString(16).padStart(2, "0"))
-            .join("");
-        })();
-        // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
-        // 32-byte commitment, never the fingerprint bits, never the salt.
-        devWarn(`[Entros] commitment=${commitmentHexPrefix}…`);
-
         // Stage 4: server-side validation. Advance the state machine into
         // "validating" before the POST so the UI shows the validating copy
         // for the duration of the network round-trip (typically 2–5 s under
         // Whisper inference, up to the 15 s executor.ts timeout).
+        //
+        // Mirrors pulse-sdk pulse.ts:137-228: validate BEFORE simhash so a
+        // rejected verification doesn't waste ~50–100 ms on hashing work.
         if (cancelled) return;
         dispatch({ type: "advance" });
 
@@ -255,6 +246,51 @@ export default function Processing() {
           return;
         }
         devWarn(`[Entros] /validate-features ok q=${outcome.remainingQuota ?? "?"}`);
+
+        // Stage 3 + Stage 5: SimHash → Poseidon commitment → encrypted
+        // baseline persistence, wrapped in a single IIFE so the
+        // `fingerprint` and `tbh` locals fall out of scope as soon as
+        // storeBaseline returns. The fingerprint is the most sensitive
+        // value in the verify flow; tightening its lifetime to this
+        // 50–100 ms window is the privacy contract for Stages 3 + 5.
+        // Only the 16-char hex commitment prefix escapes the IIFE for
+        // diagnostic logging.
+        const commitmentHexPrefix = await (async (): Promise<string> => {
+          const fingerprint = simhash(result.normalized);
+          const tbh = await generateTBH(fingerprint);
+          setCommitment({
+            commitment: tbh.commitment,
+            salt: tbh.salt,
+            commitmentBytes: tbh.commitmentBytes,
+          });
+          try {
+            // Pass `tbh.fingerprint` (same number[] as `fingerprint`) to
+            // match pulse-sdk/pulse.ts:458 byte-for-byte. The plaintext shape
+            // serialised here MUST stay identical to the web SDK so a future
+            // migration tool could read either platform's envelope.
+            await storeBaseline({
+              fingerprint: tbh.fingerprint,
+              salt: tbh.salt.toString(),
+              commitment: tbh.commitment.toString(),
+              timestamp: Date.now(),
+            });
+          } catch (err) {
+            // Persistence failure does NOT abort the current verify cycle
+            // — the commitment in commitmentBuffer is still valid for the
+            // downstream submit. Only re-verification on a future session
+            // depends on the baseline being on disk; the user will be
+            // treated as first-time again next session if this fails.
+            const message = err instanceof Error ? err.message : String(err);
+            devWarn(`[Entros] storeBaseline failed: ${message}`);
+          }
+          return Array.from(tbh.commitmentBytes.slice(0, 8))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+        })();
+        // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
+        // 32-byte commitment, never the fingerprint bits, never the salt.
+        devWarn(`[Entros] commitment=${commitmentHexPrefix}…`);
+        if (cancelled) return;
 
         runSimulatedStage(0);
       } catch (err) {
