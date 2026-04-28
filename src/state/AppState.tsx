@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer } from "react";
 
+import { wipeBaseline } from "@/identity/baseline";
+import { devWarn } from "@/lib/log";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 import * as mwa from "@/wallet/mwa";
 
@@ -269,7 +271,19 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       disconnect,
       verify: (trustDelta, txSignature) => dispatch({ type: "verify", trustDelta, txSignature }),
       fail: (bucket) => dispatch({ type: "fail", bucket }),
-      resetBaseline: () => dispatch({ type: "resetBaseline" }),
+      resetBaseline: () => {
+        // Fire-and-forget the secure-store wipe. The reducer state change is
+        // synchronous so the UI updates immediately; the wipe happens in
+        // parallel and clears both the AES envelope and the key. A real I/O
+        // failure here is unusual but worth surfacing in dev — the next
+        // loadBaseline tolerates orphan state (returns null, treats user as
+        // first-time) so the user is never blocked.
+        void wipeBaseline().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          devWarn(`[Entros] wipeBaseline failed: ${message}`);
+        });
+        dispatch({ type: "resetBaseline" });
+      },
       openWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: true }),
       closeWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: false }),
       setForceOutcome: (outcome) => dispatch({ type: "setForceOutcome", outcome }),
