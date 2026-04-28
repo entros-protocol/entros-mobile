@@ -38,6 +38,7 @@ export const config = {
     ),
   },
   relayerUrl: optional(process.env.EXPO_PUBLIC_RELAYER_URL),
+  relayerApiKey: optional(process.env.EXPO_PUBLIC_RELAYER_API_KEY),
 } as const;
 
 let cachedConnection: Connection | null = null;
