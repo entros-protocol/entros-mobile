@@ -8,7 +8,11 @@ import { PrivacyPill } from "@/components/primitives/PrivacyPill";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
+import { devWarn } from "@/lib/log";
 import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
+import { fetchChallenge } from "@/services/executor";
+import { useAppState } from "@/state/AppState";
+import { setChallenge } from "@/state/challengeBuffer";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -21,16 +25,28 @@ const steps = [
 export default function VerifyIntro() {
   const router = useRouter();
   const { palette } = useTheme();
+  const { connection } = useAppState();
   const [pending, setPending] = useState(false);
 
   // Gate the OS permission popup on the user's clear intent (Begin tap),
   // BEFORE the countdown. Android only requires RECORD_AUDIO at runtime;
   // accelerometer / gyroscope are unrestricted, and touch needs no
-  // permission on either platform.
+  // permission on either platform. After permission resolves, fetch the
+  // server-issued challenge — the executor binds the nonce + phrase to
+  // the wallet for a 60s TTL, so we want the nonce as fresh as possible
+  // before capture starts.
   const handleBegin = async () => {
     if (pending) return;
     setPending(true);
     try {
+      const wallet = connection.address;
+      if (!wallet) {
+        // Reachable if the dashboard let an unconnected user through. Send
+        // them back to the connect picker rather than failing silently.
+        router.replace("/connect");
+        return;
+      }
+
       const already = await audioPermissionGranted();
       if (!already) {
         const granted = await requestAudioPermission();
@@ -42,6 +58,17 @@ export default function VerifyIntro() {
           return;
         }
       }
+
+      try {
+        const challenge = await fetchChallenge(wallet);
+        setChallenge({ nonce: challenge.nonce, phrase: challenge.phrase });
+        devWarn(`[Entros] /challenge ok ttl=${challenge.expiresIn}s`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Could not reach the executor.";
+        Alert.alert("Couldn't fetch challenge", `${message}\n\nCheck your network and try again.`);
+        return;
+      }
+
       router.replace("/verify/capture");
     } finally {
       setPending(false);

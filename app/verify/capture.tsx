@@ -30,7 +30,8 @@ import {
 import { MotionRecorder, startMotionRecording } from "@/sensor/motion";
 import { startTouchRecording, TouchRecorder } from "@/sensor/touch";
 import { setCapture } from "@/state/captureBuffer";
-import { pickLissajous, pickPhrase } from "@/state/mockChallenge";
+import { peekChallenge } from "@/state/challengeBuffer";
+import { pickLissajous } from "@/state/mockChallenge";
 import { fontFamily, fontSize, radii, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -42,7 +43,11 @@ type Phase = "countdown" | "capturing";
 export default function VerifyCapture() {
   const router = useRouter();
   const { palette } = useTheme();
-  const phrase = useMemo(() => pickPhrase(), []);
+  // Snapshot the buffer once on mount via the lazy-init form of useState —
+  // peekChallenge() runs exactly once and the result is stable across
+  // renders. Null here means /verify/intro didn't run (dev nav / deep link);
+  // we redirect back instead of fabricating a phrase.
+  const [challenge] = useState(() => peekChallenge());
   const params = useMemo(() => pickLissajous(), []);
 
   const [phase, setPhase] = useState<Phase>("countdown");
@@ -67,8 +72,19 @@ export default function VerifyCapture() {
   const mountedRef = useRef(true);
   const completionFiredRef = useRef(false);
 
-  // Countdown loop.
+  // Empty-buffer guard. Reaching this screen without a fetched challenge
+  // is a routing bug, not a runtime case — redirect back to /verify/intro.
   useEffect(() => {
+    if (!challenge) {
+      router.replace("/verify/intro");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Countdown loop. Guarded on `challenge` so the redirect above completes
+  // before sensors start spinning up.
+  useEffect(() => {
+    if (!challenge) return;
     if (phase !== "countdown") return;
     if (countdown <= 0) {
       void beginCapture();
@@ -223,6 +239,17 @@ export default function VerifyCapture() {
   const handleTouchPoint = (point: NormalizedTouchPoint) => {
     touchRef.current?.push(point);
   };
+
+  // Guard render: while the redirect effect above runs, draw nothing rather
+  // than a half-mounted capture screen.
+  if (!challenge) {
+    return (
+      <Screen>
+        <View />
+      </Screen>
+    );
+  }
+  const phrase = challenge.phrase;
 
   return (
     <Screen padded={false}>

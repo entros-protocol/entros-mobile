@@ -1,13 +1,10 @@
-import { LissajousParams } from "@/components/pulse/LissajousCanvas";
+// Lissajous shape parameters for the trace canvas. The shape is purely a
+// UI helper — visually distinct curves so the touch trace looks intentional
+// — and is NOT bound to the executor's challenge. The voice phrase comes
+// from /challenge (see src/services/executor.ts) and lives in
+// challengeBuffer; this module only owns the pickLissajous helper.
 
-const PHRASES = [
-  "the quiet river bends past the lantern bridge",
-  "seven tall pines hold the morning still",
-  "a copper coin spins on the wooden table",
-  "the lighthouse keeper watched the gulls return",
-  "open windows let the warm wind speak",
-  "the slow train passes the empty platform",
-];
+import { LissajousParams } from "@/components/pulse/LissajousCanvas";
 
 const PARAMS_POOL: LissajousParams[] = [
   { a: 3, b: 2, delta: Math.PI / 2 },
@@ -16,8 +13,6 @@ const PARAMS_POOL: LissajousParams[] = [
   { a: 5, b: 3, delta: Math.PI / 4 },
   { a: 3, b: 4, delta: Math.PI / 6 },
 ];
-
-export const pickPhrase = (): string => PHRASES[Math.floor(Math.random() * PHRASES.length)]!;
 
 export const pickLissajous = (): LissajousParams =>
   PARAMS_POOL[Math.floor(Math.random() * PARAMS_POOL.length)]!;
