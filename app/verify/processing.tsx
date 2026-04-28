@@ -1,13 +1,22 @@
 // Verification processing screen.
 //
-// Stage 2 (this stage) runs the real 134-element feature extraction off
-// the sensor buffer set by the capture screen. Stages 3–7 (SimHash,
-// validation, ZK proof, on-chain submit) remain simulated for now and
-// land in subsequent commits.
+// Stages 1–3 are real:
+// - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
+// - Stage 2 (134-feature extraction) runs in the `extracting` step here.
+// - Stage 3 (SimHash + Poseidon TBH) runs immediately after extraction,
+//   producing the 32-byte commitment that forward stages submit.
+// Stages 4–7 (validation HTTP, ZK proof, on-chain submit) remain simulated
+// `setTimeout` waits and land in subsequent commits.
 //
-// PRIVACY: the captured SensorData is taken once from the buffer and
-// dropped the moment extractFeatures() returns. Logs include only
-// per-modality non-zero counts, never values.
+// PRIVACY:
+// - Captured SensorData is taken once from the buffer and dropped the moment
+//   extractFeatures() returns.
+// - The 256-bit fingerprint is consumed by generateTBH() and the local
+//   reference is dropped immediately after — only the commitment + salt
+//   move forward via commitmentBuffer.
+// - Logs include only per-modality non-zero counts and the leading 16 hex
+//   chars of the commitment. Never feature values, never fingerprint bits,
+//   never salt values.
 
 import { useRouter } from "expo-router";
 import { useEffect, useReducer, useRef } from "react";
@@ -23,8 +32,11 @@ import {
   stageDurationsMs,
   VerifyState,
 } from "@/flows/verifyMachine";
-import { clearCapture, takeCapture } from "@/state/captureBuffer";
+import { generateTBH, simhash } from "@/hashing";
+import { devWarn } from "@/lib/log";
 import { useAppState } from "@/state/AppState";
+import { clearCapture, takeCapture } from "@/state/captureBuffer";
+import { clearCommitment, setCommitment } from "@/state/commitmentBuffer";
 import { FailureBucket } from "@/state/types";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -122,11 +134,31 @@ export default function Processing() {
         const audioNZ = result.raw.slice(0, 44).filter((v) => v !== 0).length;
         const motionNZ = result.raw.slice(44, 98).filter((v) => v !== 0).length;
         const touchNZ = result.raw.slice(98, 134).filter((v) => v !== 0).length;
-        // Diagnostic only — counts and lengths, never values.
-        // eslint-disable-next-line no-console
-        console.warn(
+        // Diagnostic — counts and lengths, never values. Dev-only.
+        devWarn(
           `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,
         );
+
+        // Stage 3: SimHash → 256-bit fingerprint → Poseidon commitment.
+        // Wrapped in an IIFE so the `fingerprint` and `tbh` locals fall out
+        // of scope before `runStage(0)` runs — they exist only for the few
+        // ms it takes generateTBH to resolve. Only the 16-char hex prefix
+        // survives into the outer closure for the diagnostic log.
+        const commitmentHexPrefix = await (async (): Promise<string> => {
+          const fingerprint = simhash(result.normalized);
+          const tbh = await generateTBH(fingerprint);
+          setCommitment({
+            commitment: tbh.commitment,
+            salt: tbh.salt,
+            commitmentBytes: tbh.commitmentBytes,
+          });
+          return Array.from(tbh.commitmentBytes.slice(0, 8))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+        })();
+        // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
+        // 32-byte commitment, never the fingerprint bits, never the salt.
+        devWarn(`[Entros] commitment=${commitmentHexPrefix}…`);
 
         runStage(0);
       } catch (err) {
@@ -138,9 +170,11 @@ export default function Processing() {
     void runExtraction();
     return () => {
       cancelled = true;
-      // Defence-in-depth: clear any leftover sensor buffer if the screen
-      // unmounts mid-extraction (back nav, app suspend, etc.).
+      // Defence-in-depth: clear both handoff slots if the screen unmounts
+      // mid-flow (back nav, app suspend, etc.). The next verify cycle
+      // starts from a known-empty state.
       clearCapture();
+      clearCommitment();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
