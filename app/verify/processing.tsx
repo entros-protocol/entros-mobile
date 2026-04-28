@@ -1,6 +1,6 @@
 // Verification processing screen.
 //
-// Stages 1–5 are real:
+// Stages 1–6 are real:
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
 // - Stage 2 (134-feature extraction) runs in the `extracting` step here.
 // - Stage 4 (server-side validation) POSTs the 134-feature vector + cross-
@@ -16,24 +16,34 @@
 //   inside the same IIFE as Stage 3 so the fingerprint never escapes its
 //   tight scope. Ciphertext lives in expo-secure-store under
 //   `entros.v1.baseline.envelope`; the AES key under `entros.v1.baseline.key`.
-// Stages 6–7 (ZK proof, on-chain submit) remain simulated `setTimeout`
-// waits and land in subsequent commits.
+// - Stage 6 (Groth16 ZK proof) runs ONLY on re-verify (when a previous
+//   baseline exists). The mopro native module proves
+//   HammingDistance(ft_new, ft_prev) ∈ [3, 96) without revealing either
+//   fingerprint, then we serialise to the 256-byte groth16-solana format.
+//   First-verify cycles skip proof generation entirely — `mint_anchor`
+//   takes no proof. The proof byte payload is held in `proofBuffer` for
+//   Stage 7 to consume.
+// Stage 7 (on-chain submit) remains simulated and lands in a subsequent
+// commit.
 //
 // PRIVACY:
 // - Captured SensorData is taken once from the buffer and dropped the moment
 //   extractFeatures() returns + the audio is base64-encoded for /validate-
 //   features. After that the typed arrays are GC-eligible immediately
 //   instead of living until the simulated stages finish.
-// - The 256-bit fingerprint is held only inside the Stages 3+5 IIFE
-//   (simhash → generateTBH → storeBaseline). After the IIFE closes, only
-//   the AES ciphertext envelope on disk and the commitment + salt in the
-//   handoff buffer survive — no plaintext fingerprint anywhere.
+// - The 256-bit fingerprint AND the previously-stored baseline fingerprint
+//   are held only inside the Stages 3+5+6 IIFE (simhash → generateTBH →
+//   storeBaseline → optional generateSolanaProof). After the IIFE closes,
+//   only the AES ciphertext envelope on disk, the commitment + salt in the
+//   handoff buffer, and the 256-byte ZK proof bytes (zero-knowledge by
+//   construction) survive — no plaintext fingerprint anywhere.
 // - Audio b64 is the single sanctioned exception (paper §6.8 +
 //   src/sensor/types.ts:7-8). The validation service runs Whisper-tiny on
 //   it ephemerally and the bytes do not outlive the request.
 // - Logs include only per-modality non-zero counts, the leading 16 hex
-//   chars of the commitment, and validate-features outcome category.
-//   Never feature values, never fingerprint bits, never salt values.
+//   chars of the commitment, validate-features outcome category, and proof
+//   generation diagnostics (path/proof byte length). Never feature values,
+//   never fingerprint bits, never salt values.
 
 import { useRouter } from "expo-router";
 import { useEffect, useReducer, useRef } from "react";
@@ -49,23 +59,26 @@ import {
   stageDurationsMs,
   VerifyState,
 } from "@/flows/verifyMachine";
-import { generateTBH, simhash } from "@/hashing";
-import { storeBaseline } from "@/identity/baseline";
+import { bigintToBytes32, generateTBH, simhash } from "@/hashing";
+import type { TBH } from "@/hashing";
+import { loadBaseline, storeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
+import { generateSolanaProof } from "@/proof/prover";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import { validateFeatures, ValidateOutcome, ValidateReason } from "@/services/executor";
 import { useAppState } from "@/state/AppState";
 import { clearCapture, takeCapture } from "@/state/captureBuffer";
 import { clearChallenge } from "@/state/challengeBuffer";
 import { clearCommitment, setCommitment } from "@/state/commitmentBuffer";
+import { clearProof, setProof } from "@/state/proofBuffer";
 import { FailureBucket } from "@/state/types";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 // Stages that still drive the screen via simulated setTimeout waits. Stages
-// 1–4 (extracting + validating) are now real and dispatched outside this
-// cascade.
-const SIMULATED_STAGES: VerifyState[] = ["computing", "signing", "submitting"];
+// 1–6 are real and dispatched outside this cascade — only the final two
+// Stage 7-bound steps remain simulated until the on-chain wire lands.
+const SIMULATED_STAGES: VerifyState[] = ["signing", "submitting"];
 
 const pickFailureBucket = (): FailureBucket => {
   const r = Math.random();
@@ -247,14 +260,22 @@ export default function Processing() {
         }
         devWarn(`[Entros] /validate-features ok q=${outcome.remainingQuota ?? "?"}`);
 
-        // Stage 3 + Stage 5: SimHash → Poseidon commitment → encrypted
-        // baseline persistence, wrapped in a single IIFE so the
-        // `fingerprint` and `tbh` locals fall out of scope as soon as
-        // storeBaseline returns. The fingerprint is the most sensitive
-        // value in the verify flow; tightening its lifetime to this
-        // 50–100 ms window is the privacy contract for Stages 3 + 5.
-        // Only the 16-char hex commitment prefix escapes the IIFE for
-        // diagnostic logging.
+        // Load the previous baseline BEFORE the IIFE so the network +
+        // disk I/O happen while ctx.state is still "validating". On a
+        // first verify, loadBaseline returns null and we skip Stage 6
+        // proof generation — `mint_anchor` takes no proof.
+        const previousBaseline = await loadBaseline();
+        if (cancelled) return;
+
+        // Advance the state machine into "computing" before the IIFE so
+        // the UI shows the "Generating ZK proof" copy while real work
+        // (simhash + Poseidon + AES-GCM + arkworks proof) runs.
+        dispatch({ type: "advance" });
+
+        // Stages 3 + 5 + 6 IIFE. The fingerprint AND the previously-stored
+        // baseline fingerprint live only inside this scope; they fall out
+        // of scope as soon as the IIFE returns. Only the 16-char hex
+        // commitment prefix and a re-verify flag escape for logging.
         const commitmentHexPrefix = await (async (): Promise<string> => {
           const fingerprint = simhash(result.normalized);
           const tbh = await generateTBH(fingerprint);
@@ -283,13 +304,33 @@ export default function Processing() {
             const message = err instanceof Error ? err.message : String(err);
             devWarn(`[Entros] storeBaseline failed: ${message}`);
           }
+
+          // Stage 6: Groth16 proof on-device. Re-verify only — first-verify
+          // skips because mint_anchor takes no proof.
+          if (previousBaseline) {
+            const previousCommitment = BigInt(previousBaseline.commitment);
+            const previousTbh: TBH = {
+              fingerprint: previousBaseline.fingerprint,
+              salt: BigInt(previousBaseline.salt),
+              commitment: previousCommitment,
+              commitmentBytes: bigintToBytes32(previousCommitment),
+            };
+            const proofStartedAt = Date.now();
+            const solanaProof = await generateSolanaProof(tbh, previousTbh);
+            const proofMs = Date.now() - proofStartedAt;
+            setProof(solanaProof);
+            devWarn(
+              `[Entros] proof bytes=${solanaProof.proofBytes.length} publicInputs=${solanaProof.publicInputs.length} ms=${proofMs}`,
+            );
+          }
+
           return Array.from(tbh.commitmentBytes.slice(0, 8))
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");
         })();
         // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
         // 32-byte commitment, never the fingerprint bits, never the salt.
-        devWarn(`[Entros] commitment=${commitmentHexPrefix}…`);
+        devWarn(`[Entros] commitment=${commitmentHexPrefix}… firstVerify=${!previousBaseline}`);
         if (cancelled) return;
 
         runSimulatedStage(0);
@@ -302,12 +343,13 @@ export default function Processing() {
     void runVerify();
     return () => {
       cancelled = true;
-      // Defence-in-depth: clear all three handoff slots if the screen
+      // Defence-in-depth: clear all four handoff slots if the screen
       // unmounts mid-flow (back nav, app suspend, etc.). The next verify
       // cycle starts from a known-empty state.
       clearCapture();
       clearCommitment();
       clearChallenge();
+      clearProof();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
