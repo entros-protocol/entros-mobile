@@ -27,8 +27,12 @@ export const SecureKeys = {
   WALLET_ADDRESS: "wallet.address",
   WALLET_LABEL: "wallet.label",
   WALLET_KIND: "wallet.kind",
-  BASELINE_FINGERPRINT: "baseline.fingerprint",
-  BASELINE_SALT: "baseline.salt",
+  // Stage 5 baseline persistence. Envelope holds {v, iv, ct} JSON of the
+  // AES-256-GCM-encrypted StoredBaseline. The AES key bytes live separately
+  // under their own secure-store entry — both must be present to decrypt.
+  // See src/identity/baseline.ts.
+  BASELINE_ENVELOPE: "baseline.envelope",
+  BASELINE_KEY: "baseline.key",
 } as const;
 
 export type SecureKey = (typeof SecureKeys)[keyof typeof SecureKeys];
