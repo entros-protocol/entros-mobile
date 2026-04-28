@@ -1,0 +1,597 @@
+{
+  "address": "6VBs3zr9KrfFPGd6j7aGBPQWwZa5tajVfA7HN6MMV9VW",
+  "metadata": {
+    "name": "entros_registry",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Protocol registry, trust scoring, and validator management for Entros Protocol"
+  },
+  "instructions": [
+    {
+      "name": "compute_trust_score",
+      "docs": [
+        "Compute progressive trust score from verification history and account age.",
+        "",
+        "The formula rewards consistency over time, not rapid repetition:",
+        "- Each recent verification's contribution decays with age (30-day half-life)",
+        "- Regularity bonus: consistent spacing between verifications scores higher",
+        "- Age bonus: diminishing returns (sqrt) to prevent gaming via old unused accounts",
+        "- A bot verifying 100 times in one day scores much lower than a human verifying weekly for months"
+      ],
+      "discriminator": [52, 216, 246, 36, 18, 206, 72, 73],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "verification_count",
+          "type": "u32"
+        },
+        {
+          "name": "creation_timestamp",
+          "type": "i64"
+        },
+        {
+          "name": "recent_timestamps",
+          "type": {
+            "array": ["i64", 10]
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_protocol",
+      "docs": ["Initialize the protocol configuration. One-time admin instruction."],
+      "discriminator": [188, 233, 252, 106, 134, 146, 202, 91],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "min_stake",
+          "type": "u64"
+        },
+        {
+          "name": "challenge_expiry",
+          "type": "i64"
+        },
+        {
+          "name": "max_trust_score",
+          "type": "u16"
+        },
+        {
+          "name": "base_trust_increment",
+          "type": "u16"
+        },
+        {
+          "name": "verification_fee",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "migrate_admin",
+      "docs": [
+        "Migrate the protocol admin to a new authority.",
+        "Requires the program upgrade authority, not the current config admin.",
+        "This is an emergency recovery instruction for when the admin keypair is lost.",
+        "Uses raw byte access (not Anchor deserialization) to handle accounts that",
+        "predate the current struct layout."
+      ],
+      "discriminator": [119, 155, 172, 213, 161, 86, 231, 120],
+      "accounts": [
+        {
+          "name": "new_admin",
+          "docs": ["The new admin. Must be the program upgrade authority."],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "docs": ["pre-migration accounts that predate the current struct layout."],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "programdata",
+          "docs": ["Address is validated as the canonical programdata PDA for this program."]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_validator",
+      "docs": ["Register as a validator by staking SOL."],
+      "discriminator": [118, 98, 251, 58, 81, 30, 13, 240],
+      "accounts": [
+        {
+          "name": "validator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "validator_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 108, 105, 100, 97, 116, 111, 114]
+              },
+              {
+                "kind": "account",
+                "path": "validator"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 117, 108, 116]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "stake_amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "unstake_validator",
+      "docs": [
+        "Unstake SOL and close the validator account.",
+        "Returns staked SOL from the vault and rent from the ValidatorState PDA.",
+        "The validator can re-register afterward.",
+        "",
+        "Mainnet requirements (not implemented for devnet):",
+        "- Unbonding period (timelock before withdrawal)",
+        "- is_active check (prevent unstake after slashing)",
+        "- Minimum vault balance guard"
+      ],
+      "discriminator": [49, 51, 143, 217, 205, 80, 185, 24],
+      "accounts": [
+        {
+          "name": "validator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "validator_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 108, 105, 100, 97, 116, 111, 114]
+              },
+              {
+                "kind": "account",
+                "path": "validator"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 117, 108, 116]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_protocol_config",
+      "docs": [
+        "Update protocol configuration. Admin-only.",
+        "Uses Anchor realloc to resize the account if the struct has grown."
+      ],
+      "discriminator": [197, 97, 123, 54, 221, 168, 11, 135],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "verification_fee",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_treasury",
+      "docs": [
+        "Withdraw accumulated fees from the protocol treasury.",
+        "Admin-only. Preserves rent-exempt minimum balance."
+      ],
+      "discriminator": [40, 63, 122, 158, 144, 216, 83, 96],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112, 114, 111, 116, 111, 99, 111, 108, 95, 116, 114, 101, 97, 115, 117, 114, 121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ProtocolConfig",
+      "discriminator": [207, 91, 250, 28, 152, 179, 215, 209]
+    },
+    {
+      "name": "ValidatorState",
+      "discriminator": [217, 140, 124, 163, 31, 187, 1, 89]
+    }
+  ],
+  "events": [
+    {
+      "name": "AdminMigrated",
+      "discriminator": [179, 108, 137, 167, 249, 247, 28, 211]
+    },
+    {
+      "name": "ProtocolConfigUpdated",
+      "discriminator": [20, 99, 32, 237, 111, 86, 195, 199]
+    },
+    {
+      "name": "TreasuryWithdrawn",
+      "discriminator": [143, 181, 157, 169, 87, 155, 170, 46]
+    },
+    {
+      "name": "TrustScoreComputed",
+      "discriminator": [93, 237, 231, 219, 155, 214, 230, 91]
+    },
+    {
+      "name": "ValidatorRegistered",
+      "discriminator": [20, 20, 190, 191, 53, 174, 95, 72]
+    },
+    {
+      "name": "ValidatorUnstaked",
+      "discriminator": [246, 100, 63, 201, 178, 133, 185, 127]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InsufficientStake",
+      "msg": "Insufficient stake amount"
+    },
+    {
+      "code": 6001,
+      "name": "ValidatorAlreadyRegistered",
+      "msg": "Validator already registered"
+    },
+    {
+      "code": 6002,
+      "name": "ValidatorNotActive",
+      "msg": "Validator not active"
+    },
+    {
+      "code": 6003,
+      "name": "Unauthorized",
+      "msg": "Unauthorized: caller is not the expected authority"
+    },
+    {
+      "code": 6004,
+      "name": "ArithmeticOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6005,
+      "name": "InsufficientTreasuryBalance",
+      "msg": "Insufficient treasury balance for withdrawal"
+    }
+  ],
+  "types": [
+    {
+      "name": "AdminMigrated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_admin",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "docs": ["The authority that can update protocol parameters"],
+            "type": "pubkey"
+          },
+          {
+            "name": "min_stake",
+            "docs": ["Minimum SOL lamports to stake as a validator"],
+            "type": "u64"
+          },
+          {
+            "name": "challenge_expiry",
+            "docs": ["Seconds until a challenge nonce expires"],
+            "type": "i64"
+          },
+          {
+            "name": "max_trust_score",
+            "docs": ["Maximum achievable trust score (e.g. 10000 = 100.00%)"],
+            "type": "u16"
+          },
+          {
+            "name": "base_trust_increment",
+            "docs": ["Trust score points awarded per verification"],
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "docs": ["PDA bump seed"],
+            "type": "u8"
+          },
+          {
+            "name": "verification_fee",
+            "docs": ["Lamports charged per verification (user-pays model)"],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "verification_fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TreasuryWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrustScoreComputed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "verification_count",
+            "type": "u32"
+          },
+          {
+            "name": "creation_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "trust_score",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ValidatorRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ValidatorState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": ["The validator's wallet"],
+            "type": "pubkey"
+          },
+          {
+            "name": "stake",
+            "docs": ["Lamports staked"],
+            "type": "u64"
+          },
+          {
+            "name": "registration_time",
+            "docs": ["Unix timestamp of registration"],
+            "type": "i64"
+          },
+          {
+            "name": "is_active",
+            "docs": ["Whether the validator is currently active"],
+            "type": "bool"
+          },
+          {
+            "name": "verifications_performed",
+            "docs": ["Total verifications performed"],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "docs": ["PDA bump seed"],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ValidatorUnstaked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}
