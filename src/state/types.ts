@@ -1,6 +1,6 @@
 export type WalletKind = "phantom" | "solflare";
 
-export type FailureBucket = "relayer-down" | "baseline-missing" | "generic";
+export type FailureBucket = "relayer-down" | "baseline-missing" | "generic" | "rate-limited";
 
 export interface VerificationEvent {
   id: string;

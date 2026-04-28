@@ -1,22 +1,31 @@
 // Verification processing screen.
 //
-// Stages 1–3 are real:
+// Stages 1–4 are real:
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
 // - Stage 2 (134-feature extraction) runs in the `extracting` step here.
 // - Stage 3 (SimHash + Poseidon TBH) runs immediately after extraction,
 //   producing the 32-byte commitment that forward stages submit.
-// Stages 4–7 (validation HTTP, ZK proof, on-chain submit) remain simulated
-// `setTimeout` waits and land in subsequent commits.
+// - Stage 4 (server-side validation) POSTs the 134-feature vector + cross-
+//   modal time-series + audio b64 to the executor's /validate-features
+//   endpoint, surfacing soft-rejects with a friendly retry UX and routing
+//   service / rate-limit errors to the appropriate failure bucket.
+// Stages 5–7 (encrypted baseline, ZK proof, on-chain submit) remain
+// simulated `setTimeout` waits and land in subsequent commits.
 //
 // PRIVACY:
 // - Captured SensorData is taken once from the buffer and dropped the moment
-//   extractFeatures() returns.
+//   extractFeatures() returns + the audio is base64-encoded for /validate-
+//   features. After that the typed arrays are GC-eligible immediately
+//   instead of living until the simulated stages finish.
 // - The 256-bit fingerprint is consumed by generateTBH() and the local
 //   reference is dropped immediately after — only the commitment + salt
 //   move forward via commitmentBuffer.
-// - Logs include only per-modality non-zero counts and the leading 16 hex
-//   chars of the commitment. Never feature values, never fingerprint bits,
-//   never salt values.
+// - Audio b64 is the single sanctioned exception (paper §6.8 +
+//   src/sensor/types.ts:7-8). The validation service runs Whisper-tiny on
+//   it ephemerally and the bytes do not outlive the request.
+// - Logs include only per-modality non-zero counts, the leading 16 hex
+//   chars of the commitment, and validate-features outcome category.
+//   Never feature values, never fingerprint bits, never salt values.
 
 import { useRouter } from "expo-router";
 import { useEffect, useReducer, useRef } from "react";
@@ -34,20 +43,20 @@ import {
 } from "@/flows/verifyMachine";
 import { generateTBH, simhash } from "@/hashing";
 import { devWarn } from "@/lib/log";
+import { encodeAudioAsBase64 } from "@/sensor/encode";
+import { validateFeatures, ValidateOutcome, ValidateReason } from "@/services/executor";
 import { useAppState } from "@/state/AppState";
 import { clearCapture, takeCapture } from "@/state/captureBuffer";
+import { clearChallenge } from "@/state/challengeBuffer";
 import { clearCommitment, setCommitment } from "@/state/commitmentBuffer";
 import { FailureBucket } from "@/state/types";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
-const PROCESSING_STAGES: VerifyState[] = [
-  "extracting",
-  "validating",
-  "computing",
-  "signing",
-  "submitting",
-];
+// Stages that still drive the screen via simulated setTimeout waits. Stages
+// 1–4 (extracting + validating) are now real and dispatched outside this
+// cascade.
+const SIMULATED_STAGES: VerifyState[] = ["computing", "signing", "submitting"];
 
 const pickFailureBucket = (): FailureBucket => {
   const r = Math.random();
@@ -59,12 +68,22 @@ const pickFailureBucket = (): FailureBucket => {
 export default function Processing() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { dev, verify, fail, setForceOutcome } = useAppState();
+  const { connection, dev, verify, fail, setForceOutcome } = useAppState();
   const [ctx, dispatch] = useReducer(reduce, { ...initialContext, state: "extracting" });
   const stageRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+
+    // Snapshot the wallet pubkey at mount-time. /verify/intro already gates
+    // on this, but a parallel disconnect (wallet menu) would otherwise
+    // surface a confusing "executor returned 400" later. If null, redirect
+    // and bail.
+    const walletId = connection.address;
+    if (!walletId) {
+      router.replace("/connect");
+      return;
+    }
 
     const failOut = (bucket: FailureBucket, message?: string) => {
       if (cancelled) return;
@@ -76,9 +95,56 @@ export default function Processing() {
       });
     };
 
-    const runStage = (i: number) => {
+    // Soft-rejects don't count against the verification history (matches
+    // the web flow's soft_failed transition) — they're transient retries
+    // surfaced through a friendlier UX. Hard buckets above use `failOut`
+    // which DOES log to history.
+    const routeSoftReject = (reason: ValidateReason) => {
       if (cancelled) return;
-      if (i >= PROCESSING_STAGES.length) {
+      setForceOutcome(null);
+      router.replace({
+        pathname: "/verify/failure",
+        params: { bucket: "soft", reason },
+      });
+    };
+
+    const routeRateLimited = (retryAfterSec: number) => {
+      if (cancelled) return;
+      fail("rate-limited");
+      setForceOutcome(null);
+      router.replace({
+        pathname: "/verify/failure",
+        params: { bucket: "rate-limited", retryAfter: String(retryAfterSec) },
+      });
+    };
+
+    const routeFromValidateOutcome = (outcome: Exclude<ValidateOutcome, { kind: "ok" }>) => {
+      switch (outcome.kind) {
+        case "soft-reject":
+          devWarn(`[Entros] /validate-features rejected reason=${outcome.reason}`);
+          routeSoftReject(outcome.reason);
+          return;
+        case "rate-limited":
+          devWarn(`[Entros] /validate-features rate-limited retryAfter=${outcome.retryAfterSec}s`);
+          routeRateLimited(outcome.retryAfterSec);
+          return;
+        case "service-down":
+          devWarn(`[Entros] /validate-features service-down: ${outcome.message}`);
+          failOut("relayer-down");
+          return;
+        case "quota-exhausted":
+        case "unauthorized":
+        case "hard-reject":
+        case "unknown":
+          devWarn(`[Entros] /validate-features rejected (${outcome.kind})`);
+          failOut("generic");
+          return;
+      }
+    };
+
+    const runSimulatedStage = (i: number) => {
+      if (cancelled) return;
+      if (i >= SIMULATED_STAGES.length) {
         const force = dev.forceOutcome;
         const isFailure = force && force !== "success";
         const bucket: FailureBucket | null = isFailure
@@ -96,23 +162,23 @@ export default function Processing() {
         router.replace("/verify/success");
         return;
       }
-      // Bounds-checked above (`if (i >= PROCESSING_STAGES.length)`), so the
-      // index is always valid here.
-      const stage = PROCESSING_STAGES[i]!;
+      // Bounds-checked above so SIMULATED_STAGES[i] is always defined.
+      const stage = SIMULATED_STAGES[i]!;
       dispatch({ type: "advance" });
       stageRef.current = i;
       const duration = stageDurationsMs[stage] ?? 1_000;
-      setTimeout(() => runStage(i + 1), duration);
+      setTimeout(() => runSimulatedStage(i + 1), duration);
     };
 
-    // Real extraction up front. The remaining stages are still simulated;
-    // they land for real in Stages 3–7.
-    const runExtraction = async () => {
+    // Real extraction → real Stage 3 (SimHash + Poseidon) → real Stage 4
+    // (validate-features) → simulated tail (computing/signing/submitting).
+    const runVerify = async () => {
       let captured: ReturnType<typeof takeCapture> = takeCapture();
       if (!captured) {
         // Direct nav (e.g. dev refresh) lands here. Fall back to the
-        // simulated path so the screen still flows.
-        runStage(0);
+        // simulated tail so the screen still flows; without a capture
+        // there's nothing to validate.
+        runSimulatedStage(0);
         return;
       }
 
@@ -126,6 +192,13 @@ export default function Processing() {
         }
 
         const result = await extractFeatures(captured);
+
+        // Encode audio for /validate-features BEFORE dropping the captured
+        // ref so the Float32Array doesn't have to outlive its single use.
+        // After this line the only retained audio is the b64 string, which
+        // crosses the network.
+        const audioSamplesB64 = encodeAudioAsBase64(captured.audio.pcm);
+        const audioSampleRateHz = captured.audio.sampleRate;
         // Drop the closure ref to the raw sensor buffers — the four largest
         // typed arrays (~768KB audio + motion + touch) become GC-eligible
         // immediately instead of living until the simulated stages finish.
@@ -141,9 +214,9 @@ export default function Processing() {
 
         // Stage 3: SimHash → 256-bit fingerprint → Poseidon commitment.
         // Wrapped in an IIFE so the `fingerprint` and `tbh` locals fall out
-        // of scope before `runStage(0)` runs — they exist only for the few
-        // ms it takes generateTBH to resolve. Only the 16-char hex prefix
-        // survives into the outer closure for the diagnostic log.
+        // of scope before the validate POST runs — they exist only for the
+        // few ms it takes generateTBH to resolve. Only the 16-char hex
+        // prefix survives into the outer closure for the diagnostic log.
         const commitmentHexPrefix = await (async (): Promise<string> => {
           const fingerprint = simhash(result.normalized);
           const tbh = await generateTBH(fingerprint);
@@ -160,28 +233,54 @@ export default function Processing() {
         // 32-byte commitment, never the fingerprint bits, never the salt.
         devWarn(`[Entros] commitment=${commitmentHexPrefix}…`);
 
-        runStage(0);
+        // Stage 4: server-side validation. Advance the state machine into
+        // "validating" before the POST so the UI shows the validating copy
+        // for the duration of the network round-trip (typically 2–5 s under
+        // Whisper inference, up to the 15 s executor.ts timeout).
+        if (cancelled) return;
+        dispatch({ type: "advance" });
+
+        const outcome = await validateFeatures({
+          features: result.raw,
+          walletId,
+          f0Contour: result.f0Contour,
+          accelMagnitude: result.accelMagnitude,
+          audioSamplesB64,
+          audioSampleRateHz,
+        });
+        if (cancelled) return;
+
+        if (outcome.kind !== "ok") {
+          routeFromValidateOutcome(outcome);
+          return;
+        }
+        devWarn(`[Entros] /validate-features ok q=${outcome.remainingQuota ?? "?"}`);
+
+        runSimulatedStage(0);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Feature extraction failed.";
+        const message = err instanceof Error ? err.message : "Verification failed.";
         failOut("generic", message);
       }
     };
 
-    void runExtraction();
+    void runVerify();
     return () => {
       cancelled = true;
-      // Defence-in-depth: clear both handoff slots if the screen unmounts
-      // mid-flow (back nav, app suspend, etc.). The next verify cycle
-      // starts from a known-empty state.
+      // Defence-in-depth: clear all three handoff slots if the screen
+      // unmounts mid-flow (back nav, app suspend, etc.). The next verify
+      // cycle starts from a known-empty state.
       clearCapture();
       clearCommitment();
+      clearChallenge();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // `Math.min(..., length - 1)` clamps to a valid index, and PROCESSING_STAGES
-  // is non-empty, so this is always defined.
-  const currentStage = PROCESSING_STAGES[Math.min(stageRef.current, PROCESSING_STAGES.length - 1)]!;
+  // `Math.min(..., length - 1)` clamps to a valid index, and SIMULATED_STAGES
+  // is non-empty, so this is always defined. ctx.state takes precedence
+  // anyway — see `display` below — this is just the fallback when ctx.state
+  // has no copy entry.
+  const currentStage = SIMULATED_STAGES[Math.min(stageRef.current, SIMULATED_STAGES.length - 1)]!;
   const copy = stageCopy[currentStage];
   const stageState = ctx.state;
   const display = stageCopy[stageState] ?? copy;
