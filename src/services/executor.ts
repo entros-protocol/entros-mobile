@@ -21,6 +21,7 @@
 // references after the fetch resolves.
 
 import { config } from "@/config";
+import type { SignedReceiptDto } from "@/protocol/receipt";
 
 const CHALLENGE_TIMEOUT_MS = 5_000;
 const VALIDATE_TIMEOUT_MS = 15_000;
@@ -58,7 +59,12 @@ export const SOFT_REJECT_REASONS: readonly ValidateReason[] = [
 
 /** Discriminated outcome of a /validate-features call.
  *
- *  - `ok`: validation passed; verify flow advances to ZK proof generation
+ *  - `ok`: validation passed; verify flow advances to ZK proof generation.
+ *    `signedReceipt` is present when the request carried `commitment_new_hex`
+ *    AND the validator has a signing key configured (master-list #146
+ *    Phase 4). The first-verify path bundles it as an Ed25519 prefix before
+ *    `mint_anchor`; re-verify ignores it (update_anchor enforces binding via
+ *    the VerificationResult PDA instead).
  *  - `soft-reject`: user-recoverable; surface hint + Try Again
  *  - `rate-limited`: per-wallet cap exceeded (executor 429); surface cooldown
  *  - `hard-reject`: 400 with no safe reason — opaque attack-signal rejection
@@ -67,7 +73,7 @@ export const SOFT_REJECT_REASONS: readonly ValidateReason[] = [
  *  - `service-down`: 5xx, network error, or abort — show "try again later"
  *  - `unknown`: anything else; logged status for triage */
 export type ValidateOutcome =
-  | { kind: "ok"; remainingQuota: number | null }
+  | { kind: "ok"; remainingQuota: number | null; signedReceipt: SignedReceiptDto | null }
   | { kind: "soft-reject"; reason: ValidateReason }
   | { kind: "rate-limited"; retryAfterSec: number }
   | { kind: "hard-reject" }
@@ -83,6 +89,10 @@ export interface ValidateInput {
   accelMagnitude?: number[];
   audioSamplesB64?: string;
   audioSampleRateHz?: number;
+  /** Lowercase 64-char hex of the 32-byte Poseidon commitment. When present,
+   *  the validator signs a (wallet, commitment, validated_at) receipt and
+   *  returns it on the `ok` outcome for first-verify Ed25519 binding. */
+  commitmentNewHex?: string;
 }
 
 /** Thrown when EXPO_PUBLIC_RELAYER_URL is not set. The intro screen
@@ -169,6 +179,7 @@ interface ValidateBody {
   error?: string;
   reason?: string;
   retry_after?: number;
+  signed_receipt?: SignedReceiptDto;
 }
 
 /** POST /validate-features. Always resolves with a ValidateOutcome — never
@@ -197,6 +208,7 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
     accel_magnitude: input.accelMagnitude,
     audio_samples_b64: input.audioSamplesB64,
     audio_sample_rate_hz: input.audioSampleRateHz,
+    commitment_new_hex: input.commitmentNewHex,
   });
 
   const controller = new AbortController();
@@ -226,6 +238,7 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
     return {
       kind: "ok",
       remainingQuota: typeof parsed.remaining_quota === "number" ? parsed.remaining_quota : null,
+      signedReceipt: parsed.signed_receipt ?? null,
     };
   }
 
