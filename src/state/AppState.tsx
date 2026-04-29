@@ -1,7 +1,10 @@
+import { PublicKey } from "@solana/web3.js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer } from "react";
 
+import { config, getConnection } from "@/config";
 import { wipeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
+import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 import * as mwa from "@/wallet/mwa";
 
@@ -74,7 +77,9 @@ type Action =
   | { type: "resetBaseline" }
   | { type: "setWalletMenuOpen"; open: boolean }
   | { type: "setFlowIntent"; intent: VerifyIntent }
-  | { type: "setForceOutcome"; outcome: "success" | FailureBucket | null };
+  | { type: "setForceOutcome"; outcome: "success" | FailureBucket | null }
+  | { type: "hydrateIdentity"; identity: IdentityState }
+  | { type: "hydrateIdentityCold" };
 
 const initialState: AppState = {
   ready: false,
@@ -208,6 +213,14 @@ const reducer = (state: AppState, action: Action): AppState => {
       return { ...state, flow: { intent: action.intent } };
     case "setForceOutcome":
       return { ...state, dev: { forceOutcome: action.outcome } };
+    case "hydrateIdentity":
+      return { ...state, identity: action.identity };
+    case "hydrateIdentityCold":
+      // No on-chain identity exists yet — reset to the cold-state preset's
+      // identity slice so the dashboard renders the "Mint Entros Anchor"
+      // CTA. Connection / history / flow intent / dev forceOutcome are
+      // preserved (this is reconciliation, not a logout).
+      return { ...state, identity: presets["cold"].identity };
     default:
       return state;
   }
@@ -226,6 +239,14 @@ interface AppStateContextValue extends AppState {
   closeWalletMenu: () => void;
   setFlowIntent: (intent: VerifyIntent) => void;
   setForceOutcome: (outcome: "success" | FailureBucket | null) => void;
+  /** Refreshes the in-memory `identity` slice from the on-chain
+   *  `IdentityState` PDA. Idempotent and fire-and-forget safe — callers
+   *  invoke from dashboard focus, post-connect, and post-verify so the UI
+   *  reflects on-chain truth instead of optimistic local mutations.
+   *  Resolves to true if an account was found (identity hydrated), false
+   *  if the wallet has no anchor yet (cold-state UI). Errors are swallowed
+   *  with a devWarn — the existing UI state survives. */
+  hydrateIdentity: () => Promise<boolean>;
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -277,6 +298,35 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
     ]);
   }, []);
 
+  // hydrateIdentity is defined before `connect` so the post-connect refresh
+  // can reach it. The address arg lets the caller pass a freshly-authorized
+  // wallet without waiting for the reducer's `connected` dispatch to
+  // propagate through the closure.
+  const hydrateIdentityFor = useCallback(async (address: string): Promise<boolean> => {
+    if (!config.programs.entrosAnchor) {
+      devWarn("[Entros] EXPO_PUBLIC_ENTROS_ANCHOR_PROGRAM_ID unset; skipping hydrate");
+      return false;
+    }
+    try {
+      const onChain = await fetchIdentityState(new PublicKey(address), getConnection());
+      if (onChain) {
+        dispatch({ type: "hydrateIdentity", identity: toAppStateIdentity(onChain) });
+        return true;
+      }
+      dispatch({ type: "hydrateIdentityCold" });
+      return false;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      devWarn(`[Entros] hydrateIdentity failed: ${message}`);
+      return false;
+    }
+  }, []);
+
+  const hydrateIdentity = useCallback(async (): Promise<boolean> => {
+    if (!state.connection.connected || !state.connection.address) return false;
+    return hydrateIdentityFor(state.connection.address);
+  }, [hydrateIdentityFor, state.connection.connected, state.connection.address]);
+
   const connect = useCallback(
     async (walletKind?: WalletKind) => {
       const account = await mwa.connect(walletKind);
@@ -288,8 +338,16 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
         label: account.label,
         wallet: account.wallet,
       });
+      // Reconcile the dashboard with on-chain truth on first connect. A
+      // returning user with an existing IdentityState lands on the live
+      // dashboard immediately; a first-time user gets the mint CTA. The
+      // refresh runs serially after the reducer dispatch above so the
+      // identity update applies on top of a clean `connected` state, but
+      // we don't await it — connect() callers (e.g. /connect.tsx) navigate
+      // to /(app) on resolve and let the refresh land asynchronously.
+      void hydrateIdentityFor(account.address);
     },
-    [persist],
+    [persist, hydrateIdentityFor],
   );
 
   const disconnect = useCallback(async () => {
@@ -327,8 +385,9 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       closeWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: false }),
       setFlowIntent: (intent) => dispatch({ type: "setFlowIntent", intent }),
       setForceOutcome: (outcome) => dispatch({ type: "setForceOutcome", outcome }),
+      hydrateIdentity,
     }),
-    [state, connect, disconnect],
+    [state, connect, disconnect, hydrateIdentity],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
