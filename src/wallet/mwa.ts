@@ -10,15 +10,17 @@ import { Linking, Platform } from "react-native";
 import { config } from "@/config";
 import type { WalletKind } from "@/state/types";
 
-// `icon` MUST be a URI relative to `uri` per the wallet-standard SIWS spec —
-// Phantom enforces this (`code=-32602, "identity.icon must be a relative URI"`)
-// while older Solflare builds tolerated absolute URLs. The wallet resolves the
-// relative path against the dApp's `uri` to fetch the icon. Inline base64 data
-// URIs were also tried but Phantom crashes on payloads over a few KB.
+// `icon` is omitted intentionally. Phantom's current build rejects every
+// non-data-URL form we tried (`code=-32602, "identity.icon must be a relative
+// URI"`): `/logos/Entros.png`, `logos/Entros.png`, and `https://...` all fire.
+// Inline base64 data URIs over a few KB crash Phantom outright. Without `icon`,
+// the wallet falls back to a default avatar — connect succeeds. Re-introducing
+// a custom icon is Stage 9 polish work; it requires testing each wallet's
+// parser separately and will likely need a tiny inlined data URL once we know
+// the size cap.
 const APP_IDENTITY = {
   name: "Entros",
   uri: "https://entros.io",
-  icon: "/logos/Entros.png",
 } as const;
 
 // Universal-link prefix each wallet registers with Android. The MWA SDK appends
