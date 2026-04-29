@@ -1,5 +1,13 @@
 import { PublicKey } from "@solana/web3.js";
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+} from "react";
 
 import { config, getConnection } from "@/config";
 import { wipeBaseline } from "@/identity/baseline";
@@ -139,9 +147,17 @@ const reducer = (state: AppState, action: Action): AppState => {
         },
       };
     case "disconnected":
+      // A disconnect must reset the identity and history slices alongside
+      // the connection. Otherwise the next wallet briefly inherits the old
+      // wallet's dashboard state until hydrateIdentity completes (200-400ms
+      // RPC), and the history feed leaks the old session's verifications
+      // into the new wallet's UI. The cold preset's identity matches the
+      // shape used by hydrateIdentityCold.
       return {
         ...state,
         connection: { connected: false, address: null, wallet: null, authToken: null, label: null },
+        identity: presets["cold"].identity,
+        history: [],
       };
     case "verify": {
       const event: VerificationEvent = {
@@ -168,11 +184,13 @@ const reducer = (state: AppState, action: Action): AppState => {
       };
     }
     case "resetComplete": {
-      // On-chain reset_identity_state succeeded. Mirrors the on-chain
-      // semantics: trust_score → 0, verifications → 0, recent_timestamps
-      // cleared (we don't track those locally), lastVerifiedAt → now.
-      // hasAnchor stays true (the SPL token mint isn't burned). Stage 8
-      // will replace this mock-state path with an on-chain identity read.
+      // On-chain reset_identity_state succeeded. Optimistic local update
+      // mirroring the on-chain semantics so the UI reflects the reset
+      // immediately: trust_score → 0, verifications → 0, lastVerifiedAt →
+      // now, recent_timestamps cleared (we don't track those locally).
+      // hasAnchor stays true (the SPL token mint isn't burned). The
+      // verify success screen calls hydrateIdentity on mount which
+      // reconciles this optimistic state against the on-chain truth.
       const event: VerificationEvent = {
         id: eventId(),
         ts: new Date(),
@@ -254,6 +272,22 @@ const AppStateContext = createContext<AppStateContextValue | null>(null);
 export const AppStateProvider = ({ children }: { children: React.ReactNode }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
 
+  // Latest-state ref. Refreshed synchronously on every render so callbacks
+  // can read connection.address / connected at call time without subscribing
+  // to those fields in their useCallback deps. The alternative (closing
+  // over state.connection.*) would create a new hydrateIdentity reference
+  // on every reducer dispatch, which in turn would re-fire any useEffect /
+  // useFocusEffect with hydrateIdentity in its deps — a tight loop given
+  // that hydrateIdentity itself dispatches.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // Single in-flight hydrate guard. Connect → dashboard focus and verify
+  // success → dashboard focus both fire hydrateIdentity within a few
+  // milliseconds; without de-dup we'd double-fetch the same PDA. Concurrent
+  // callers receive the same promise and observe a single dispatch.
+  const inflightHydrateRef = useRef<Promise<boolean> | null>(null);
+
   // Cold-start hydration: load any persisted wallet credentials. We do not
   // re-authorize with MWA here — that would round-trip to the wallet app on
   // every launch. We trust the stored address until a signing operation needs
@@ -298,34 +332,57 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
     ]);
   }, []);
 
-  // hydrateIdentity is defined before `connect` so the post-connect refresh
-  // can reach it. The address arg lets the caller pass a freshly-authorized
-  // wallet without waiting for the reducer's `connected` dispatch to
-  // propagate through the closure.
+  // hydrateIdentityFor is defined before `connect` so the post-connect
+  // refresh can reach it. The explicit address arg lets the caller pass a
+  // freshly-authorized wallet without waiting for the reducer's `connected`
+  // dispatch to flush through the closure. Empty deps keep the function
+  // referentially stable across reducer dispatches.
   const hydrateIdentityFor = useCallback(async (address: string): Promise<boolean> => {
     if (!config.programs.entrosAnchor) {
       devWarn("[Entros] EXPO_PUBLIC_ENTROS_ANCHOR_PROGRAM_ID unset; skipping hydrate");
       return false;
     }
-    try {
-      const onChain = await fetchIdentityState(new PublicKey(address), getConnection());
-      if (onChain) {
-        dispatch({ type: "hydrateIdentity", identity: toAppStateIdentity(onChain) });
-        return true;
+    if (inflightHydrateRef.current) return inflightHydrateRef.current;
+
+    const promise = (async (): Promise<boolean> => {
+      try {
+        const onChain = await fetchIdentityState(new PublicKey(address), getConnection());
+        // Mid-flight wallet-swap guard: if the user disconnected and
+        // reconnected to a different wallet while we were fetching, drop
+        // the result rather than overwrite the new wallet's identity with
+        // stale data from the old wallet. Reads stateRef instead of
+        // state.connection so the fetch sees the current address even
+        // when the call site captured an older closure.
+        if (stateRef.current.connection.address !== address) return false;
+        if (onChain) {
+          dispatch({ type: "hydrateIdentity", identity: toAppStateIdentity(onChain) });
+          return true;
+        }
+        dispatch({ type: "hydrateIdentityCold" });
+        return false;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        devWarn(`[Entros] hydrateIdentity failed: ${message}`);
+        return false;
+      } finally {
+        inflightHydrateRef.current = null;
       }
-      dispatch({ type: "hydrateIdentityCold" });
-      return false;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      devWarn(`[Entros] hydrateIdentity failed: ${message}`);
-      return false;
-    }
+    })();
+
+    inflightHydrateRef.current = promise;
+    return promise;
   }, []);
 
+  // hydrateIdentity reads connection from stateRef so the function reference
+  // stays stable across reducer dispatches. Effects with hydrateIdentity in
+  // their dep array (dashboard useFocusEffect, verify-success useEffect)
+  // fire on real focus / mount transitions only, not on incidental state
+  // mutations from elsewhere in the tree.
   const hydrateIdentity = useCallback(async (): Promise<boolean> => {
-    if (!state.connection.connected || !state.connection.address) return false;
-    return hydrateIdentityFor(state.connection.address);
-  }, [hydrateIdentityFor, state.connection.connected, state.connection.address]);
+    const conn = stateRef.current.connection;
+    if (!conn.connected || !conn.address) return false;
+    return hydrateIdentityFor(conn.address);
+  }, [hydrateIdentityFor]);
 
   const connect = useCallback(
     async (walletKind?: WalletKind) => {
