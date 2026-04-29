@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, StyleSheet, View } from "react-native";
 
 import { Button } from "@/components/primitives/Button";
@@ -8,7 +8,9 @@ import { PrivacyPill } from "@/components/primitives/PrivacyPill";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
+import { getConnection } from "@/config";
 import { devWarn } from "@/lib/log";
+import { fetchProtocolConfig, formatLamportsAsSol } from "@/protocol/protocolConfig";
 import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
 import { fetchChallenge } from "@/services/executor";
 import { useAppState } from "@/state/AppState";
@@ -22,11 +24,33 @@ const steps = [
   { n: 3, title: "Hold", body: "Hold the device steady through the count." },
 ];
 
+// Default fallback when the on-chain ProtocolConfig read fails (RPC error,
+// PDA uninitialized, env unset). Matches the protocol's devnet default of
+// 5_000_000 lamports = 0.005 SOL so the user never sees "—".
+const DEFAULT_FEE_LABEL = "≈ 0.005 SOL";
+
 export default function VerifyIntro() {
   const router = useRouter();
   const { palette } = useTheme();
   const { connection } = useAppState();
   const [pending, setPending] = useState(false);
+  const [feeLabel, setFeeLabel] = useState<string>(DEFAULT_FEE_LABEL);
+
+  // Fetch the live verification fee from ProtocolConfig once on mount. The
+  // result is cosmetic — Begin still proceeds even if the read failed —
+  // but a fresh read keeps the displayed estimate aligned with current
+  // protocol parameters (admin can rotate the fee at any time).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const cfg = await fetchProtocolConfig(getConnection());
+      if (cancelled || !cfg) return;
+      setFeeLabel(formatLamportsAsSol(cfg.verificationFeeLamports));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Gate the OS permission popup on the user's clear intent (Begin tap),
   // BEFORE the countdown. Android only requires RECORD_AUDIO at runtime;
@@ -115,7 +139,7 @@ export default function VerifyIntro() {
               Network fee
             </Text>
             <Text variant="mono" tone="muted">
-              ≈ 0.005 SOL
+              {feeLabel}
             </Text>
           </View>
           <Button label="Begin" loading={pending} onPress={handleBegin} />

@@ -13,13 +13,14 @@
 // When the on-chain programs change, re-copy the JSON files from
 // protocol-core/target/idl/ and bump the entros-mobile minor version.
 
-// Stage 7 re-exports only the two IDLs the on-chain submission path
-// actually consumes. The entros_registry IDL JSON is bundled in this
-// directory but not exported — Stage 8's dashboard read will pick it up
-// when it adds the BorshAccountsCoder for the IdentityState + ProtocolConfig
-// PDAs. Re-export it here as part of that change.
+// Stage 7 ships the two IDLs the on-chain submission path consumes
+// (entros_anchor for mint / update_anchor / reset, entros_verifier for
+// create_challenge / verify_proof). Stage 8 added entros_registry for
+// the on-chain ProtocolConfig PDA read so /verify/intro can render the
+// live verification_fee instead of the hardcoded approximation.
 
 import entrosAnchorIdl from "./entros_anchor.json";
+import entrosRegistryIdl from "./entros_registry.json";
 import entrosVerifierIdl from "./entros_verifier.json";
 
-export { entrosAnchorIdl, entrosVerifierIdl };
+export { entrosAnchorIdl, entrosRegistryIdl, entrosVerifierIdl };
