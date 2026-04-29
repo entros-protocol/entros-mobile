@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import { useEffect } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { CheckIcon, ExternalIcon } from "@/components/icons";
@@ -15,8 +16,18 @@ import { useTheme } from "@/theme/ThemeProvider";
 export default function VerifySuccess() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { identity, history } = useAppState();
+  const { identity, history, hydrateIdentity } = useAppState();
   const last = history[0];
+
+  // The processing screen has already optimistically dispatched `verify` /
+  // `resetComplete` so the trustDelta animation could land before the tx
+  // confirmed. Reconcile against on-chain state here so the COMMITMENT
+  // field reflects the freshly-rotated PDA value rather than whatever the
+  // local mock had cached. Fire-and-forget — UI is happy with stale state
+  // and updates whenever the RPC resolves.
+  useEffect(() => {
+    void hydrateIdentity();
+  }, [hydrateIdentity]);
   return (
     <Screen>
       <View style={styles.wrap}>

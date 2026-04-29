@@ -1,4 +1,5 @@
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { ChevronRightIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
@@ -18,7 +19,17 @@ import { useTheme } from "@/theme/ThemeProvider";
 export default function Dashboard() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { connection, identity, openWalletMenu } = useAppState();
+  const { connection, identity, openWalletMenu, hydrateIdentity } = useAppState();
+
+  // Refresh from the on-chain IdentityState PDA whenever the dashboard tab
+  // gains focus. Covers cold start, returning from /verify/success, and
+  // tab switches. The reducer dispatches inside hydrateIdentity are no-ops
+  // when nothing changed, so this stays quiet for repeated focuses.
+  useFocusEffect(
+    useCallback(() => {
+      if (connection.connected) void hydrateIdentity();
+    }, [connection.connected, hydrateIdentity]),
+  );
 
   if (!connection.connected) {
     return (
