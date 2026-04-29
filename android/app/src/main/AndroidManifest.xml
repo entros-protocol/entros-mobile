@@ -27,6 +27,7 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="entros"/>
         <data android:scheme="io.entros.mobile"/>
+        <data android:scheme="exp+entros-mobile"/>
       </intent-filter>
     </activity>
   </application>
