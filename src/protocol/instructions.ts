@@ -15,6 +15,7 @@ import {
   ComputeBudgetProgram,
   PublicKey,
   SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   TransactionInstruction,
 } from "@solana/web3.js";
 
@@ -72,6 +73,13 @@ export async function buildMintAnchorIx(
     TOKEN_2022_PROGRAM_ID,
   );
 
+  // The Instructions sysvar is required by `MintAnchor` accounts struct as
+  // of master-list #146 Phase 3 — the on-chain `verify_mint_receipt` helper
+  // reads the preceding `Ed25519Program::verify` instruction through this
+  // sysvar to confirm the validator endorsed (wallet, commitment,
+  // validated_at). Phase 3 is log-only; Phase 5 enforcement makes the
+  // bundling required. Account must be present in either phase or Anchor's
+  // accounts validator rejects the instruction client-side.
   return ctx.anchorProgram.methods
     .mintAnchor(Array.from(initialCommitment))
     .accounts({
@@ -85,6 +93,7 @@ export async function buildMintAnchorIx(
       systemProgram: SystemProgram.programId,
       protocolConfig: protocolConfigPda,
       treasury: treasuryPda,
+      instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
     })
     .instruction();
 }
