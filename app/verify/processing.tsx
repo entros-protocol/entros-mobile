@@ -3,14 +3,17 @@
 // Stages 1–7 are all real:
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
 // - Stage 2 (134-feature extraction) runs in the `extracting` step here.
+// - Stage 3 (SimHash + Poseidon TBH) runs FIRST inside the stages IIFE,
+//   producing the 32-byte commitment that all forward stages — including
+//   Stage 4 — depend on. Mirrors pulse-sdk pulse.ts:148-291 (master-list
+//   #146 Phase 4): the commitment must be transmitted as `commitment_new_hex`
+//   so the validator can sign a (wallet, commitment, validated_at) receipt
+//   bundled before mint_anchor on first-verify.
 // - Stage 4 (server-side validation) POSTs the 134-feature vector + cross-
-//   modal time-series + audio b64 to the executor's /validate-features
-//   endpoint, surfacing soft-rejects with a friendly retry UX and routing
-//   service / rate-limit errors to the appropriate failure bucket. Runs
-//   BEFORE Stage 3 hashing so a rejected verification doesn't waste cycles
-//   computing a commitment that won't be submitted.
-// - Stage 3 (SimHash + Poseidon TBH) runs after validate-success, producing
-//   the 32-byte commitment that forward stages submit.
+//   modal time-series + audio b64 + commitment_new_hex to the executor's
+//   /validate-features endpoint, surfacing soft-rejects with a friendly
+//   retry UX and routing service / rate-limit errors to the appropriate
+//   failure bucket. The signed receipt comes back on the ok outcome.
 // - Stage 5 (encrypted baseline persistence) encrypts the
 //   {fingerprint, salt, commitment, timestamp} bundle with AES-256-GCM
 //   inside the same IIFE as Stage 3 so the fingerprint never escapes its
@@ -24,7 +27,8 @@
 //   generation. The proof byte payload is held in `proofBuffer`.
 // - Stage 7 (on-chain submit via MWA) is the terminal step. Branches on
 //   flow.intent + previousBaseline:
-//   - intent="verify" + no prior baseline → mint_anchor (single ix)
+//   - intent="verify" + no prior baseline → (optional Ed25519 receipt) +
+//                                            mint_anchor
 //   - intent="verify" + prior baseline → ComputeBudget + create_challenge
 //                                        + verify_proof + update_anchor batch
 //   - intent="reset"                    → ComputeBudget + reset_identity_state
@@ -61,6 +65,7 @@ import type { TBH } from "@/hashing";
 import { loadBaseline, storeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
 import { generateSolanaProof } from "@/proof/prover";
+import type { SignedReceiptDto } from "@/protocol/receipt";
 import { submitReset, submitVerify } from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import { validateFeatures, ValidateOutcome, ValidateReason } from "@/services/executor";
@@ -215,52 +220,74 @@ export default function Processing() {
           `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,
         );
 
-        // Stage 4: server-side validation. Advance the state machine into
-        // "validating" before the POST so the UI shows the validating copy
-        // for the duration of the network round-trip (typically 2–5 s under
-        // Whisper inference, up to the 15 s executor.ts timeout).
-        //
-        // Mirrors pulse-sdk pulse.ts:137-228: validate BEFORE simhash so a
-        // rejected verification doesn't waste ~50–100 ms on hashing work.
-        if (cancelled) return;
-        dispatch({ type: "advance" });
-
-        const outcome = await validateFeatures({
-          features: result.raw,
-          walletId,
-          f0Contour: result.f0Contour,
-          accelMagnitude: result.accelMagnitude,
-          audioSamplesB64,
-          audioSampleRateHz,
-        });
-        if (cancelled) return;
-
-        if (outcome.kind !== "ok") {
-          routeFromValidateOutcome(outcome);
-          return;
-        }
-        devWarn(`[Entros] /validate-features ok q=${outcome.remainingQuota ?? "?"}`);
-
         // Load the previous baseline BEFORE the IIFE so the disk I/O
-        // happens while ctx.state is still "validating". Skipped for
-        // reset cycles — submitReset takes only the new commitment, no
-        // ft_prev needed. First verifies also return null and we skip
-        // Stage 6 proof generation; mint_anchor takes no proof either.
+        // happens before Stage 3 hashing. Skipped for reset cycles —
+        // submitReset takes only the new commitment, no ft_prev needed.
+        // First verifies also return null and we skip Stage 6 proof
+        // generation; mint_anchor takes no proof either.
         const previousBaseline = flowIntent === "reset" ? null : await loadBaseline();
         if (cancelled) return;
 
-        // Advance the state machine into "computing" before the IIFE so
-        // the UI shows the "Generating ZK proof" copy while real work
-        // (simhash + Poseidon + AES-GCM + arkworks proof) runs.
-        dispatch({ type: "advance" });
-
-        // Stages 3 + 5 + 6 IIFE. The fingerprint AND the previously-stored
-        // baseline fingerprint live only inside this scope; they fall out
-        // of scope as soon as the IIFE returns. Only the 16-char hex
-        // commitment prefix and a re-verify flag escape for logging.
-        const commitmentHexPrefix = await (async (): Promise<string> => {
+        // Stages 3 + 4 + 5 + 6 IIFE. The 256-bit fingerprint AND the
+        // previously-stored baseline fingerprint live only inside this
+        // scope; they fall out of scope as soon as the IIFE returns. Only
+        // the 16-char commitment hex prefix and the validate outcome
+        // (signed receipt + remaining quota) escape for logging + Stage 7.
+        //
+        // Order is simhash + Poseidon → /validate-features → baseline
+        // persistence → Groth16 proof, mirroring pulse-sdk pulse.ts:148-291
+        // (master-list #146 Phase 4). The commitment must be computed before
+        // validation so it can be transmitted as `commitment_new_hex` for
+        // the validator to sign. Cost of hashing a payload that ends up
+        // rejected: ~20 ms — invisible on the 2-5 s validate round-trip.
+        type StagesResult =
+          | {
+              kind: "ok";
+              commitmentHexPrefix: string;
+              remainingQuota: number | null;
+              signedReceipt: SignedReceiptDto | null;
+              firstVerify: boolean;
+            }
+          | { kind: "fail"; outcome: Exclude<ValidateOutcome, { kind: "ok" }> }
+          | { kind: "cancelled" };
+        const stagesResult: StagesResult = await (async (): Promise<StagesResult> => {
+          // Stage 3: SimHash + Poseidon TBH.
           const fingerprint = simhash(result.normalized);
           const tbh = await generateTBH(fingerprint);
+          const commitmentNewHex = Array.from(tbh.commitmentBytes)
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+
+          // Stage 4: server-side validation. Advance to "validating" before
+          // the POST so the UI shows the validating copy while the network
+          // round-trip resolves (typically 2-5 s under Whisper inference,
+          // up to the 15 s executor.ts timeout). Sends commitment_new_hex
+          // so the validator can sign a (wallet, commitment, validated_at)
+          // receipt and return it on the ok outcome for first-verify
+          // Ed25519 binding.
+          if (cancelled) return { kind: "cancelled" };
+          dispatch({ type: "advance" });
+
+          const outcome = await validateFeatures({
+            features: result.raw,
+            walletId,
+            f0Contour: result.f0Contour,
+            accelMagnitude: result.accelMagnitude,
+            audioSamplesB64,
+            audioSampleRateHz,
+            commitmentNewHex,
+          });
+          if (cancelled) return { kind: "cancelled" };
+          if (outcome.kind !== "ok") return { kind: "fail", outcome };
+
+          // Advance to "computing" before Stage 5 + 6 work fires so the UI
+          // shows the "Generating ZK proof" copy while AES-GCM + arkworks
+          // proof generation run.
+          dispatch({ type: "advance" });
+
+          // Stage 5: encrypted baseline persistence. setCommitment populates
+          // the handoff buffer Stage 7 reads from; storeBaseline writes the
+          // AES-GCM envelope to expo-secure-store.
           setCommitment({
             commitment: tbh.commitment,
             salt: tbh.salt,
@@ -306,16 +333,31 @@ export default function Processing() {
             );
           }
 
-          return Array.from(tbh.commitmentBytes.slice(0, 8))
-            .map((b) => b.toString(16).padStart(2, "0"))
-            .join("");
+          return {
+            kind: "ok",
+            commitmentHexPrefix: commitmentNewHex.slice(0, 16),
+            remainingQuota: outcome.remainingQuota,
+            signedReceipt: outcome.signedReceipt,
+            firstVerify: !previousBaseline,
+          };
         })();
+        if (stagesResult.kind === "cancelled" || cancelled) return;
+
+        if (stagesResult.kind === "fail") {
+          routeFromValidateOutcome(stagesResult.outcome);
+          return;
+        }
+
+        const { commitmentHexPrefix, remainingQuota, signedReceipt, firstVerify } = stagesResult;
+        devWarn(`[Entros] /validate-features ok q=${remainingQuota ?? "?"}`);
         // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
         // 32-byte commitment, never the fingerprint bits, never the salt.
+        // The receipt is logged only as "present" / "absent" so the dev
+        // can see Phase 4 wiring is live without leaking validator-signed
+        // bytes (public protocol artefacts, but log noise either way).
         devWarn(
-          `[Entros] commitment=${commitmentHexPrefix}… intent=${flowIntent} firstVerify=${!previousBaseline}`,
+          `[Entros] commitment=${commitmentHexPrefix}… intent=${flowIntent} firstVerify=${firstVerify} receipt=${signedReceipt ? "present" : "absent"}`,
         );
-        if (cancelled) return;
 
         // Dev panel override fires before any on-chain work — lets UI
         // testers skip the wallet round-trip. Real path falls through.
@@ -347,7 +389,6 @@ export default function Processing() {
               () => dispatch({ type: "advance" }), // → "submitting" once signed
             );
           } else {
-            const isFirstVerify = !previousBaseline;
             const nonce = challengeBuf?.nonce ? Array.from(challengeBuf.nonce) : undefined;
             result = await submitVerify(
               {
@@ -355,9 +396,15 @@ export default function Processing() {
                 authToken,
                 walletKind,
                 commitment: commitmentBuf.commitmentBytes,
-                isFirstVerify,
+                isFirstVerify: firstVerify,
                 proof: proofBuf ?? undefined,
                 nonce,
+                // First-verify only — submit.ts ignores it on the re-verify
+                // branch. Receipt is the validator's Ed25519-signed binding
+                // to (wallet, commitment, validated_at) per master-list #146
+                // Phase 4. `null` falls back to no-receipt mint (Phase 3
+                // log-only OK).
+                signedReceipt: signedReceipt ?? undefined,
               },
               () => dispatch({ type: "advance" }), // → "submitting" once signed
             );
