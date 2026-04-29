@@ -45,7 +45,37 @@ export default function Settings() {
     openWalletMenu,
     dev,
   } = useAppState();
-  const [busy, setBusy] = useState<"disconnect" | null>(null);
+  const [busy, setBusy] = useState<"disconnect" | "reset" | null>(null);
+
+  // Dev preset taps. "cold" performs a true reset (disconnects wallet, wipes
+  // baseline, navigates to onboarding) so it actually resembles a fresh launch
+  // — the bare reducer-only `loadPreset("cold")` keeps the wallet auth token
+  // around and leaves the user stranded on the settings tab. The other presets
+  // are mock-state demos that should land the user on the dashboard so they
+  // can see the refreshed state.
+  const handlePresetTap = async (key: MockPreset) => {
+    if (busy) return;
+    if (key === "cold") {
+      setBusy("reset");
+      try {
+        if (connection.connected) {
+          try {
+            await disconnect();
+          } catch {
+            // Token may already be invalid; proceed regardless.
+          }
+        }
+        loadPreset("cold");
+        resetBaseline();
+        router.replace("/");
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+    loadPreset(key);
+    router.replace("/(app)");
+  };
 
   const handleDisconnect = async () => {
     if (busy) return;
@@ -164,14 +194,18 @@ export default function Settings() {
             {presets.map((p) => (
               <Pressable
                 key={p.key}
-                onPress={() => loadPreset(p.key)}
+                onPress={() => handlePresetTap(p.key)}
+                disabled={busy !== null}
                 style={({ pressed }) => [
                   styles.choice,
                   { backgroundColor: palette.surface, borderColor: palette.border },
                   pressed && { opacity: 0.7 },
+                  busy !== null && { opacity: 0.5 },
                 ]}
               >
-                <Text variant="bodyLarge">{p.label}</Text>
+                <Text variant="bodyLarge">
+                  {p.key === "cold" && busy === "reset" ? "Resetting…" : p.label}
+                </Text>
                 <Text variant="caption" tone="muted">
                   {p.sub}
                 </Text>
