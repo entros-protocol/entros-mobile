@@ -6,15 +6,164 @@
     "spec": "0.1.0",
     "description": "Non-transferable identity token for Entros Protocol"
   },
+  "docs": [
+    "Mint account space for Token-2022 with NonTransferable extension.",
+    "Base mint = 82 bytes, account type = 1 byte, extension type (2) + length (2) = 4 bytes,",
+    "NonTransferable data = 0 bytes. Plus multisig padding from Token-2022.",
+    "We use a constant derived from the Token-2022 spec."
+  ],
   "instructions": [
     {
-      "name": "mint_anchor",
+      "name": "authorize_new_wallet",
       "docs": [
-        "Mint a new Entros Anchor identity for the caller.",
-        "Creates a NonTransferable Token-2022 mint, mints 1 token to the user's ATA,",
-        "and initializes the IdentityState PDA."
+        "Authorize a new wallet by 2 signers. This can be done many times before invoking migrate_identity()"
       ],
-      "discriminator": [68, 56, 113, 102, 236, 152, 146, 60],
+      "discriminator": [
+        178,
+        186,
+        185,
+        108,
+        51,
+        219,
+        107,
+        197
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer_new",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "signer"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "migrate_identity",
+      "docs": [
+        "Migrate from an user's old Anchor IdentityState PDA to a new one",
+        "After this function call, the orphaned 0-balance ATA, pointing at a closed mint, locks ~0.002 SOL of rent. This ATA can be recovered by the old wallet calling closeAccount()"
+      ],
+      "discriminator": [
+        161,
+        192,
+        70,
+        80,
+        47,
+        37,
+        26,
+        10
+      ],
       "accounts": [
         {
           "name": "user",
@@ -28,7 +177,16 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [105, 100, 101, 110, 116, 105, 116, 121]
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
               },
               {
                 "kind": "account",
@@ -39,13 +197,20 @@
         },
         {
           "name": "mint",
-          "docs": ["initialization ordering. PDA seeds ensure uniqueness per user."],
+          "docs": [
+            "initialization ordering. PDA seeds ensure uniqueness per user."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
-                "value": [109, 105, 110, 116]
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116
+                ]
               },
               {
                 "kind": "account",
@@ -60,7 +225,22 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [109, 105, 110, 116, 95, 97, 117, 116, 104, 111, 114, 105, 116, 121]
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
               }
             ]
           }
@@ -86,14 +266,60 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                81, 130, 250, 230, 30, 253, 246, 69, 82, 96, 7, 173, 78, 160, 131, 188, 70, 106,
-                173, 59, 102, 163, 198, 189, 82, 37, 225, 38, 52, 233, 157, 117
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
               ]
             }
           }
@@ -106,25 +332,439 @@
               {
                 "kind": "const",
                 "value": [
-                  112, 114, 111, 116, 111, 99, 111, 108, 95, 116, 114, 101, 97, 115, 117, 114, 121
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                81, 130, 250, 230, 30, 253, 246, 69, 82, 96, 7, 173, 78, 160, 131, 188, 70, 106,
-                173, 59, 102, 163, 198, 189, 82, 37, 225, 38, 52, 233, 157, 117
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
               ]
             }
           }
+        },
+        {
+          "name": "wallet_old",
+          "writable": true
+        },
+        {
+          "name": "identity_state_old",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet_old"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_old",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wallet_old"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_account_old",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "wallet_old"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint_old"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "mint_anchor",
+      "docs": [
+        "Mint a new Entros Anchor identity for the caller.",
+        "Creates a NonTransferable Token-2022 mint, mints 1 token to the user's ATA,",
+        "and initializes the IdentityState PDA."
+      ],
+      "discriminator": [
+        68,
+        56,
+        113,
+        102,
+        236,
+        152,
+        146,
+        60
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "docs": [
+            "initialization ordering. PDA seeds ensure uniqueness per user."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_account",
+          "writable": true
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
+              ]
+            }
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
+              ]
+            }
+          }
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "receipt verification (master-list #146 Phase 3) to inspect the",
+            "preceding Ed25519Program::verify instruction in the same tx.",
+            "Address is constrained to the canonical sysvar pubkey, so the",
+            "program is guaranteed to be reading the real sysvar regardless of",
+            "what the client passes."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
         {
           "name": "initial_commitment",
           "type": {
-            "array": ["u8", 32]
+            "array": [
+              "u8",
+              32
+            ]
           }
         }
       ]
@@ -156,7 +796,16 @@
         "validation pipeline at the SAS attestation step (handled by",
         "the off-chain executor, not this instruction)."
       ],
-      "discriminator": [26, 78, 86, 143, 247, 132, 85, 203],
+      "discriminator": [
+        26,
+        78,
+        86,
+        143,
+        247,
+        132,
+        85,
+        203
+      ],
       "accounts": [
         {
           "name": "authority",
@@ -175,7 +824,16 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [105, 100, 101, 110, 116, 105, 116, 121]
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
               },
               {
                 "kind": "account",
@@ -186,19 +844,67 @@
         },
         {
           "name": "protocol_config",
-          "docs": ["Supplies the verification fee amount charged on reset."],
+          "docs": [
+            "Supplies the verification fee amount charged on reset."
+          ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                81, 130, 250, 230, 30, 253, 246, 69, 82, 96, 7, 173, 78, 160, 131, 188, 70, 106,
-                173, 59, 102, 163, 198, 189, 82, 37, 225, 38, 52, 233, 157, 117
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
               ]
             }
           }
@@ -211,15 +917,61 @@
               {
                 "kind": "const",
                 "value": [
-                  112, 114, 111, 116, 111, 99, 111, 108, 95, 116, 114, 101, 97, 115, 117, 114, 121
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                81, 130, 250, 230, 30, 253, 246, 69, 82, 96, 7, 173, 78, 160, 131, 188, 70, 106,
-                173, 59, 102, 163, 198, 189, 82, 37, 225, 38, 52, 233, 157, 117
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
               ]
             }
           }
@@ -233,7 +985,10 @@
         {
           "name": "new_commitment",
           "type": {
-            "array": ["u8", 32]
+            "array": [
+              "u8",
+              32
+            ]
           }
         }
       ]
@@ -259,7 +1014,16 @@
         "rotates to `new_commitment`, so the consumed VerificationResult's",
         "`commitment_prev` no longer matches on any future call."
       ],
-      "discriminator": [120, 192, 72, 245, 112, 246, 119, 135],
+      "discriminator": [
+        120,
+        192,
+        72,
+        245,
+        112,
+        246,
+        119,
+        135
+      ],
       "accounts": [
         {
           "name": "authority",
@@ -277,7 +1041,16 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [105, 100, 101, 110, 116, 105, 116, 121]
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
               },
               {
                 "kind": "account",
@@ -298,7 +1071,20 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [118, 101, 114, 105, 102, 105, 99, 97, 116, 105, 111, 110]
+                "value": [
+                  118,
+                  101,
+                  114,
+                  105,
+                  102,
+                  105,
+                  99,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
               },
               {
                 "kind": "account",
@@ -312,27 +1098,105 @@
             "program": {
               "kind": "const",
               "value": [
-                48, 50, 94, 115, 90, 162, 108, 8, 240, 151, 76, 223, 101, 176, 170, 86, 254, 247,
-                252, 28, 240, 145, 60, 108, 42, 129, 105, 32, 232, 212, 226, 52
+                48,
+                50,
+                94,
+                115,
+                90,
+                162,
+                108,
+                8,
+                240,
+                151,
+                76,
+                223,
+                101,
+                176,
+                170,
+                86,
+                254,
+                247,
+                252,
+                28,
+                240,
+                145,
+                60,
+                108,
+                42,
+                129,
+                105,
+                32,
+                232,
+                212,
+                226,
+                52
               ]
             }
           }
         },
         {
           "name": "protocol_config",
-          "docs": ["Validated by seeds + owner via seeds::program."],
+          "docs": [
+            "Validated by seeds + owner via seeds::program."
+          ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                81, 130, 250, 230, 30, 253, 246, 69, 82, 96, 7, 173, 78, 160, 131, 188, 70, 106,
-                173, 59, 102, 163, 198, 189, 82, 37, 225, 38, 52, 233, 157, 117
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
               ]
             }
           }
@@ -345,15 +1209,61 @@
               {
                 "kind": "const",
                 "value": [
-                  112, 114, 111, 116, 111, 99, 111, 108, 95, 116, 114, 101, 97, 115, 117, 114, 121
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                81, 130, 250, 230, 30, 253, 246, 69, 82, 96, 7, 173, 78, 160, 131, 188, 70, 106,
-                173, 59, 102, 163, 198, 189, 82, 37, 225, 38, 52, 233, 157, 117
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
               ]
             }
           }
@@ -367,13 +1277,19 @@
         {
           "name": "new_commitment",
           "type": {
-            "array": ["u8", 32]
+            "array": [
+              "u8",
+              32
+            ]
           }
         },
         {
           "name": "verification_nonce",
           "type": {
-            "array": ["u8", 32]
+            "array": [
+              "u8",
+              32
+            ]
           }
         }
       ]
@@ -382,21 +1298,70 @@
   "accounts": [
     {
       "name": "IdentityState",
-      "discriminator": [156, 32, 87, 93, 52, 155, 248, 207]
+      "discriminator": [
+        156,
+        32,
+        87,
+        93,
+        52,
+        155,
+        248,
+        207
+      ]
     }
   ],
   "events": [
     {
       "name": "AnchorMinted",
-      "discriminator": [11, 188, 6, 169, 20, 50, 128, 172]
+      "discriminator": [
+        11,
+        188,
+        6,
+        169,
+        20,
+        50,
+        128,
+        172
+      ]
     },
     {
       "name": "AnchorReset",
-      "discriminator": [183, 48, 146, 155, 112, 20, 140, 31]
+      "discriminator": [
+        183,
+        48,
+        146,
+        155,
+        112,
+        20,
+        140,
+        31
+      ]
     },
     {
       "name": "AnchorUpdated",
-      "discriminator": [112, 73, 210, 183, 57, 84, 103, 59]
+      "discriminator": [
+        112,
+        73,
+        210,
+        183,
+        57,
+        84,
+        103,
+        59
+      ]
+    },
+    {
+      "name": "MigrateIdentityEvent",
+      "discriminator": [
+        33,
+        239,
+        166,
+        187,
+        108,
+        47,
+        49,
+        139
+      ]
     }
   ],
   "errors": [
@@ -464,6 +1429,51 @@
       "code": 6012,
       "name": "ResetCooldownActive",
       "msg": "Reset cooldown has not elapsed since the last reset"
+    },
+    {
+      "code": 6013,
+      "name": "UnauthorizedNewWallet",
+      "msg": "caller is not authorized by the old identity"
+    },
+    {
+      "code": 6014,
+      "name": "ProofFromFuture",
+      "msg": "VerificationResult.verified_at is in the future relative to the cluster clock"
+    },
+    {
+      "code": 6015,
+      "name": "MissingValidatorReceipt",
+      "msg": "mint_anchor expected a preceding Ed25519Program::verify instruction with a validator-signed receipt; none found"
+    },
+    {
+      "code": 6016,
+      "name": "ReceiptValidatorMismatch",
+      "msg": "Receipt was signed by a key that does not match ProtocolConfig.validator_pubkey"
+    },
+    {
+      "code": 6017,
+      "name": "ReceiptCommitmentMismatch",
+      "msg": "Receipt commitment does not match the mint_anchor commitment argument"
+    },
+    {
+      "code": 6018,
+      "name": "ReceiptWalletMismatch",
+      "msg": "Receipt wallet does not match the mint signer"
+    },
+    {
+      "code": 6019,
+      "name": "ReceiptExpired",
+      "msg": "Receipt has aged past MAX_RECEIPT_AGE_SECS"
+    },
+    {
+      "code": 6020,
+      "name": "ReceiptFromFuture",
+      "msg": "Receipt validated_at is in the future relative to the cluster clock"
+    },
+    {
+      "code": 6021,
+      "name": "MalformedReceiptMessage",
+      "msg": "Receipt message has malformed length or layout"
     }
   ],
   "types": [
@@ -483,7 +1493,10 @@
           {
             "name": "commitment",
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
           }
         ]
@@ -505,7 +1518,10 @@
           {
             "name": "commitment",
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
           }
         ]
@@ -531,7 +1547,10 @@
           {
             "name": "commitment",
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
           }
         ]
@@ -544,44 +1563,63 @@
         "fields": [
           {
             "name": "owner",
-            "docs": ["The user's wallet pubkey"],
+            "docs": [
+              "The user's wallet pubkey"
+            ],
             "type": "pubkey"
           },
           {
             "name": "creation_timestamp",
-            "docs": ["When the identity was first minted"],
+            "docs": [
+              "When the identity was first minted"
+            ],
             "type": "i64"
           },
           {
             "name": "last_verification_timestamp",
-            "docs": ["Most recent successful verification"],
+            "docs": [
+              "Most recent successful verification"
+            ],
             "type": "i64"
           },
           {
             "name": "verification_count",
-            "docs": ["Total successful verifications"],
+            "docs": [
+              "Total successful verifications"
+            ],
             "type": "u32"
           },
           {
             "name": "trust_score",
-            "docs": ["Computed reputation metric"],
+            "docs": [
+              "Computed reputation metric"
+            ],
             "type": "u16"
           },
           {
             "name": "current_commitment",
-            "docs": ["Latest Poseidon commitment H_TBH"],
+            "docs": [
+              "Latest Poseidon commitment H_TBH"
+            ],
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
           },
           {
             "name": "mint",
-            "docs": ["The NonTransferable mint associated with this identity"],
+            "docs": [
+              "The NonTransferable mint associated with this identity"
+            ],
             "type": "pubkey"
           },
           {
             "name": "bump",
-            "docs": ["PDA bump seed"],
+            "docs": [
+              "PDA bump seed"
+            ],
             "type": "u8"
           },
           {
@@ -592,7 +1630,10 @@
               "Older entries contribute negligible score due to exponential recency decay."
             ],
             "type": {
-              "array": ["i64", 52]
+              "array": [
+                "i64",
+                52
+              ]
             }
           },
           {
@@ -603,6 +1644,37 @@
               "created before this field existed and then realloc'd in-place)."
             ],
             "type": "i64"
+          },
+          {
+            "name": "new_wallet",
+            "docs": [
+              "new wallet for migrate_identity()"
+            ],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MigrateIdentityEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet_old",
+            "type": "pubkey"
+          },
+          {
+            "name": "wallet_new",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity_old",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity_new",
+            "type": "pubkey"
           }
         ]
       }

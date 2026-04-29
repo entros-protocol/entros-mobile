@@ -18,7 +18,16 @@
         "- Age bonus: diminishing returns (sqrt) to prevent gaming via old unused accounts",
         "- A bot verifying 100 times in one day scores much lower than a human verifying weekly for months"
       ],
-      "discriminator": [52, 216, 246, 36, 18, 206, 72, 73],
+      "discriminator": [
+        52,
+        216,
+        246,
+        36,
+        18,
+        206,
+        72,
+        73
+      ],
       "accounts": [
         {
           "name": "protocol_config",
@@ -26,7 +35,23 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -44,15 +69,29 @@
         {
           "name": "recent_timestamps",
           "type": {
-            "array": ["i64", 10]
+            "array": [
+              "i64",
+              10
+            ]
           }
         }
       ]
     },
     {
       "name": "initialize_protocol",
-      "docs": ["Initialize the protocol configuration. One-time admin instruction."],
-      "discriminator": [188, 233, 252, 106, 134, 146, 202, 91],
+      "docs": [
+        "Initialize the protocol configuration. One-time admin instruction."
+      ],
+      "discriminator": [
+        188,
+        233,
+        252,
+        106,
+        134,
+        146,
+        202,
+        91
+      ],
       "accounts": [
         {
           "name": "admin",
@@ -66,7 +105,23 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -108,30 +163,61 @@
         "Uses raw byte access (not Anchor deserialization) to handle accounts that",
         "predate the current struct layout."
       ],
-      "discriminator": [119, 155, 172, 213, 161, 86, 231, 120],
+      "discriminator": [
+        119,
+        155,
+        172,
+        213,
+        161,
+        86,
+        231,
+        120
+      ],
       "accounts": [
         {
           "name": "new_admin",
-          "docs": ["The new admin. Must be the program upgrade authority."],
+          "docs": [
+            "The new admin. Must be the program upgrade authority."
+          ],
           "writable": true,
           "signer": true
         },
         {
           "name": "protocol_config",
-          "docs": ["pre-migration accounts that predate the current struct layout."],
+          "docs": [
+            "pre-migration accounts that predate the current struct layout."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
         },
         {
           "name": "programdata",
-          "docs": ["Address is validated as the canonical programdata PDA for this program."]
+          "docs": [
+            "Address is validated as the canonical programdata PDA for this program."
+          ]
         },
         {
           "name": "system_program",
@@ -142,8 +228,19 @@
     },
     {
       "name": "register_validator",
-      "docs": ["Register as a validator by staking SOL."],
-      "discriminator": [118, 98, 251, 58, 81, 30, 13, 240],
+      "docs": [
+        "Register as a validator by staking SOL."
+      ],
+      "discriminator": [
+        118,
+        98,
+        251,
+        58,
+        81,
+        30,
+        13,
+        240
+      ],
       "accounts": [
         {
           "name": "validator",
@@ -156,7 +253,23 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -168,7 +281,17 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [118, 97, 108, 105, 100, 97, 116, 111, 114]
+                "value": [
+                  118,
+                  97,
+                  108,
+                  105,
+                  100,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
               },
               {
                 "kind": "account",
@@ -184,7 +307,13 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [118, 97, 117, 108, 116]
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
               }
             ]
           }
@@ -202,6 +331,87 @@
       ]
     },
     {
+      "name": "set_validator_pubkey",
+      "docs": [
+        "Set the validator signing pubkey used for mint receipt binding",
+        "(master-list #146 Phase 3). Admin-only. Resizes the account from",
+        "any legacy layout (69 bytes pre-migration_fee, 77 bytes",
+        "pre-validator_pubkey) up to the current 109-byte layout in a",
+        "single call. Subsequent rotation calls realloc is a no-op.",
+        "",
+        "Uses raw-byte access (mirrors `migrate_admin`) rather than",
+        "`Account<ProtocolConfig>` because Anchor's typed wrapper",
+        "deserializes BEFORE realloc, and a smaller-than-current legacy",
+        "account would fail deserialization with `AccountDidNotDeserialize`",
+        "before the resize could fix it.",
+        "",
+        "Zero pubkey is rejected — entros-anchor treats a zero pubkey as",
+        "\"receipts not yet configured\" and skips the on-chain check, so",
+        "writing zero would silently disable the binding rather than rotate."
+      ],
+      "discriminator": [
+        158,
+        194,
+        32,
+        54,
+        85,
+        123,
+        13,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "docs": [
+            "handle pre-migration accounts (69 bytes pre-migration_fee,",
+            "77 bytes pre-validator_pubkey) that don't deserialize as the",
+            "current struct. Same pattern as `migrate_admin`. Realloc + admin",
+            "authorisation are both done in the instruction body."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "validator_pubkey",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "unstake_validator",
       "docs": [
         "Unstake SOL and close the validator account.",
@@ -213,7 +423,16 @@
         "- is_active check (prevent unstake after slashing)",
         "- Minimum vault balance guard"
       ],
-      "discriminator": [49, 51, 143, 217, 205, 80, 185, 24],
+      "discriminator": [
+        49,
+        51,
+        143,
+        217,
+        205,
+        80,
+        185,
+        24
+      ],
       "accounts": [
         {
           "name": "validator",
@@ -227,7 +446,17 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [118, 97, 108, 105, 100, 97, 116, 111, 114]
+                "value": [
+                  118,
+                  97,
+                  108,
+                  105,
+                  100,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
               },
               {
                 "kind": "account",
@@ -243,7 +472,13 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [118, 97, 117, 108, 116]
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
               }
             ]
           }
@@ -261,7 +496,16 @@
         "Update protocol configuration. Admin-only.",
         "Uses Anchor realloc to resize the account if the struct has grown."
       ],
-      "discriminator": [197, 97, 123, 54, 221, 168, 11, 135],
+      "discriminator": [
+        197,
+        97,
+        123,
+        54,
+        221,
+        168,
+        11,
+        135
+      ],
       "accounts": [
         {
           "name": "admin",
@@ -275,7 +519,23 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -298,7 +558,16 @@
         "Withdraw accumulated fees from the protocol treasury.",
         "Admin-only. Preserves rent-exempt minimum balance."
       ],
-      "discriminator": [40, 63, 122, 158, 144, 216, 83, 96],
+      "discriminator": [
+        40,
+        63,
+        122,
+        158,
+        144,
+        216,
+        83,
+        96
+      ],
       "accounts": [
         {
           "name": "admin",
@@ -311,7 +580,23 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 114, 111, 116, 111, 99, 111, 108, 95, 99, 111, 110, 102, 105, 103]
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -324,7 +609,23 @@
               {
                 "kind": "const",
                 "value": [
-                  112, 114, 111, 116, 111, 99, 111, 108, 95, 116, 114, 101, 97, 115, 117, 114, 121
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
                 ]
               }
             ]
@@ -346,37 +647,122 @@
   "accounts": [
     {
       "name": "ProtocolConfig",
-      "discriminator": [207, 91, 250, 28, 152, 179, 215, 209]
+      "discriminator": [
+        207,
+        91,
+        250,
+        28,
+        152,
+        179,
+        215,
+        209
+      ]
     },
     {
       "name": "ValidatorState",
-      "discriminator": [217, 140, 124, 163, 31, 187, 1, 89]
+      "discriminator": [
+        217,
+        140,
+        124,
+        163,
+        31,
+        187,
+        1,
+        89
+      ]
     }
   ],
   "events": [
     {
       "name": "AdminMigrated",
-      "discriminator": [179, 108, 137, 167, 249, 247, 28, 211]
+      "discriminator": [
+        179,
+        108,
+        137,
+        167,
+        249,
+        247,
+        28,
+        211
+      ]
     },
     {
       "name": "ProtocolConfigUpdated",
-      "discriminator": [20, 99, 32, 237, 111, 86, 195, 199]
+      "discriminator": [
+        20,
+        99,
+        32,
+        237,
+        111,
+        86,
+        195,
+        199
+      ]
     },
     {
       "name": "TreasuryWithdrawn",
-      "discriminator": [143, 181, 157, 169, 87, 155, 170, 46]
+      "discriminator": [
+        143,
+        181,
+        157,
+        169,
+        87,
+        155,
+        170,
+        46
+      ]
     },
     {
       "name": "TrustScoreComputed",
-      "discriminator": [93, 237, 231, 219, 155, 214, 230, 91]
+      "discriminator": [
+        93,
+        237,
+        231,
+        219,
+        155,
+        214,
+        230,
+        91
+      ]
+    },
+    {
+      "name": "ValidatorPubkeySet",
+      "discriminator": [
+        199,
+        11,
+        238,
+        19,
+        185,
+        245,
+        164,
+        239
+      ]
     },
     {
       "name": "ValidatorRegistered",
-      "discriminator": [20, 20, 190, 191, 53, 174, 95, 72]
+      "discriminator": [
+        20,
+        20,
+        190,
+        191,
+        53,
+        174,
+        95,
+        72
+      ]
     },
     {
       "name": "ValidatorUnstaked",
-      "discriminator": [246, 100, 63, 201, 178, 133, 185, 127]
+      "discriminator": [
+        246,
+        100,
+        63,
+        201,
+        178,
+        133,
+        185,
+        127
+      ]
     }
   ],
   "errors": [
@@ -409,6 +795,26 @@
       "code": 6005,
       "name": "InsufficientTreasuryBalance",
       "msg": "Insufficient treasury balance for withdrawal"
+    },
+    {
+      "code": 6006,
+      "name": "ProgramDataBytes",
+      "msg": "ProgramData bytes malformed"
+    },
+    {
+      "code": 6007,
+      "name": "WrongUpgradeAuthority",
+      "msg": "Caller is not the program upgrade authority"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidProtocolConfig",
+      "msg": "Protocol config bytes malformed"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidValidatorPubkey",
+      "msg": "Validator pubkey must be non-zero (zero pubkey would silently disable receipt binding)"
     }
   ],
   "types": [
@@ -435,38 +841,68 @@
         "fields": [
           {
             "name": "admin",
-            "docs": ["The authority that can update protocol parameters"],
+            "docs": [
+              "The authority that can update protocol parameters"
+            ],
             "type": "pubkey"
           },
           {
             "name": "min_stake",
-            "docs": ["Minimum SOL lamports to stake as a validator"],
+            "docs": [
+              "Minimum SOL lamports to stake as a validator"
+            ],
             "type": "u64"
           },
           {
             "name": "challenge_expiry",
-            "docs": ["Seconds until a challenge nonce expires"],
+            "docs": [
+              "Seconds until a challenge nonce expires"
+            ],
             "type": "i64"
           },
           {
             "name": "max_trust_score",
-            "docs": ["Maximum achievable trust score (e.g. 10000 = 100.00%)"],
+            "docs": [
+              "Maximum achievable trust score (e.g. 10000 = 100.00%)"
+            ],
             "type": "u16"
           },
           {
             "name": "base_trust_increment",
-            "docs": ["Trust score points awarded per verification"],
+            "docs": [
+              "Trust score points awarded per verification"
+            ],
             "type": "u16"
           },
           {
             "name": "bump",
-            "docs": ["PDA bump seed"],
+            "docs": [
+              "PDA bump seed"
+            ],
             "type": "u8"
           },
           {
             "name": "verification_fee",
-            "docs": ["Lamports charged per verification (user-pays model)"],
+            "docs": [
+              "Lamports charged per verification (user-pays model)"
+            ],
             "type": "u64"
+          },
+          {
+            "name": "migration_fee",
+            "type": "u64"
+          },
+          {
+            "name": "validator_pubkey",
+            "docs": [
+              "Public key the off-chain validator service uses to sign mint receipts",
+              "(master-list #146). entros-anchor::mint_anchor verifies an",
+              "Ed25519Program::verify instruction in the same transaction was signed",
+              "against this key. Set via `set_validator_pubkey` (admin-only); zero",
+              "pubkey means \"receipts not yet configured\" — entros-anchor treats",
+              "that as pre-migration and skips the check."
+            ],
+            "type": "pubkey"
           }
         ]
       }
@@ -524,6 +960,22 @@
       }
     },
     {
+      "name": "ValidatorPubkeySet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "validator_pubkey",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "ValidatorRegistered",
       "type": {
         "kind": "struct",
@@ -546,32 +998,44 @@
         "fields": [
           {
             "name": "authority",
-            "docs": ["The validator's wallet"],
+            "docs": [
+              "The validator's wallet"
+            ],
             "type": "pubkey"
           },
           {
             "name": "stake",
-            "docs": ["Lamports staked"],
+            "docs": [
+              "Lamports staked"
+            ],
             "type": "u64"
           },
           {
             "name": "registration_time",
-            "docs": ["Unix timestamp of registration"],
+            "docs": [
+              "Unix timestamp of registration"
+            ],
             "type": "i64"
           },
           {
             "name": "is_active",
-            "docs": ["Whether the validator is currently active"],
+            "docs": [
+              "Whether the validator is currently active"
+            ],
             "type": "bool"
           },
           {
             "name": "verifications_performed",
-            "docs": ["Total verifications performed"],
+            "docs": [
+              "Total verifications performed"
+            ],
             "type": "u64"
           },
           {
             "name": "bump",
-            "docs": ["PDA bump seed"],
+            "docs": [
+              "PDA bump seed"
+            ],
             "type": "u8"
           }
         ]
