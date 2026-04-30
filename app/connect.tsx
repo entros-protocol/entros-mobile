@@ -111,9 +111,6 @@ export default function Connect() {
       <View style={styles.body}>
         <SectionLabel>CONNECT</SectionLabel>
         <Text variant="title">Connect a Solana wallet.</Text>
-        <Text variant="body" tone="muted">
-          Entros never sees your seed phrase. Your wallet signs every transaction itself.
-        </Text>
 
         <GlowCard glow style={styles.cluster}>
           <View>
@@ -178,12 +175,8 @@ export default function Connect() {
 
         <PrivacyPill />
 
-        <Text variant="caption" tone="subtle" align="center">
+        <Text variant="caption" tone="subtle">
           To switch accounts, change the active account in your wallet first, then reconnect.
-        </Text>
-
-        <Text variant="caption" tone="subtle" align="center">
-          No wallet installed? Tap a wallet — we'll open the Play Store for you.
         </Text>
       </View>
     </Screen>
