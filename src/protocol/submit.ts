@@ -98,6 +98,23 @@ const sealTransaction = async (
   return tx;
 };
 
+/** Wait for a tx to confirm AND throw if the chain-side execution errored.
+ *  web3.js 1.x's `confirmTransaction` resolves successfully even when the tx
+ *  reverted on chain (it only checks signature inclusion); the caller must
+ *  inspect `value.err`. Without this surface, on-chain Anchor errors are
+ *  silently swallowed and `submitVerify` returns a "successful" txSignature
+ *  for a tx that didn't actually mutate state. The thrown message preserves
+ *  the JSON `InstructionError` shape so `parseSubmitError` can extract the
+ *  Custom code via regex. */
+const confirmAndCheck = async (connection: Connection, signature: string): Promise<void> => {
+  const confirmation = await connection.confirmTransaction(signature, "confirmed");
+  if (confirmation.value.err != null) {
+    throw new Error(
+      `Transaction failed on chain: ${JSON.stringify(confirmation.value.err)} (sig=${signature})`,
+    );
+  }
+};
+
 /** First-verify or re-verify on-chain submission. Discriminator is
  *  `isFirstVerify`: when true, only `commitment` is required and we mint
  *  a fresh anchor; when false, all four (commitment, proof, nonce) are
@@ -171,7 +188,7 @@ export async function submitVerify(
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
   const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
   onSigned?.();
-  await connection.confirmTransaction(result.signature, "confirmed");
+  await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
 }
 
@@ -197,6 +214,6 @@ export async function submitReset(
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
   const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
   onSigned?.();
-  await connection.confirmTransaction(result.signature, "confirmed");
+  await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
 }
