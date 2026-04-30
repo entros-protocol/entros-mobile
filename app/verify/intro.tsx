@@ -1,10 +1,20 @@
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { Alert, StyleSheet, View } from "react-native";
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
 
+import { MicIcon, MotionIcon, TouchIcon } from "@/components/icons";
 import { Button } from "@/components/primitives/Button";
 import { GlowCard } from "@/components/primitives/GlowCard";
-import { PrivacyPill } from "@/components/primitives/PrivacyPill";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
@@ -18,16 +28,64 @@ import { setChallenge } from "@/state/challengeBuffer";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
-const steps = [
-  { n: 1, title: "Speak", body: "Read the phrase aloud, naturally." },
-  { n: 2, title: "Trace", body: "Trace the on-screen curve at your own pace." },
-  { n: 3, title: "Hold", body: "Hold the device steady through the count." },
+interface Step {
+  Icon: React.FC<{ size?: number; color?: string }>;
+  title: string;
+  body: string;
+}
+
+const steps: Step[] = [
+  { Icon: MicIcon, title: "Speak", body: "Read the phrase aloud, naturally." },
+  { Icon: TouchIcon, title: "Trace", body: "Trace the on-screen curve at your own pace." },
+  { Icon: MotionIcon, title: "Hold", body: "Hold the device steady through the count." },
 ];
 
 // Default fallback when the on-chain ProtocolConfig read fails (RPC error,
 // PDA uninitialized, env unset). Matches the protocol's devnet default of
 // 5_000_000 lamports = 0.005 SOL so the user never sees "—".
 const DEFAULT_FEE_LABEL = "≈ 0.005 SOL";
+
+/** Subtle staggered pulse for the modality icons. Each step's icon breathes
+ *  on a 2s cycle with a per-index delay so the three never sync into a
+ *  distracting unison. Cancels on unmount. */
+function usePulse(delayMs: number) {
+  const value = useSharedValue(0);
+  useEffect(() => {
+    value.value = withDelay(
+      delayMs,
+      withRepeat(
+        withSequence(
+          withTiming(1, { duration: 1000, easing: Easing.out(Easing.quad) }),
+          withTiming(0, { duration: 1000, easing: Easing.in(Easing.quad) }),
+        ),
+        -1,
+        false,
+      ),
+    );
+    return () => cancelAnimation(value);
+  }, [delayMs, value]);
+  return useAnimatedStyle(() => ({
+    opacity: 0.7 + value.value * 0.3,
+    transform: [{ scale: 1 + value.value * 0.06 }],
+  }));
+}
+
+const PulseIcon = ({
+  Icon,
+  color,
+  delayMs,
+}: {
+  Icon: React.FC<{ size?: number; color?: string }>;
+  color: string;
+  delayMs: number;
+}) => {
+  const animStyle = usePulse(delayMs);
+  return (
+    <Animated.View style={animStyle}>
+      <Icon size={20} color={color} />
+    </Animated.View>
+  );
+};
 
 export default function VerifyIntro() {
   const router = useRouter();
@@ -100,27 +158,20 @@ export default function VerifyIntro() {
   };
 
   return (
-    <Screen scroll>
+    <Screen>
       <View style={styles.wrap}>
         <View style={styles.body}>
           <SectionLabel>VERIFICATION</SectionLabel>
           <Text variant="title">Three signals,{"\n"}twelve seconds.</Text>
           <Text variant="body" tone="muted">
-            We capture how you speak, hold, and tap — then prove your humanness with a
-            zero-knowledge proof. Raw signals stay on the device.
+            We capture how you speak, hold, and tap, then prove your humanness with a zero-knowledge
+            proof. Raw signals stay on the device.
           </Text>
           <View style={styles.steps}>
-            {steps.map((s) => (
-              <GlowCard key={s.n} style={styles.step}>
-                <View
-                  style={[
-                    styles.bubble,
-                    { backgroundColor: palette.background, borderColor: palette.accent },
-                  ]}
-                >
-                  <Text variant="mono" tone="accent">
-                    {s.n}
-                  </Text>
+            {steps.map((s, i) => (
+              <GlowCard key={s.title} style={styles.step}>
+                <View style={[styles.bubble, { backgroundColor: palette.accentMuted }]}>
+                  <PulseIcon Icon={s.Icon} color={palette.accent} delayMs={i * 400} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text variant="heading">{s.title}</Text>
@@ -131,16 +182,13 @@ export default function VerifyIntro() {
               </GlowCard>
             ))}
           </View>
-          <PrivacyPill />
         </View>
         <View style={styles.footer}>
           <View style={styles.feeRow}>
             <Text variant="caption" tone="muted">
               Network fee
             </Text>
-            <Text variant="mono" tone="muted">
-              {feeLabel}
-            </Text>
+            <Text variant="mono">{feeLabel}</Text>
           </View>
           <Button label="Begin" loading={pending} onPress={handleBegin} />
         </View>
@@ -150,25 +198,22 @@ export default function VerifyIntro() {
 }
 
 const styles = StyleSheet.create({
-  wrap: {
-    flex: 1,
-    justifyContent: "space-between",
-    paddingVertical: spacing.lg,
-    gap: spacing.xl,
-    minHeight: 600,
-  },
-  body: { gap: spacing.xl },
+  // Single column, top-aligned body, footer pinned to the bottom via flex:1
+  // distribution. No `minHeight` (was forcing a phantom gap when content
+  // was shorter than the screen) and no `scroll` Screen (intro fits on
+  // every supported phone — scrolling would be a regression).
+  wrap: { flex: 1, justifyContent: "space-between" },
+  body: { gap: spacing.lg },
   steps: { gap: spacing.md },
   step: { flexDirection: "row", alignItems: "center", gap: spacing.lg },
   bubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
   },
-  footer: { gap: spacing.md },
+  footer: { gap: spacing.md, paddingBottom: spacing.lg },
   feeRow: {
     flexDirection: "row",
     justifyContent: "space-between",
