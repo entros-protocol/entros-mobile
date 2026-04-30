@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { radii, spacing } from "@/theme/tokens";
+import { fontFamily, fontSize, radii, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 import { Text } from "./Text";
@@ -12,6 +12,10 @@ interface StatusPillProps {
   label?: string;
 }
 
+/** Status pill — small sentence-case badge with a leading dot. Sentence-case
+ *  (rather than uppercase + heavy letter-spacing) is what kept "Unverified"
+ *  from clipping on the dashboard, and it reads as more refined alongside
+ *  Inter body copy than the ALL-CAPS treatment of the prior version. */
 export const StatusPill = ({ status, label }: StatusPillProps) => {
   const { palette } = useTheme();
   const config: Record<Status, { color: string; label: string }> = {
@@ -28,12 +32,12 @@ export const StatusPill = ({ status, label }: StatusPillProps) => {
         styles.pill,
         {
           borderColor: color,
-          backgroundColor: `${color}15`,
+          backgroundColor: `${color}12`,
         },
       ]}
     >
       <View style={[styles.dot, { backgroundColor: color }]} />
-      <Text variant="label" style={{ color, letterSpacing: 1.2 }}>
+      <Text style={[styles.label, { color }]} numberOfLines={1}>
         {label ?? defaultLabel}
       </Text>
     </View>
@@ -46,10 +50,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: radii.pill,
     borderWidth: 1,
     alignSelf: "flex-start",
   },
-  dot: { width: 6, height: 6, borderRadius: 3 },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  label: {
+    fontFamily: fontFamily.medium,
+    fontSize: fontSize.caption,
+    lineHeight: fontSize.caption * 1.2,
+    letterSpacing: 0.1,
+  },
 });
