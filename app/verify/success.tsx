@@ -59,7 +59,7 @@ export default function VerifySuccess() {
                   TRANSACTION
                 </Text>
                 <View style={styles.row}>
-                  <Text variant="mono" tone="accent" numberOfLines={1}>
+                  <Text variant="mono" tone="accent" numberOfLines={1} ellipsizeMode="middle">
                     {last.txSignature}
                   </Text>
                   <ExternalIcon size={14} color={palette.accent} />
