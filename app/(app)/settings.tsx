@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useState } from "react";
-import { Alert, Pressable, StyleSheet, View } from "react-native";
+import { Alert, Modal, Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { LogoutIcon, WalletIcon } from "@/components/icons";
 import { Button } from "@/components/primitives/Button";
@@ -11,7 +11,7 @@ import { Text } from "@/components/primitives/Text";
 import { ThemeToggle } from "@/components/primitives/ThemeToggle";
 import { useAppState } from "@/state/AppState";
 import { FailureBucket, MockPreset } from "@/state/types";
-import { radii, spacing } from "@/theme/tokens";
+import { fontFamily, fontSize, radii, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 const presets: { key: MockPreset; label: string; sub: string }[] = [
@@ -33,6 +33,9 @@ const outcomes: { key: "success" | FailureBucket | null; label: string }[] = [
   { key: "generic", label: "Force generic error" },
 ];
 
+/** Phrase the user must type verbatim to confirm the destructive reset. */
+const RESET_CONFIRM_PHRASE = "reset baseline";
+
 export default function Settings() {
   const router = useRouter();
   const { palette } = useTheme();
@@ -41,36 +44,36 @@ export default function Settings() {
     disconnect,
     resetBaseline,
     loadPreset,
+    clearPreset,
     setForceOutcome,
     openWalletMenu,
+    hydrateIdentity,
     dev,
   } = useAppState();
   const [busy, setBusy] = useState<"disconnect" | "reset" | null>(null);
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetPhrase, setResetPhrase] = useState("");
 
-  // Dev preset taps. "cold" performs a true reset (disconnects wallet, wipes
-  // baseline, navigates to onboarding) so it actually resembles a fresh launch
-  // — the bare reducer-only `loadPreset("cold")` keeps the wallet auth token
-  // around and leaves the user stranded on the settings tab. The other presets
-  // are mock-state demos that should land the user on the dashboard so they
-  // can see the refreshed state.
-  const handlePresetTap = async (key: MockPreset) => {
+  // Dev preset taps are pure demo toggles now: tap an inactive preset to
+  // override the dashboard with that mock state; tap the active preset
+  // again to clear and restore the real on-chain state. The original
+  // destructive "Cold start" behaviour (disconnect wallet + wipe baseline)
+  // moved into the proper Disconnect / Reset baseline flows in WALLET +
+  // DANGER sections — presets here are non-destructive previews only.
+  const handlePresetTap = (key: MockPreset) => {
     if (busy) return;
-    if (key === "cold") {
-      setBusy("reset");
-      try {
-        if (connection.connected) {
-          try {
-            await disconnect();
-          } catch {
-            // Token may already be invalid; proceed regardless.
-          }
-        }
-        loadPreset("cold");
-        resetBaseline();
-        router.replace("/");
-      } finally {
-        setBusy(null);
-      }
+    if (dev.activePreset === key) {
+      // Toggle off: restore snapshot, then refresh identity from chain so
+      // the dashboard reflects current on-chain truth instead of the
+      // potentially-stale snapshot data. `force: true` bypasses the
+      // demo-mode gate inside hydrateIdentity — the `clearPreset`
+      // dispatch above is queued but `stateRef.current.dev.activePreset`
+      // still points at the OLD value (React hasn't re-rendered between
+      // the sync dispatch and our hydrate call), so without force the
+      // gate would block the refresh and the user would see stale state
+      // until the next focus event triggered a re-fetch.
+      clearPreset();
+      void hydrateIdentity({ force: true });
       return;
     }
     loadPreset(key);
@@ -90,6 +93,21 @@ export default function Settings() {
       setBusy(null);
     }
   };
+
+  const openResetModal = () => {
+    setResetPhrase("");
+    setResetModalOpen(true);
+  };
+  const closeResetModal = () => {
+    setResetModalOpen(false);
+    setResetPhrase("");
+  };
+  const confirmReset = () => {
+    if (resetPhrase.trim().toLowerCase() !== RESET_CONFIRM_PHRASE) return;
+    closeResetModal();
+    resetBaseline();
+  };
+  const phraseMatches = resetPhrase.trim().toLowerCase() === RESET_CONFIRM_PHRASE;
 
   return (
     <Screen scroll>
@@ -172,45 +190,43 @@ export default function Settings() {
         )}
       </Section>
 
-      <Section title="IDENTITY">
-        <Button
-          label="Reset baseline"
-          variant="danger"
-          onPress={() => {
-            resetBaseline();
-          }}
-        />
-        <Text variant="caption" tone="subtle">
-          Erases your on-device baseline. The next verification re-enrolls you.
-        </Text>
-      </Section>
-
       {__DEV__ ? (
         <Section title="DEV PANEL">
           <Text variant="caption" tone="muted">
-            Mock-state presets — switch to demo every screen state.
+            Tap a preset to preview that screen state. Tap again to disable and return to the live
+            on-chain view.
           </Text>
           <View style={styles.choiceGrid}>
-            {presets.map((p) => (
-              <Pressable
-                key={p.key}
-                onPress={() => handlePresetTap(p.key)}
-                disabled={busy !== null}
-                style={({ pressed }) => [
-                  styles.choice,
-                  { backgroundColor: palette.surface, borderColor: palette.border },
-                  pressed && { opacity: 0.7 },
-                  busy !== null && { opacity: 0.5 },
-                ]}
-              >
-                <Text variant="bodyLarge">
-                  {p.key === "cold" && busy === "reset" ? "Resetting…" : p.label}
-                </Text>
-                <Text variant="caption" tone="muted">
-                  {p.sub}
-                </Text>
-              </Pressable>
-            ))}
+            {presets.map((p) => {
+              const active = dev.activePreset === p.key;
+              return (
+                <Pressable
+                  key={p.key}
+                  onPress={() => handlePresetTap(p.key)}
+                  disabled={busy !== null}
+                  style={({ pressed }) => [
+                    styles.choice,
+                    {
+                      backgroundColor: active ? palette.accentMuted : palette.surface,
+                      borderColor: active ? palette.accent : palette.border,
+                    },
+                    pressed && { opacity: 0.7 },
+                    busy !== null && { opacity: 0.5 },
+                  ]}
+                >
+                  {/* Active state is signalled by the cyan border + cyan
+                      title color alone — an explicit "ACTIVE" badge was
+                      redundant and clipped against the card's right edge
+                      on narrow phones. */}
+                  <Text variant="bodyLarge" tone={active ? "accent" : "default"}>
+                    {p.label}
+                  </Text>
+                  <Text variant="caption" tone="muted">
+                    {p.sub}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
           <Text variant="caption" tone="muted">
             Force the next verification outcome:
@@ -260,6 +276,77 @@ export default function Settings() {
           Report a vulnerability: security@entros.io
         </Text>
       </Section>
+
+      {/* Danger zone — sits at the bottom of settings deliberately. Reset
+          baseline is a destructive, slow-recovery action (the next verify
+          mints a fresh anchor as if first-time); requiring the user to type
+          the phrase verbatim prevents accidental taps. */}
+      <Section title="DANGER">
+        <Text variant="caption" tone="muted">
+          Erases your on-device baseline. The next verification re-enrolls you from scratch. Your
+          on-chain Anchor stays — only the local fingerprint envelope is wiped.
+        </Text>
+        <Button label="Reset baseline" variant="danger" onPress={openResetModal} />
+      </Section>
+
+      <Modal
+        visible={resetModalOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={closeResetModal}
+      >
+        <Pressable
+          style={[styles.modalBackdrop, { backgroundColor: "rgba(0,0,0,0.7)" }]}
+          onPress={closeResetModal}
+        >
+          {/* Inner Pressable swallows backdrop taps so tapping the dialog body
+              doesn't dismiss it. */}
+          <Pressable
+            style={[
+              styles.modalCard,
+              { backgroundColor: palette.surface, borderColor: palette.border },
+            ]}
+            onPress={() => {}}
+          >
+            <SectionLabel tone="muted">CONFIRM RESET</SectionLabel>
+            <Text variant="title">Are you sure?</Text>
+            <Text variant="body" tone="muted">
+              This wipes your local biometric baseline. The next verification will mint a fresh
+              first-time anchor. Type{" "}
+              <Text variant="body" style={{ fontFamily: fontFamily.medium }}>
+                reset baseline
+              </Text>{" "}
+              below to proceed.
+            </Text>
+            <TextInput
+              value={resetPhrase}
+              onChangeText={setResetPhrase}
+              placeholder={RESET_CONFIRM_PHRASE}
+              placeholderTextColor={palette.textSubtle}
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              style={[
+                styles.modalInput,
+                {
+                  backgroundColor: palette.background,
+                  borderColor: phraseMatches ? palette.danger : palette.border,
+                  color: palette.text,
+                },
+              ]}
+            />
+            <View style={styles.modalButtons}>
+              <Button label="Cancel" variant="ghost" onPress={closeResetModal} />
+              <Button
+                label="Reset baseline"
+                variant="danger"
+                onPress={confirmReset}
+                disabled={!phraseMatches}
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 }
@@ -303,5 +390,31 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radii.pill,
     borderWidth: 1,
+  },
+  modalBackdrop: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.xxl,
+  },
+  modalCard: {
+    width: "100%",
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    padding: spacing.xxl,
+    gap: spacing.md,
+  },
+  modalInput: {
+    height: 48,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    paddingHorizontal: spacing.lg,
+    fontFamily: fontFamily.regular,
+    fontSize: fontSize.body,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    gap: spacing.md,
+    marginTop: spacing.sm,
   },
 });

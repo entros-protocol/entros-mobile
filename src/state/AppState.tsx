@@ -16,7 +16,7 @@ import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 import * as mwa from "@/wallet/mwa";
 
-import { presets, MOCK_VALUES } from "./presets";
+import { presets } from "./presets";
 import {
   ConnectionState,
   FailureBucket,
@@ -58,6 +58,24 @@ interface AppState {
   };
   dev: {
     forceOutcome: "success" | FailureBucket | null;
+    /** Currently-active demo preset, or null when the app is showing real
+     *  state. When non-null, `hydrateIdentity` becomes a no-op so the
+     *  on-chain RPC fetch on dashboard focus / verify-success doesn't
+     *  clobber the demo state. Toggling the same preset again clears this
+     *  and restores the snapshot below. */
+    activePreset: MockPreset | null;
+    /** Snapshot of `connection`, `identity`, `firstLaunch`, and `history`
+     *  taken just before the FIRST preset is applied. Restored verbatim
+     *  when the preset toggles off. Stays present while the user switches
+     *  between presets so a A→B→A flow doesn't lose the original real
+     *  state. Cleared on `disconnected` (the snapshot would be stale once
+     *  the wallet changes). */
+    snapshot: {
+      connection: AppState["connection"];
+      identity: IdentityState;
+      firstLaunch: boolean;
+      history: VerificationEvent[];
+    } | null;
   };
 }
 
@@ -70,6 +88,7 @@ type Action =
       wallet: WalletKind | null;
     }
   | { type: "loadPreset"; preset: MockPreset }
+  | { type: "clearPreset" }
   | { type: "completeOnboarding" }
   | {
       type: "connected";
@@ -98,12 +117,17 @@ const initialState: AppState = {
   history: [],
   ui: { walletMenuOpen: false },
   flow: { intent: "verify" },
-  dev: { forceOutcome: null },
+  dev: { forceOutcome: null, activePreset: null, snapshot: null },
 };
 
 const reducer = (state: AppState, action: Action): AppState => {
   switch (action.type) {
     case "hydrated":
+      // Cold-start init from secure-store. On a real cold start the
+      // initialState already has `dev` cleared; the explicit reset here
+      // is defensive against Fast-Refresh sessions where the in-memory
+      // `dev` slice may have survived a code edit with stale preset
+      // state. No-op in production, prevents stuck-preview-mode in dev.
       return {
         ...state,
         ready: true,
@@ -118,9 +142,22 @@ const reducer = (state: AppState, action: Action): AppState => {
               label: action.label,
             }
           : state.connection,
+        dev: { ...state.dev, activePreset: null, snapshot: null },
       };
     case "loadPreset": {
       const data = presets[action.preset];
+      // First preset application captures a snapshot so we can restore the
+      // real state on toggle-off. Subsequent preset switches keep the
+      // ORIGINAL snapshot so `A → B → off` lands back on real state, not on
+      // preset A.
+      const snapshot =
+        state.dev.snapshot ??
+        ({
+          connection: state.connection,
+          identity: state.identity,
+          firstLaunch: state.firstLaunch,
+          history: state.history,
+        } as AppState["dev"]["snapshot"]);
       return {
         ...state,
         ready: true,
@@ -131,11 +168,40 @@ const reducer = (state: AppState, action: Action): AppState => {
           authToken: state.connection.authToken,
           label: state.connection.label,
         },
+        dev: {
+          ...state.dev,
+          activePreset: action.preset,
+          snapshot,
+        },
+      };
+    }
+    case "clearPreset": {
+      // Restore the snapshot taken when the FIRST preset was applied. If
+      // there's no snapshot we just clear the activePreset flag — the
+      // preset can't have been active in any meaningful sense without a
+      // captured snapshot. Both branches end with snapshot = null for
+      // contract symmetry.
+      if (!state.dev.snapshot) {
+        return { ...state, dev: { ...state.dev, activePreset: null, snapshot: null } };
+      }
+      return {
+        ...state,
+        connection: state.dev.snapshot.connection,
+        identity: state.dev.snapshot.identity,
+        firstLaunch: state.dev.snapshot.firstLaunch,
+        history: state.dev.snapshot.history,
+        dev: { ...state.dev, activePreset: null, snapshot: null },
       };
     }
     case "completeOnboarding":
       return { ...state, firstLaunch: false };
     case "connected":
+      // A real wallet connect supersedes any active demo preset — the user
+      // is no longer "previewing"; they just authorised on-chain identity.
+      // Drop the activePreset highlight and the snapshot so subsequent
+      // hydrate calls reflect the live connection without restoring stale
+      // preset state. Without this, the settings panel kept the prior
+      // preset glowing as ACTIVE even after a fresh connection landed.
       return {
         ...state,
         connection: {
@@ -145,6 +211,7 @@ const reducer = (state: AppState, action: Action): AppState => {
           authToken: action.authToken,
           label: action.label,
         },
+        dev: { ...state.dev, activePreset: null, snapshot: null },
       };
     case "disconnected":
       // A disconnect must reset the identity and history slices alongside
@@ -152,22 +219,34 @@ const reducer = (state: AppState, action: Action): AppState => {
       // wallet's dashboard state until hydrateIdentity completes (200-400ms
       // RPC), and the history feed leaks the old session's verifications
       // into the new wallet's UI. The cold preset's identity matches the
-      // shape used by hydrateIdentityCold.
+      // shape used by hydrateIdentityCold. Also clear any active demo
+      // preset + its snapshot — the snapshot was taken against the prior
+      // wallet's state and is stale post-disconnect.
       return {
         ...state,
         connection: { connected: false, address: null, wallet: null, authToken: null, label: null },
         identity: presets["cold"].identity,
         history: [],
+        dev: { ...state.dev, activePreset: null, snapshot: null },
       };
     case "verify": {
+      const now = new Date();
       const event: VerificationEvent = {
         id: eventId(),
-        ts: new Date(),
+        ts: now,
         outcome: "verified",
         trustDelta: action.trustDelta,
         txSignature: action.txSignature,
       };
       const newScore = Math.min(100, state.identity.trustScore + action.trustDelta);
+      // Optimistically push the new timestamp onto the chain-derived
+      // `recentTimestamps` buffer so the activity tab shows the row
+      // before hydrateIdentity reconciles. Cap at 52 to match the on-chain
+      // ring-buffer width. Defensive `?? []` for Fast-Refresh sessions
+      // where the in-memory identity object pre-dates the field — the
+      // alternative `...undefined` would throw and crash the verify flow.
+      const prior = state.identity.recentTimestamps ?? [];
+      const recentTimestamps = [now, ...prior].slice(0, 52);
       return {
         ...state,
         identity: {
@@ -175,10 +254,16 @@ const reducer = (state: AppState, action: Action): AppState => {
           hasAnchor: true,
           trustScore: newScore,
           verifications: state.identity.verifications + 1,
-          lastVerifiedAt: new Date(),
-          commitment: state.identity.commitment ?? MOCK_VALUES.commitment,
-          mint: state.identity.mint ?? MOCK_VALUES.mint,
-          createdAt: state.identity.createdAt ?? new Date(),
+          lastVerifiedAt: now,
+          // Leave commitment / mint at null when chain values haven't
+          // arrived yet. Hydrate fills them from the on-chain mint a few
+          // hundred ms later. Showing MOCK_VALUES briefly is misleading —
+          // the dashboard's `truncate(...)` would render the hardcoded
+          // mock hex as if it were the user's real commitment.
+          commitment: state.identity.commitment,
+          mint: state.identity.mint,
+          createdAt: state.identity.createdAt ?? now,
+          recentTimestamps,
         },
         history: [event, ...state.history].slice(0, 50),
       };
@@ -198,13 +283,19 @@ const reducer = (state: AppState, action: Action): AppState => {
         trustDelta: 0,
         txSignature: action.txSignature,
       };
+      const now = new Date();
       return {
         ...state,
         identity: {
           ...state.identity,
           trustScore: 0,
           verifications: 0,
-          lastVerifiedAt: new Date(),
+          lastVerifiedAt: now,
+          // reset_identity_state clears the on-chain ring buffer; mirror
+          // that locally so the activity tab updates immediately. The reset
+          // event itself is rendered from `lastResetAt` below.
+          recentTimestamps: [],
+          lastResetAt: now,
         },
         history: [event, ...state.history].slice(0, 50),
       };
@@ -230,7 +321,7 @@ const reducer = (state: AppState, action: Action): AppState => {
     case "setFlowIntent":
       return { ...state, flow: { intent: action.intent } };
     case "setForceOutcome":
-      return { ...state, dev: { forceOutcome: action.outcome } };
+      return { ...state, dev: { ...state.dev, forceOutcome: action.outcome } };
     case "hydrateIdentity":
       return { ...state, identity: action.identity };
     case "hydrateIdentityCold":
@@ -246,6 +337,10 @@ const reducer = (state: AppState, action: Action): AppState => {
 
 interface AppStateContextValue extends AppState {
   loadPreset: (preset: MockPreset) => void;
+  /** Clears any active demo preset and restores the snapshot taken before
+   *  the first preset application. After clearing, callers typically fire
+   *  `hydrateIdentity()` to refresh the identity slice from chain. */
+  clearPreset: () => void;
   completeOnboarding: () => void;
   connect: (walletKind?: WalletKind) => Promise<void>;
   disconnect: () => Promise<void>;
@@ -263,8 +358,12 @@ interface AppStateContextValue extends AppState {
    *  reflects on-chain truth instead of optimistic local mutations.
    *  Resolves to true if an account was found (identity hydrated), false
    *  if the wallet has no anchor yet (cold-state UI). Errors are swallowed
-   *  with a devWarn — the existing UI state survives. */
-  hydrateIdentity: () => Promise<boolean>;
+   *  with a devWarn — the existing UI state survives.
+   *  `opts.force` bypasses the demo-mode gate (active preset would
+   *  otherwise skip the fetch); use it when the caller just dispatched a
+   *  state change that clears the preset but the reducer hasn't re-flushed
+   *  through `stateRef` yet. */
+  hydrateIdentity: (opts?: { force?: boolean }) => Promise<boolean>;
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -337,57 +436,96 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   // freshly-authorized wallet without waiting for the reducer's `connected`
   // dispatch to flush through the closure. Empty deps keep the function
   // referentially stable across reducer dispatches.
-  const hydrateIdentityFor = useCallback(async (address: string): Promise<boolean> => {
-    if (!config.programs.entrosAnchor) {
-      devWarn("[Entros] EXPO_PUBLIC_ENTROS_ANCHOR_PROGRAM_ID unset; skipping hydrate");
-      return false;
-    }
-    if (inflightHydrateRef.current) return inflightHydrateRef.current;
-
-    const promise = (async (): Promise<boolean> => {
-      try {
-        const onChain = await fetchIdentityState(new PublicKey(address), getConnection());
-        // Mid-flight wallet-swap guard: if the user disconnected and
-        // reconnected to a different wallet while we were fetching, drop
-        // the result rather than overwrite the new wallet's identity with
-        // stale data from the old wallet. Reads stateRef instead of
-        // state.connection so the fetch sees the current address even
-        // when the call site captured an older closure.
-        if (stateRef.current.connection.address !== address) return false;
-        if (onChain) {
-          dispatch({ type: "hydrateIdentity", identity: toAppStateIdentity(onChain) });
-          return true;
-        }
-        dispatch({ type: "hydrateIdentityCold" });
+  const hydrateIdentityFor = useCallback(
+    async (address: string, opts?: { force?: boolean }): Promise<boolean> => {
+      if (!config.programs.entrosAnchor) {
+        devWarn("[Entros] EXPO_PUBLIC_ENTROS_ANCHOR_PROGRAM_ID unset; skipping hydrate");
         return false;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        devWarn(`[Entros] hydrateIdentity failed: ${message}`);
-        return false;
-      } finally {
-        inflightHydrateRef.current = null;
       }
-    })();
+      // Demo-mode gate: when a dev preset is active, skip the on-chain
+      // fetch entirely so the preset's mock identity stays visible.
+      // Without this, dashboard focus / verify-success would silently
+      // overwrite the preset with on-chain truth (or with cold-state
+      // if the wallet has no anchor). `!= null` (not `!== null`) so
+      // undefined gets treated as "no preset active" — handles dev-only
+      // Fast-Refresh where the in-memory `dev` slice may pre-date the
+      // field's introduction.
+      // The `force` opt-out exists for explicit connect/reset/verify
+      // call sites: those dispatch a state-changing action immediately
+      // before invoking us, but `stateRef.current` still reflects the
+      // PREVIOUS render's `dev.activePreset` (React hasn't re-rendered
+      // between sync dispatch and our gate check). Forcing past the gate
+      // lets a fresh wallet auth populate the dashboard even when the
+      // user was just previewing a preset.
+      if (!opts?.force && stateRef.current.dev?.activePreset != null) {
+        return false;
+      }
+      if (inflightHydrateRef.current) return inflightHydrateRef.current;
 
-    inflightHydrateRef.current = promise;
-    return promise;
-  }, []);
+      const promise = (async (): Promise<boolean> => {
+        try {
+          const onChain = await fetchIdentityState(new PublicKey(address), getConnection());
+          // Mid-flight wallet-swap guard: if the user disconnected and
+          // reconnected to a different wallet while we were fetching,
+          // drop the result rather than overwrite the new wallet's
+          // identity with stale data from the old wallet. Reads stateRef
+          // instead of state.connection so the fetch sees the current
+          // address even when the call site captured an older closure.
+          if (stateRef.current.connection.address !== address) return false;
+          if (onChain) {
+            dispatch({ type: "hydrateIdentity", identity: toAppStateIdentity(onChain) });
+            return true;
+          }
+          dispatch({ type: "hydrateIdentityCold" });
+          return false;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          devWarn(`[Entros] hydrateIdentity failed: ${message}`);
+          return false;
+        } finally {
+          inflightHydrateRef.current = null;
+        }
+      })();
+
+      inflightHydrateRef.current = promise;
+      return promise;
+    },
+    [],
+  );
 
   // hydrateIdentity reads connection from stateRef so the function reference
   // stays stable across reducer dispatches. Effects with hydrateIdentity in
   // their dep array (dashboard useFocusEffect, verify-success useEffect)
   // fire on real focus / mount transitions only, not on incidental state
   // mutations from elsewhere in the tree.
-  const hydrateIdentity = useCallback(async (): Promise<boolean> => {
-    const conn = stateRef.current.connection;
-    if (!conn.connected || !conn.address) return false;
-    return hydrateIdentityFor(conn.address);
-  }, [hydrateIdentityFor]);
+  //
+  // The `force` opt-out exists for callers who just dispatched a
+  // state-changing action and want a refresh without the demo-mode gate
+  // tripping on the still-stale stateRef. Settings' "tap-active-preset-
+  // again-to-toggle-off" path is the canonical case: the prior dispatch
+  // (`clearPreset`) sets `dev.activePreset = null` in the reducer, but
+  // this function reads `stateRef.current` which still points at the
+  // previous render. Without `force`, the gate would block the refresh
+  // and the user would see stale state until the next focus event.
+  const hydrateIdentity = useCallback(
+    async (opts?: { force?: boolean }): Promise<boolean> => {
+      const conn = stateRef.current.connection;
+      if (!conn.connected || !conn.address) return false;
+      return hydrateIdentityFor(conn.address, opts);
+    },
+    [hydrateIdentityFor],
+  );
 
   const connect = useCallback(
     async (walletKind?: WalletKind) => {
       const account = await mwa.connect(walletKind);
       await persist(account);
+      // The `connected` reducer clears any active preset/snapshot in the
+      // same dispatch, so a separate `clearPreset` dispatch first would
+      // be redundant — and would briefly restore the snapshot's (typically
+      // disconnected) state for one render before `connected` overwrites
+      // it. The `force: true` on hydrate below handles the stateRef
+      // staleness window without needing a second dispatch.
       dispatch({
         type: "connected",
         address: account.address,
@@ -395,14 +533,21 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
         label: account.label,
         wallet: account.wallet,
       });
-      // Reconcile the dashboard with on-chain truth on first connect. A
-      // returning user with an existing IdentityState lands on the live
-      // dashboard immediately; a first-time user gets the mint CTA. The
-      // refresh runs serially after the reducer dispatch above so the
-      // identity update applies on top of a clean `connected` state, but
-      // we don't await it — connect() callers (e.g. /connect.tsx) navigate
-      // to /(app) on resolve and let the refresh land asynchronously.
-      void hydrateIdentityFor(account.address);
+      // Reconcile the dashboard with on-chain truth BEFORE returning, so
+      // the caller (`/connect.tsx`) only navigates to `/(app)` once the
+      // identity slice reflects chain state. Without the await, the
+      // dashboard mounts with the cold-state placeholder and only flips
+      // to real data 200-400ms later, which reads as "stats didn't load"
+      // on the connect-then-land path. The `force: true` bypasses the
+      // demo-mode gate — the `connected` reducer above just cleared
+      // `dev.activePreset`, but `stateRef.current` reflects the previous
+      // render's state because React hasn't re-rendered yet. Without the
+      // force, a user previewing the cold preset who then connects for
+      // real would land on the dashboard with the preset's cold identity
+      // still rendered. The added latency is bounded by `getAccountInfo`
+      // (~200-400ms on warm RPC) — well under the perceived settling
+      // window post-Phantom-approval.
+      await hydrateIdentityFor(account.address, { force: true });
     },
     [persist, hydrateIdentityFor],
   );
@@ -419,6 +564,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
     () => ({
       ...state,
       loadPreset: (preset) => dispatch({ type: "loadPreset", preset }),
+      clearPreset: () => dispatch({ type: "clearPreset" }),
       completeOnboarding: () => dispatch({ type: "completeOnboarding" }),
       connect,
       disconnect,
