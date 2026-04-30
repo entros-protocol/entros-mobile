@@ -22,6 +22,8 @@ const empty: PresetData = {
     commitment: null,
     mint: null,
     createdAt: null,
+    recentTimestamps: [],
+    lastResetAt: null,
   },
   history: [],
 };
@@ -32,21 +34,19 @@ const connected: PresetData = {
   connection: { connected: true, address: MOCK_ADDRESS, wallet: "phantom" },
 };
 
-const buildHistory = (count: number): VerificationEvent[] => {
+/** Build a chain of recent_timestamps spaced 38h apart, mirroring how the
+ *  on-chain circular buffer would look for a wallet that re-verifies on a
+ *  ~daily-ish cadence. Used by the demo presets so the activity tab has
+ *  data to render. The on-chain field caps at N entries (52 currently),
+ *  so we cap demo lists too. */
+const buildRecentTimestamps = (count: number): Date[] => {
   const now = Date.now();
-  const events: VerificationEvent[] = [];
-  for (let i = 0; i < count; i++) {
-    const failed = i > 0 && i % 7 === 6;
-    events.push({
-      id: `evt-${i}`,
-      ts: new Date(now - i * 60 * 60 * 1000 * 38),
-      outcome: failed ? "failed" : "verified",
-      trustDelta: failed ? 0 : i === 0 ? 0 : 2 + Math.floor(Math.random() * 3),
-      txSignature: failed ? null : `${Math.random().toString(36).slice(2, 10)}…rY${i}x`,
-      failureBucket: failed ? "relayer-down" : undefined,
-    });
+  const out: Date[] = [];
+  const cap = Math.min(count, 52);
+  for (let i = 0; i < cap; i += 1) {
+    out.push(new Date(now - i * 60 * 60 * 1000 * 38));
   }
-  return events;
+  return out;
 };
 
 const withAnchor: PresetData = {
@@ -59,8 +59,10 @@ const withAnchor: PresetData = {
     commitment: MOCK_COMMITMENT,
     mint: MOCK_MINT,
     createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+    recentTimestamps: buildRecentTimestamps(4),
+    lastResetAt: null,
   },
-  history: buildHistory(4),
+  history: [],
 };
 
 const high: PresetData = {
@@ -73,8 +75,10 @@ const high: PresetData = {
     commitment: MOCK_COMMITMENT,
     mint: MOCK_MINT,
     createdAt: new Date(Date.now() - 96 * 24 * 60 * 60 * 1000),
+    recentTimestamps: buildRecentTimestamps(22),
+    lastResetAt: null,
   },
-  history: buildHistory(22),
+  history: [],
 };
 
 export const presets: Record<MockPreset, PresetData> = {
