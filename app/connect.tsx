@@ -2,7 +2,7 @@ import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Alert, StyleSheet, View } from "react-native";
 
-import { PhantomLogo, SolflareLogo } from "@/components/icons/walletLogos";
+import { OtherWalletLogo, PhantomLogo, SolflareLogo } from "@/components/icons/walletLogos";
 import { Button } from "@/components/primitives/Button";
 import { GlowCard } from "@/components/primitives/GlowCard";
 import { PrivacyPill } from "@/components/primitives/PrivacyPill";
@@ -23,22 +23,36 @@ import {
   openWalletPlayStore,
 } from "@/wallet/mwa";
 
+// `kind === null` means "let the OS chooser decide" — the MWA layer omits
+// `walletPackage` from the transact config and falls through to App Links
+// (the unpatched MWA path). Used for Seeker's preinstalled Seed Vault Wallet,
+// which is auto-verified and doesn't need the Intent.setPackage workaround
+// the patched module applies for Phantom/Solflare.
 interface WalletEntry {
-  kind: WalletKind;
+  kind: WalletKind | null;
   name: string;
+  subtitle: string;
   Logo: React.FC<{ size?: number }>;
 }
 
 const wallets: WalletEntry[] = [
-  { kind: "phantom", name: "Phantom", Logo: PhantomLogo },
-  { kind: "solflare", name: "Solflare", Logo: SolflareLogo },
+  {
+    kind: null,
+    name: "Other wallet",
+    subtitle: "Seed Vault on Seeker, or any installed wallet",
+    Logo: OtherWalletLogo,
+  },
+  { kind: "phantom", name: "Phantom", subtitle: "Mobile Wallet Adapter", Logo: PhantomLogo },
+  { kind: "solflare", name: "Solflare", subtitle: "Mobile Wallet Adapter", Logo: SolflareLogo },
 ];
 
 export default function Connect() {
   const router = useRouter();
   const { palette } = useTheme();
   const { connect } = useAppState();
-  const [pending, setPending] = useState<WalletKind | null>(null);
+  // `pending` keys by entry name (covers `kind: null` for the Seeker / OS-chooser
+  // entry, where there is no WalletKind to key on).
+  const [pending, setPending] = useState<string | null>(null);
 
   const offerInstall = (kind: WalletKind, name: string, title: string, body: string) => {
     Alert.alert(title, body, [
@@ -52,11 +66,11 @@ export default function Connect() {
     ]);
   };
 
-  const handleConnect = async (kind: WalletKind, name: string) => {
+  const handleConnect = async (kind: WalletKind | null, name: string) => {
     if (pending) return;
-    setPending(kind);
+    setPending(name);
     try {
-      await connect(kind);
+      await connect(kind ?? undefined);
       router.replace("/(app)");
     } catch (err) {
       if (err instanceof MWAUserRejectedError) {
@@ -70,15 +84,26 @@ export default function Connect() {
           `${name} declined before showing approval. Most likely cause: the wallet's active network does not match this app's cluster (${cluster}).\n\n` +
             (kind === "phantom"
               ? 'In Phantom: Settings → Developer Settings → Testnet Mode → set network to "Solana Devnet" (not Solana Testnet), then try again.'
-              : `In ${name}: switch the active network to ${cluster}, then try again.`),
+              : kind
+                ? `In ${name}: switch the active network to ${cluster}, then try again.`
+                : `Switch the wallet's active network to ${cluster}, then try again.`),
         );
       } else if (err instanceof MWAWalletNotInstalledError) {
-        offerInstall(
-          kind,
-          name,
-          `${name} not installed`,
-          `Install ${name} from the Play Store, set up a wallet, then come back.`,
-        );
+        // Only fires for kind-specific connects (the SDK can't know which APK
+        // to suggest installing on the OS-chooser path).
+        if (kind) {
+          offerInstall(
+            kind,
+            name,
+            `${name} not installed`,
+            `Install ${name} from the Play Store, set up a wallet, then come back.`,
+          );
+        } else {
+          Alert.alert(
+            "No compatible wallet found",
+            "Install a Mobile Wallet Adapter wallet (Phantom, Solflare, or Seed Vault on Seeker), then try again.",
+          );
+        }
       } else if (err instanceof MWATimeoutError) {
         // Timeout = the wallet was reachable but its response stalled. This is
         // distinct from "not installed" (which is its own MWAWalletNotInstalledError
@@ -94,12 +119,19 @@ export default function Connect() {
         );
       } else {
         const message = err instanceof Error ? err.message : "Unknown error";
-        offerInstall(
-          kind,
-          name,
-          `Could not connect to ${name}`,
-          `${message}\n\nMake sure ${name} is installed and you have a wallet set up.`,
-        );
+        if (kind) {
+          offerInstall(
+            kind,
+            name,
+            `Could not connect to ${name}`,
+            `${message}\n\nMake sure ${name} is installed and you have a wallet set up.`,
+          );
+        } else {
+          Alert.alert(
+            "Could not connect",
+            `${message}\n\nMake sure a Mobile Wallet Adapter wallet is installed.`,
+          );
+        }
       }
     } finally {
       setPending(null);
@@ -135,12 +167,12 @@ export default function Connect() {
 
         <SectionLabel>CHOOSE A WALLET</SectionLabel>
         <View style={styles.list}>
-          {wallets.map(({ kind, name, Logo }) => {
-            const isPending = pending === kind;
+          {wallets.map(({ kind, name, subtitle, Logo }) => {
+            const isPending = pending === name;
             const isDisabled = !!pending && !isPending;
             return (
               <View
-                key={kind}
+                key={name}
                 style={[
                   styles.row,
                   {
@@ -157,7 +189,7 @@ export default function Connect() {
                   <View style={styles.rowText}>
                     <Text variant="heading">{name}</Text>
                     <Text variant="caption" tone="muted">
-                      Mobile Wallet Adapter
+                      {subtitle}
                     </Text>
                   </View>
                 </View>
