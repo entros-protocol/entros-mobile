@@ -4,9 +4,18 @@
 // Keep accent + Solana brand colors in sync across platforms; treat surface
 // and background as platform-tuned.
 //
-// Typography is JetBrains Mono everywhere. The four weights below match the
-// `@expo-google-fonts/jetbrains-mono` exports and are loaded once in
-// `app/_layout.tsx`.
+// Typography mirrors entros.io's three-font system:
+//   - **Inter** for all body, UI, headings, button labels (regular/medium/
+//     semiBold/bold). The brand voice for everything except technical and
+//     wordmark slots. Maps to `fontFamily.regular/medium/semiBold/bold`.
+//   - **JetBrains Mono** for narrow technical artifacts only — commitment
+//     hex displays, addresses, transaction signatures, error codes, dev
+//     panel. Maps to `fontFamily.mono` / `fontFamily.monoRegular`. Mirrors
+//     the website's reservation of mono for the Solana wallet adapter
+//     overrides + technical data — never used as a body font.
+//   - **VT323** for the `<EntrosLogo>` wordmark only. Single-weight CRT
+//     terminal pixel font. Maps to `fontFamily.wordmark`.
+// All three families are loaded once in `app/_layout.tsx` via expo-font.
 export type Mode = "dark" | "light";
 
 export interface Palette {
@@ -88,13 +97,23 @@ export const radii = {
   pill: 999,
 } as const;
 
-// JetBrains Mono in four weights. Loaded by useFonts in app/_layout.tsx.
-// The weight names below must exactly match the keys we pass to useFonts.
+// Brand voice (Inter) + technical voice (JetBrains Mono) + wordmark (VT323).
+// All loaded by useFonts in app/_layout.tsx; the keys below must match the
+// google-fonts package export names exactly.
 export const fontFamily = {
-  regular: "JetBrainsMono_400Regular",
-  medium: "JetBrainsMono_500Medium",
-  semiBold: "JetBrainsMono_600SemiBold",
-  bold: "JetBrainsMono_700Bold",
+  // Brand voice — body, UI, headings, labels, buttons. Use these for
+  // anything that's natural-language copy.
+  regular: "Inter_400Regular",
+  medium: "Inter_500Medium",
+  semiBold: "Inter_600SemiBold",
+  bold: "Inter_700Bold",
+  // Technical voice — commitment hex, addresses, tx sigs, error codes,
+  // dev panel. Reach for these only when byte-by-byte alignment matters
+  // or the text reads as data, not copy.
+  mono: "JetBrainsMono_500Medium",
+  monoRegular: "JetBrainsMono_400Regular",
+  // Wordmark — `<EntrosLogo>` only. Never used elsewhere.
+  wordmark: "VT323_400Regular",
 } as const;
 
 export const fontSize = {

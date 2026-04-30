@@ -1,10 +1,15 @@
 import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts,
+} from "@expo-google-fonts/inter";
+import {
   JetBrainsMono_400Regular,
   JetBrainsMono_500Medium,
-  JetBrainsMono_600SemiBold,
-  JetBrainsMono_700Bold,
-  useFonts,
 } from "@expo-google-fonts/jetbrains-mono";
+import { VT323_400Regular } from "@expo-google-fonts/vt323";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
@@ -44,11 +49,17 @@ const ThemedStack = () => {
 };
 
 export default function RootLayout() {
+  // Three-family font system mirroring entros.io: Inter (brand voice),
+  // JetBrains Mono (technical artifacts only), VT323 (wordmark). See
+  // `src/theme/tokens.ts` for the per-slot rules.
   const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
     JetBrainsMono_400Regular,
     JetBrainsMono_500Medium,
-    JetBrainsMono_600SemiBold,
-    JetBrainsMono_700Bold,
+    VT323_400Regular,
   });
 
   useEffect(() => {

@@ -33,7 +33,7 @@ export default function Splash() {
     <Screen padded={false}>
       <View style={styles.wrap}>
         <View style={styles.hero}>
-          <EntrosLogo size={140} />
+          <EntrosLogo size={64} />
           <View style={styles.titleBlock}>
             <SectionLabel>ENTROS PROTOCOL</SectionLabel>
             <Text variant="title" align="center">

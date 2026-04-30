@@ -26,7 +26,9 @@
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
+    "@expo-google-fonts/inter": "^0.4.2",
     "@expo-google-fonts/jetbrains-mono": "^0.2.3",
+    "@expo-google-fonts/vt323": "^0.4.1",
     "@noble/ciphers": "^2.2.0",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@solana-mobile/mobile-wallet-adapter-protocol": "^2.2.2",

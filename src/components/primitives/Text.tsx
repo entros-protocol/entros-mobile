@@ -82,23 +82,31 @@ const styles = StyleSheet.create({
     fontSize: fontSize.caption,
     lineHeight: fontSize.caption * lineHeight.normal,
   },
+  // mono / monoSmall — use JetBrains Mono explicitly. Reserved for technical
+  // artifacts where byte-by-byte alignment matters: commitment hex, wallet
+  // addresses, tx signatures, error codes. Body text uses the Inter-backed
+  // `body` variant instead.
   mono: {
-    fontFamily: fontFamily.regular,
+    fontFamily: fontFamily.monoRegular,
     fontSize: fontSize.body,
     lineHeight: fontSize.body * lineHeight.normal,
-    letterSpacing: 0.2,
+    letterSpacing: 0,
   },
   monoSmall: {
-    fontFamily: fontFamily.regular,
+    fontFamily: fontFamily.monoRegular,
     fontSize: fontSize.caption,
     lineHeight: fontSize.caption * lineHeight.normal,
-    letterSpacing: 0.2,
+    letterSpacing: 0,
   },
+  // label — Inter medium, uppercase + tracked. Mirrors the website's
+  // section-label pattern (`text-xs uppercase tracking-[0.2em]`) at
+  // mobile-tuned sizing. 0.2em on 11pt is ~2.2px tracking; 2.0 reads as
+  // tight-but-clearly-spaced once the leading "// " comment glyphs land.
   label: {
     fontFamily: fontFamily.medium,
     fontSize: fontSize.micro,
     lineHeight: fontSize.micro * lineHeight.normal,
-    letterSpacing: 1.6,
+    letterSpacing: 2.0,
     textTransform: "uppercase",
   },
 });
