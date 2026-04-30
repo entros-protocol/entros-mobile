@@ -62,9 +62,10 @@ import { extractFeatures, MIN_AUDIO_SAMPLES } from "@/extraction";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import { bigintToBytes32, generateTBH, simhash } from "@/hashing";
 import type { TBH } from "@/hashing";
-import { loadBaseline, storeBaseline } from "@/identity/baseline";
+import { loadBaseline, storeBaseline, wipeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
 import { generateSolanaProof } from "@/proof/prover";
+import { parseSubmitError, type ParsedSubmitError } from "@/protocol/errors";
 import type { SignedReceiptDto } from "@/protocol/receipt";
 import { submitReset, submitVerify } from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
@@ -440,13 +441,99 @@ export default function Processing() {
           router.replace("/verify/success");
         } catch (err) {
           if (cancelled) return;
-          const message = err instanceof Error ? err.message : "On-chain submission failed.";
-          devWarn(`[Entros] on-chain submit failed: ${message}`);
-          // "generic" rather than "relayer-down" because this catch covers
-          // wallet rejection, on-chain program errors, stale blockhash,
-          // and network failures — "relayer-down" would only be honest for
-          // the network subset.
-          failOut("generic", message);
+          const parsed: ParsedSubmitError = parseSubmitError(err);
+          devWarn(
+            `[Entros] on-chain submit failed kind=${parsed.kind} code=${parsed.anchorCode ?? "?"} raw=${parsed.raw.slice(0, 200)}`,
+          );
+
+          // Local-state cleanup BEFORE the failure UI routes. Stage 5
+          // writes the new baseline INSIDE the IIFE (matching pulse-sdk
+          // for byte-identical envelope shape), which is correct for the
+          // happy path but leaves orphaned local state on submit failure:
+          //  (a) first-verify failure → no on-chain anchor exists yet, but
+          //      a baseline envelope is on disk. Next retry would loadBaseline
+          //      → previousBaseline non-null → firstVerify=false → try
+          //      update_anchor against a non-existent IdentityState PDA →
+          //      AccountNotInitialized. Wipe the orphan so retry restarts
+          //      cleanly as first-verify. Exception: anchor-already-exists
+          //      (Path A repeat for an already-anchored wallet) — DON'T wipe;
+          //      route to baseline-missing bucket so the user resets via
+          //      reset_identity_state instead.
+          //  (b) re-verify failure → baseline was overwritten with the new
+          //      fingerprint inside the IIFE, but the on-chain commitment
+          //      didn't update. Next retry would generate a proof binding
+          //      to the just-written commitment, which differs from the
+          //      on-chain current_commitment → PrevCommitmentMismatch.
+          //      Restore the previousBaseline envelope so subsequent retries
+          //      bind their proof to the on-chain truth.
+          // Reset-path failures aren't cleaned up here — the reset cycle
+          // works without a previous baseline and a partial overwrite is
+          // recoverable on the next reset attempt.
+          if (flowIntent !== "reset") {
+            try {
+              if (firstVerify) {
+                if (parsed.kind !== "anchor-already-exists") {
+                  await wipeBaseline();
+                }
+              } else if (previousBaseline) {
+                await storeBaseline(previousBaseline);
+              }
+            } catch (cleanupErr) {
+              const cleanupMsg =
+                cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+              devWarn(`[Entros] post-failure baseline cleanup failed: ${cleanupMsg}`);
+            }
+          }
+
+          // Map parsed kind → FailureBucket. wallet-rejected is the one
+          // silent path: the user explicitly cancelled in their wallet's
+          // approval UI, so re-routing them straight to /verify/intro
+          // (no failure screen) matches the natural "I changed my mind"
+          // mental model.
+          if (parsed.kind === "wallet-rejected") {
+            setForceOutcome(null);
+            router.replace("/verify/intro");
+            return;
+          }
+
+          switch (parsed.kind) {
+            case "anchor-already-exists":
+              failOut(
+                "baseline-missing",
+                "It looks like you already have an Anchor on this wallet. Reset to re-enroll.",
+              );
+              return;
+            case "insufficient-funds":
+              failOut("insufficient-funds");
+              return;
+            case "cooldown-active":
+              failOut("chain-rate-limited");
+              return;
+            case "receipt-rejected":
+              failOut("validator-mismatch");
+              return;
+            case "wallet-timeout":
+            case "stale-blockhash":
+            case "challenge-stale":
+            case "clock-drift":
+            case "network-unreachable":
+              failOut("retry-now");
+              return;
+            case "proof-rejected":
+            case "commitment-binding":
+            case "programming-error":
+              failOut(
+                "report-bug",
+                `${parsed.kind}${parsed.anchorCode ? ` (${parsed.anchorCode})` : ""}`,
+              );
+              return;
+            case "wallet-not-installed":
+            case "wallet-authorization-failed":
+            case "generic":
+            default:
+              failOut("generic", parsed.raw);
+              return;
+          }
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Verification failed.";
