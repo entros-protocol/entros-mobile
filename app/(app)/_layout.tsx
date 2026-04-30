@@ -1,7 +1,6 @@
 import { Tabs } from "expo-router";
 
-import { HomeIcon, ListIcon, SettingsIcon } from "@/components/icons";
-import { fontFamily } from "@/theme/tokens";
+import { ActivityIcon, HomeIcon, SettingsIcon } from "@/components/icons";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export default function AppLayout() {
@@ -10,43 +9,48 @@ export default function AppLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        // Icon-only nav. Removing labels keeps the chrome quiet and the
+        // bottom band pure-black; the active-tint cyan glyph is the only
+        // chrome element visible at a glance, which matches entros.io's
+        // discipline of cyan as punctuation.
+        tabBarShowLabel: false,
         tabBarStyle: {
           backgroundColor: palette.background,
           borderTopColor: palette.border,
           borderTopWidth: 1,
-          height: 64,
-          paddingTop: 6,
+          height: 60,
+          paddingTop: 8,
           paddingBottom: 8,
         },
         tabBarActiveTintColor: palette.accent,
         tabBarInactiveTintColor: palette.textMuted,
-        tabBarLabelStyle: {
-          fontFamily: fontFamily.regular,
-          fontSize: 10,
-          letterSpacing: 1.4,
-          textTransform: "uppercase",
-        },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color }) => <HomeIcon color={color} size={22} />,
+          tabBarIcon: ({ color, focused }) => (
+            <HomeIcon color={color} size={26} strokeWidth={focused ? 2 : 1.5} />
+          ),
         }}
       />
       <Tabs.Screen
         name="activity"
         options={{
           title: "Activity",
-          tabBarIcon: ({ color }) => <ListIcon color={color} size={22} />,
+          tabBarIcon: ({ color, focused }) => (
+            <ActivityIcon color={color} size={26} strokeWidth={focused ? 2 : 1.5} />
+          ),
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",
-          tabBarIcon: ({ color }) => <SettingsIcon color={color} size={22} />,
+          tabBarIcon: ({ color, focused }) => (
+            <SettingsIcon color={color} size={26} strokeWidth={focused ? 2 : 1.5} />
+          ),
         }}
       />
     </Tabs>

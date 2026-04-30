@@ -163,24 +163,25 @@ export const LogoutIcon = ({
   </Svg>
 );
 
+/** Minimal microphone — capsule + chord, no extra arc. Reads cleanly at 18px+. */
 export const MicIcon = ({
   size = defaults.size,
   color = "#22D3E6",
   strokeWidth = defaults.strokeWidth,
 }: IconProps) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Rect x="9" y="3" width="6" height="12" rx="3" stroke={color} strokeWidth={strokeWidth} />
+    <Rect x="9" y="3" width="6" height="11" rx="3" stroke={color} strokeWidth={strokeWidth} />
     <Path
-      d="M5 11 v1 a7 7 0 0 0 14 0 v-1"
+      d="M6 11 v1 a6 6 0 0 0 12 0 v-1"
       stroke={color}
       strokeWidth={strokeWidth}
       strokeLinecap="round"
     />
     <Line
       x1="12"
-      y1="19"
+      y1="18"
       x2="12"
-      y2="22"
+      y2="21"
       stroke={color}
       strokeWidth={strokeWidth}
       strokeLinecap="round"
@@ -188,43 +189,55 @@ export const MicIcon = ({
   </Svg>
 );
 
+/** Motion — a phone tilted at an angle (more legible as "motion" than the
+ *  prior wifi-arc + dot, which read as connectivity). */
 export const MotionIcon = ({
   size = defaults.size,
   color = "#A855F7",
   strokeWidth = defaults.strokeWidth,
 }: IconProps) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Circle cx="12" cy="12" r="3" stroke={color} strokeWidth={strokeWidth} />
-    <Path
-      d="M5 5 a10 10 0 0 1 14 0"
+    <Rect
+      x="7"
+      y="3"
+      width="10"
+      height="18"
+      rx="2"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      transform="rotate(-15 12 12)"
+    />
+    <Line
+      x1="10.5"
+      y1="18"
+      x2="13.5"
+      y2="18"
       stroke={color}
       strokeWidth={strokeWidth}
       strokeLinecap="round"
-      opacity="0.45"
+      transform="rotate(-15 12 12)"
     />
     <Path
-      d="M3 9 a14 14 0 0 1 18 0"
+      d="M3 6 a3 3 0 0 1 2 -2"
       stroke={color}
       strokeWidth={strokeWidth}
       strokeLinecap="round"
-      opacity="0.25"
+      opacity="0.5"
     />
   </Svg>
 );
 
+/** Touch — concentric ripple + a center dot, reads as a tap pulse. Replaces
+ *  the prior multi-finger hand path which was visually noisy and ambiguous. */
 export const TouchIcon = ({
   size = defaults.size,
   color = "#14F195",
   strokeWidth = defaults.strokeWidth,
 }: IconProps) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path
-      d="M9 11 V6 a2 2 0 1 1 4 0 v6 m0 -3 a2 2 0 1 1 4 0 v3 m0 -1 a2 2 0 1 1 4 0 v3 a6 6 0 0 1 -6 6 H11 a4 4 0 0 1 -4 -4 v-2 l-3 -3 a2 2 0 0 1 3 -3 l2 2"
-      stroke={color}
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
+    <Circle cx="12" cy="12" r="2.5" fill={color} />
+    <Circle cx="12" cy="12" r="6" stroke={color} strokeWidth={strokeWidth} opacity="0.55" />
+    <Circle cx="12" cy="12" r="9.5" stroke={color} strokeWidth={strokeWidth} opacity="0.25" />
   </Svg>
 );
 
@@ -278,22 +291,68 @@ export const RefreshIcon = ({
   </Svg>
 );
 
+/** Settings — sliders glyph (three horizontal tracks with offset notches).
+ *  Reads as "preferences" / "tune" more directly than a gear and matches
+ *  the minimalist tone of the rest of the icon set. */
 export const SettingsIcon = ({
   size = defaults.size,
   color = "#E8E6E0",
   strokeWidth = defaults.strokeWidth,
 }: IconProps) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Circle cx="12" cy="12" r="3" stroke={color} strokeWidth={strokeWidth} />
-    <Path
-      d="M19 15 a1.7 1.7 0 0 0 .35 1.85 l.06 .07 a2 2 0 1 1 -2.83 2.83 l-.07 -.06 a1.7 1.7 0 0 0 -1.85 -.35 a1.7 1.7 0 0 0 -1.05 1.55 V20.5 a2 2 0 0 1 -4 0 v-.07 a1.7 1.7 0 0 0 -1.05 -1.55 a1.7 1.7 0 0 0 -1.85 .35 l-.07 .06 a2 2 0 1 1 -2.83 -2.83 l.06 -.07 a1.7 1.7 0 0 0 .35 -1.85 a1.7 1.7 0 0 0 -1.55 -1.05 H3.5 a2 2 0 0 1 0 -4 h.07 a1.7 1.7 0 0 0 1.55 -1.05 a1.7 1.7 0 0 0 -.35 -1.85 l-.06 -.07 a2 2 0 1 1 2.83 -2.83 l.07 .06 a1.7 1.7 0 0 0 1.85 .35 H10 a1.7 1.7 0 0 0 1 -1.55 V3.5 a2 2 0 0 1 4 0 v.07 a1.7 1.7 0 0 0 1 1.55 a1.7 1.7 0 0 0 1.85 -.35 l.07 -.06 a2 2 0 1 1 2.83 2.83 l-.06 .07 a1.7 1.7 0 0 0 -.35 1.85 V10 a1.7 1.7 0 0 0 1.55 1 H20.5 a2 2 0 0 1 0 4 h-.07 a1.7 1.7 0 0 0 -1.55 1 z"
+    <Line
+      x1="4"
+      y1="7"
+      x2="20"
+      y2="7"
       stroke={color}
       strokeWidth={strokeWidth}
+      strokeLinecap="round"
+    />
+    <Line
+      x1="4"
+      y1="12"
+      x2="20"
+      y2="12"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+    />
+    <Line
+      x1="4"
+      y1="17"
+      x2="20"
+      y2="17"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+    />
+    <Circle cx="9" cy="7" r="2.4" fill={color} stroke={color} strokeWidth={strokeWidth} />
+    <Circle cx="15" cy="12" r="2.4" fill={color} stroke={color} strokeWidth={strokeWidth} />
+    <Circle cx="8" cy="17" r="2.4" fill={color} stroke={color} strokeWidth={strokeWidth} />
+  </Svg>
+);
+
+/** Activity — pulse / heartbeat line. Reads as "verification history" much
+ *  more directly than the prior 3-line bars (which parsed as "menu"). */
+export const ActivityIcon = ({
+  size = defaults.size,
+  color = "#E8E6E0",
+  strokeWidth = defaults.strokeWidth,
+}: IconProps) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <Polyline
+      points="3,12 7,12 9,7 13,17 15,12 21,12"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
       strokeLinejoin="round"
     />
   </Svg>
 );
 
+/** ListIcon — kept as a simple rules glyph for in-content list rendering.
+ *  No longer used in the tab bar (replaced by ActivityIcon there). */
 export const ListIcon = ({
   size = defaults.size,
   color = "#E8E6E0",
@@ -330,6 +389,9 @@ export const ListIcon = ({
   </Svg>
 );
 
+/** Home — refined house silhouette with rounded corners + cleaner roof line.
+ *  No interior door cutout (the cutout left a black wedge that fought the
+ *  active-tint cyan fill in the tab bar). */
 export const HomeIcon = ({
   size = defaults.size,
   color = "#E8E6E0",
@@ -337,7 +399,14 @@ export const HomeIcon = ({
 }: IconProps) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
     <Path
-      d="M3 11 L12 3 L21 11 V20 a1 1 0 0 1 -1 1 H15 V14 H9 V21 H4 a1 1 0 0 1 -1 -1 z"
+      d="M4 11 L12 4 L20 11 V19 a1.5 1.5 0 0 1 -1.5 1.5 H5.5 A1.5 1.5 0 0 1 4 19 z"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinejoin="round"
+      strokeLinecap="round"
+    />
+    <Path
+      d="M10 20.5 V14.5 a1 1 0 0 1 1 -1 h2 a1 1 0 0 1 1 1 V20.5"
       stroke={color}
       strokeWidth={strokeWidth}
       strokeLinejoin="round"
