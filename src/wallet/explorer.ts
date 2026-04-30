@@ -14,3 +14,6 @@ const clusterParam = (): string => {
 
 export const explorerUrlForAddress = (address: string): string =>
   `https://explorer.solana.com/address/${address}${clusterParam()}`;
+
+export const explorerTxUrl = (signature: string): string =>
+  `https://explorer.solana.com/tx/${signature}${clusterParam()}`;

@@ -45,6 +45,17 @@ export interface IdentityState {
   commitment: string | null;
   mint: string | null;
   createdAt: Date | null;
+  /** Chain-derived list of every re-verification timestamp still present
+   *  in the on-chain `recent_timestamps[N]` circular buffer (N=52 on
+   *  current accounts, 10 on legacy). Sorted most-recent first. Empty
+   *  on cold/unverified state. The activity tab renders this directly —
+   *  it's the only on-chain source of "verification history" the
+   *  protocol exposes. */
+  recentTimestamps: Date[];
+  /** Timestamp of the last `reset_identity_state` if any, else null. The
+   *  activity tab renders a single distinct row for the reset event when
+   *  this is non-null. */
+  lastResetAt: Date | null;
 }
 
 export type MockPreset = "cold" | "connected-no-anchor" | "connected-with-anchor" | "high-score";
