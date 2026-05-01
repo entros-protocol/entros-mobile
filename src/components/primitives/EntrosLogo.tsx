@@ -17,12 +17,29 @@ interface EntrosLogoProps {
  *  baseline by virtue of being part of the same line of glyphs, which the
  *  prior `<View>`-based square approach couldn't guarantee on RN's flex
  *  baseline alignment quirks. The shuffle-decrypt animation from the navbar
- *  is intentionally not ported (that's a one-shot home-route reveal). */
+ *  is intentionally not ported (that's a one-shot home-route reveal).
+ *
+ *  When the wordmark is centered by a parent (alignItems: "center"), VT323's
+ *  trailing period reserves a full glyph cell on the right while contributing
+ *  almost no ink, making the visible "entros" letters sit visually left of the
+ *  parent's centerline. We compensate with a translateX of half the period's
+ *  glyph cell width so the optical center of the inked glyphs lands at the
+ *  parent's centerline. translateX preserves the layout box dimensions so
+ *  surrounding flow elements don't shift. */
+const OPTICAL_CENTER_OFFSET_RATIO = 0.13;
+
 export const EntrosLogo = ({ size = 64, color }: EntrosLogoProps) => {
   const { palette } = useTheme();
   return (
     <Text
-      style={[styles.wordmark, { fontSize: size, color: color ?? palette.text }]}
+      style={[
+        styles.wordmark,
+        {
+          fontSize: size,
+          color: color ?? palette.text,
+          transform: [{ translateX: size * OPTICAL_CENTER_OFFSET_RATIO }],
+        },
+      ]}
       allowFontScaling={false}
       accessibilityRole="image"
       accessibilityLabel="Entros"
