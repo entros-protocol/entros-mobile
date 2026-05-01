@@ -36,14 +36,14 @@ interface WalletEntry {
 }
 
 const wallets: WalletEntry[] = [
+  { kind: "phantom", name: "Phantom", subtitle: "Mobile Wallet Adapter", Logo: PhantomLogo },
+  { kind: "solflare", name: "Solflare", subtitle: "Mobile Wallet Adapter", Logo: SolflareLogo },
   {
     kind: null,
     name: "Other wallet",
     subtitle: "Seed Vault on Seeker, or any installed wallet",
     Logo: OtherWalletLogo,
   },
-  { kind: "phantom", name: "Phantom", subtitle: "Mobile Wallet Adapter", Logo: PhantomLogo },
-  { kind: "solflare", name: "Solflare", subtitle: "Mobile Wallet Adapter", Logo: SolflareLogo },
 ];
 
 export default function Connect() {
