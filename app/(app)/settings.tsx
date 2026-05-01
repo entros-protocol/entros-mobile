@@ -254,6 +254,20 @@ export default function Settings() {
               );
             })}
           </View>
+          <Text variant="caption" tone="muted">
+            Inspect transient screens that auto-redirect:
+          </Text>
+          <Pressable
+            onPress={() => router.push("/dev/splash-preview")}
+            style={({ pressed }) => [pressed && { opacity: 0.85 }]}
+          >
+            <GlowCard style={styles.aboutRow}>
+              <Text variant="bodyLarge">Preview splash</Text>
+              <Text variant="caption" tone="muted">
+                Hold the cold-start hero open for design review
+              </Text>
+            </GlowCard>
+          </Pressable>
         </Section>
       ) : null}
 
