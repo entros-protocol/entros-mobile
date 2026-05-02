@@ -66,6 +66,15 @@ async function getMeyda(): Promise<any> {
   return meydaModule.default ?? meydaModule;
 }
 
+/**
+ * Frame batch size between cooperative yields inside `detectF0Contour`.
+ * Mirrors `pulse-sdk/src/extraction/speaker.ts` — keeps the F0 loop
+ * yielding to the host roughly every 60 fps paint budget so the verify
+ * spinner repaints smoothly through the dominant block of extraction
+ * work right after capture ends.
+ */
+const F0_YIELD_EVERY_N_FRAMES = 16;
+
 async function detectF0Contour(
   samples: Float32Array,
   sampleRate: number,
@@ -104,6 +113,10 @@ async function detectF0Contour(
       sum += (frame[j] ?? 0) * (frame[j] ?? 0);
     }
     amplitudes.push(Math.sqrt(sum / frame.length));
+
+    if (i > 0 && i < numFrames - 1 && (i % F0_YIELD_EVERY_N_FRAMES) === 0) {
+      await yieldToMainThread();
+    }
   }
 
   return { f0, amplitudes, periods };
