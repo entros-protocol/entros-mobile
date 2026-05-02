@@ -28,6 +28,7 @@ import {
   extractAccelerationMagnitude,
 } from "./kinematic";
 import { fuseFeatures, fuseRawFeatures } from "./statistics";
+import { yieldToMainThread } from "../lib/yield";
 import type { AudioCapture, MotionSample, TouchSample, ExtractedFeatures } from "./types";
 
 // Mirror pulse-sdk's data-quality thresholds so the same validation
@@ -78,6 +79,10 @@ export async function extractFeatures(sensorData: MobileSensorData): Promise<Ext
   const touch = adaptTouch(sensorData.touch.samples);
 
   const { features: audioFeatures, f0Contour } = await extractSpeakerFeaturesDetailed(audio);
+  // The audio path is the dominant cost. Yield once it's done so the
+  // verify UI gets a paint frame before motion/touch extraction resumes
+  // the JS-thread work.
+  await yieldToMainThread();
 
   const hasMotion = motion.length >= MIN_MOTION_SAMPLES;
   const hasTouch = touch.length >= MIN_TOUCH_SAMPLES;
@@ -91,8 +96,10 @@ export async function extractFeatures(sensorData: MobileSensorData): Promise<Ext
       : hasMotion
         ? extractMotionFeatures(motion)
         : extractMouseDynamics(touch);
+  await yieldToMainThread();
 
   const touchFeatures = extractTouchFeatures(touch);
+  await yieldToMainThread();
 
   const accelMagnitude =
     hasMotion && f0Contour.length > 0 ? extractAccelerationMagnitude(motion, f0Contour.length) : [];

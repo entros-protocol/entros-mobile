@@ -14,6 +14,7 @@
 import type { AudioCapture } from "./types";
 import { condense, entropy } from "./statistics";
 import { extractFormantRatios } from "./lpc";
+import { yieldToMainThread } from "../lib/yield";
 import { sdkWarn } from "./log";
 
 function getFrameSize(sampleRate: number): number {
@@ -337,6 +338,10 @@ export async function extractSpeakerFeaturesDetailed(
   }
 
   const { f0, periods } = await detectF0Contour(normalizedSamples, sampleRate);
+  // YIN pitch detection is the heaviest single block in the audio path
+  // (~120 frames × O(frameSize²)). Yield before HNR + formant extraction
+  // so the host UI can repaint the "Extracting features..." spinner.
+  await yieldToMainThread();
 
   const amplitudes: number[] = [];
   for (let i = 0; i < numFrames; i++) {
@@ -384,6 +389,10 @@ export async function extractSpeakerFeaturesDetailed(
     hnrStats.kurtosis,
     hnrEntropy,
   ];
+  // HNR autocorrelation is per-frame and synchronous. Yield before LPC
+  // formant extraction so a paint frame can land between the two heaviest
+  // synchronous stages.
+  await yieldToMainThread();
 
   const { f1f2, f2f3 } = extractFormantRatios(normalizedSamples, sampleRate, frameSize, hopSize);
   const f1f2Stats = condense(f1f2);
@@ -398,6 +407,7 @@ export async function extractSpeakerFeaturesDetailed(
     f2f3Stats.skewness,
     f2f3Stats.kurtosis,
   ];
+  await yieldToMainThread();
 
   const ltasFeatures = await computeLTAS(samples, sampleRate);
 
