@@ -1,6 +1,7 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback } from "react";
 import { StyleSheet, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 
 import { ChevronRightIcon, RefreshIcon } from "@/components/icons";
 import { AddressBadge } from "@/components/primitives/AddressBadge";
@@ -62,15 +63,28 @@ export default function Dashboard() {
             {identity.hasAnchor ? "Anchor minted" : "No anchor yet"}
           </Text>
         </View>
-        <Text style={[styles.scoreValue, { color: palette.text }]} numberOfLines={1}>
+        <Text
+          style={[
+            styles.scoreValue,
+            {
+              color: palette.text,
+              // Soft cyan glow behind the digits — premium, not flashy. Only
+              // applied when an anchor exists; the em-dash placeholder keeps
+              // the flat treatment.
+              textShadowColor: identity.hasAnchor ? palette.glow : "transparent",
+              textShadowOffset: { width: 0, height: 0 },
+              textShadowRadius: identity.hasAnchor ? 18 : 0,
+            },
+          ]}
+          numberOfLines={1}
+        >
           {identity.hasAnchor ? identity.trustScore : "—"}
         </Text>
         <View style={[styles.progressTrack, { backgroundColor: palette.border }]}>
           <View
             style={[
-              styles.progressFill,
+              styles.progressFillWrap,
               {
-                backgroundColor: palette.accent,
                 // Cap the visual fill at 100% even when the trust score
                 // exceeds it (the on-chain formula adds an age bonus that
                 // can take the raw score above 100). The number itself is
@@ -78,7 +92,14 @@ export default function Dashboard() {
                 width: `${identity.hasAnchor ? Math.min(identity.trustScore, 100) : 0}%`,
               },
             ]}
-          />
+          >
+            <LinearGradient
+              colors={[palette.accent, palette.solanaPurple]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.progressFill}
+            />
+          </View>
         </View>
         <Text variant="body" tone="muted">
           {identity.hasAnchor
@@ -191,6 +212,11 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     height: 4,
+    borderRadius: radii.pill,
+    overflow: "hidden",
+  },
+  progressFillWrap: {
+    height: "100%",
     borderRadius: radii.pill,
     overflow: "hidden",
   },

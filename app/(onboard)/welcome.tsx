@@ -15,12 +15,14 @@ import Animated, {
 import { MicIcon, MotionIcon, TouchIcon } from "@/components/icons";
 import { Button } from "@/components/primitives/Button";
 import { EntrosLogo } from "@/components/primitives/EntrosLogo";
+import { GlassCard } from "@/components/primitives/GlassCard";
+import { HeroGlow } from "@/components/primitives/HeroGlow";
 import { ProgressDots } from "@/components/primitives/ProgressDots";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
 import { useAppState } from "@/state/AppState";
-import { fontFamily, radii, spacing } from "@/theme/tokens";
+import { fontFamily, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 type ModalityKind = "voice" | "motion" | "touch";
@@ -136,6 +138,7 @@ export default function Welcome() {
             "rises from the middle" instead of stacking from the top. */}
         <View style={styles.body}>
           <View style={styles.hero}>
+            <HeroGlow size={300} topOffset={-120} />
             <EntrosLogo size={48} />
             <View style={styles.titleBlock}>
               <SectionLabel>WELCOME</SectionLabel>
@@ -150,15 +153,11 @@ export default function Welcome() {
 
           <View style={styles.rows}>
             {modalities.map(({ kind, Icon, title, body }) => (
-              <View
-                key={title}
-                style={[
-                  styles.row,
-                  { backgroundColor: palette.surface, borderColor: palette.border },
-                ]}
-              >
-                <View style={[styles.iconWrap, { backgroundColor: palette.accentMuted }]}>
-                  <ModalityIcon kind={kind} Icon={Icon} color={palette.accent} size={20} />
+              <GlassCard key={title} padded={false} style={styles.row}>
+                <View style={[styles.iconWrap, { borderColor: palette.glassBorderStrong }]}>
+                  <View style={[styles.iconWrapInner, { backgroundColor: palette.accentMuted }]}>
+                    <ModalityIcon kind={kind} Icon={Icon} color={palette.accent} size={20} />
+                  </View>
                 </View>
                 <View style={styles.rowText}>
                   <Text style={[styles.rowTitle, { color: palette.text }]}>{title}</Text>
@@ -166,7 +165,7 @@ export default function Welcome() {
                     {body}
                   </Text>
                 </View>
-              </View>
+              </GlassCard>
             ))}
           </View>
         </View>
@@ -190,7 +189,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: spacing.xxl,
   },
-  hero: { alignItems: "center", gap: spacing.lg },
+  hero: { alignItems: "center", gap: spacing.lg, position: "relative" },
   titleBlock: { gap: spacing.sm, alignItems: "center" },
   rows: { gap: spacing.sm },
   row: {
@@ -199,13 +198,21 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.lg,
-    borderRadius: radii.lg,
-    borderWidth: 1,
   },
+  // Glass modality disc — outer hairline cyan border + inner cyan-tinted fill
+  // wrapping the icon. Reads as a small lit panel rather than a flat circle.
   iconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  iconWrapInner: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
   },

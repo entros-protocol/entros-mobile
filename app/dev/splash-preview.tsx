@@ -10,6 +10,7 @@ import { useRouter } from "expo-router";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { EntrosLogo } from "@/components/primitives/EntrosLogo";
+import { HeroGlow } from "@/components/primitives/HeroGlow";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Spinner } from "@/components/primitives/Spinner";
@@ -25,6 +26,7 @@ export default function SplashPreview() {
     <Screen padded={false}>
       <View style={styles.wrap}>
         <View style={styles.hero}>
+          <HeroGlow size={340} topOffset={-140} />
           <EntrosLogo size={64} />
           <View style={styles.titleBlock}>
             <SectionLabel>ENTROS PROTOCOL</SectionLabel>

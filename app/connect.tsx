@@ -4,6 +4,7 @@ import { Alert, StyleSheet, View } from "react-native";
 
 import { OtherWalletLogo, PhantomLogo, SolflareLogo } from "@/components/icons/walletLogos";
 import { Button } from "@/components/primitives/Button";
+import { GlassCard } from "@/components/primitives/GlassCard";
 import { GlowCard } from "@/components/primitives/GlowCard";
 import { PrivacyPill } from "@/components/primitives/PrivacyPill";
 import { Screen } from "@/components/primitives/Screen";
@@ -171,16 +172,11 @@ export default function Connect() {
             const isPending = pending === name;
             const isDisabled = !!pending && !isPending;
             return (
-              <View
+              <GlassCard
                 key={name}
-                style={[
-                  styles.row,
-                  {
-                    backgroundColor: palette.surface,
-                    borderColor: isPending ? palette.borderFocus : palette.border,
-                  },
-                  isDisabled && { opacity: 0.45 },
-                ]}
+                glow={isPending}
+                padded={false}
+                style={[styles.row, isDisabled && { opacity: 0.45 }]}
               >
                 <View style={styles.rowLeft}>
                   <View style={[styles.logoWrap, { backgroundColor: palette.background }]}>
@@ -200,7 +196,7 @@ export default function Connect() {
                   disabled={isDisabled}
                   onPress={() => handleConnect(kind, name)}
                 />
-              </View>
+              </GlassCard>
             );
           })}
         </View>
@@ -232,8 +228,6 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.lg,
-    borderRadius: radii.lg,
-    borderWidth: 1,
   },
   rowLeft: {
     flexDirection: "row",

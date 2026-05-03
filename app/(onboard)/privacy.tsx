@@ -4,12 +4,14 @@ import { StyleSheet, View } from "react-native";
 import { LockIcon } from "@/components/icons";
 import { BackButton } from "@/components/primitives/BackButton";
 import { Button } from "@/components/primitives/Button";
+import { GlassCard } from "@/components/primitives/GlassCard";
+import { HeroGlow } from "@/components/primitives/HeroGlow";
 import { ProgressDots } from "@/components/primitives/ProgressDots";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
 import { useAppState } from "@/state/AppState";
-import { fontFamily, radii, spacing } from "@/theme/tokens";
+import { fontFamily, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export default function Privacy() {
@@ -39,6 +41,7 @@ export default function Privacy() {
 
         <View style={styles.body}>
           <View style={styles.heading}>
+            <HeroGlow size={260} topOffset={-100} />
             <SectionLabel>PRIVACY</SectionLabel>
             <Text variant="title">Your signals never{"\n"}leave the phone.</Text>
             <Text variant="body" tone="muted">
@@ -47,12 +50,7 @@ export default function Privacy() {
             </Text>
           </View>
 
-          <View
-            style={[
-              styles.card,
-              { backgroundColor: palette.surface, borderColor: palette.borderFocus },
-            ]}
-          >
+          <GlassCard glow style={styles.card}>
             <View style={[styles.iconWrap, { backgroundColor: palette.accentMuted }]}>
               <LockIcon size={18} color={palette.accent} />
             </View>
@@ -65,7 +63,7 @@ export default function Privacy() {
                 seconds, then encrypted on this phone for re-verification.
               </Text>
             </View>
-          </View>
+          </GlassCard>
         </View>
 
         <View style={styles.footer}>
@@ -89,10 +87,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: spacing.xl,
   },
-  heading: { gap: spacing.sm },
+  heading: { gap: spacing.sm, position: "relative" },
   card: {
-    borderRadius: radii.xl,
-    borderWidth: 1,
     padding: spacing.lg,
     gap: spacing.md,
   },

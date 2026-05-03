@@ -5,6 +5,8 @@ import { Alert, StyleSheet, View } from "react-native";
 import { MicIcon, MotionIcon, TouchIcon } from "@/components/icons";
 import { BackButton } from "@/components/primitives/BackButton";
 import { Button } from "@/components/primitives/Button";
+import { GlassCard } from "@/components/primitives/GlassCard";
+import { HeroGlow } from "@/components/primitives/HeroGlow";
 import { ProgressDots } from "@/components/primitives/ProgressDots";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
@@ -12,7 +14,7 @@ import { Text } from "@/components/primitives/Text";
 import { isMotionAvailable } from "@/sensor/motion";
 import { requestAudioPermission } from "@/sensor/audio";
 import { useAppState } from "@/state/AppState";
-import { fontFamily, radii, spacing } from "@/theme/tokens";
+import { fontFamily, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 interface Row {
@@ -84,6 +86,7 @@ export default function Permissions() {
 
         <View style={styles.body}>
           <View style={styles.heading}>
+            <HeroGlow size={260} topOffset={-100} />
             <SectionLabel>PERMISSIONS</SectionLabel>
             <Text variant="title">Three signals,{"\n"}twelve seconds.</Text>
             <Text variant="body" tone="muted">
@@ -93,13 +96,7 @@ export default function Permissions() {
 
           <View style={styles.rows}>
             {rows.map(({ Icon, title, body }) => (
-              <View
-                key={title}
-                style={[
-                  styles.row,
-                  { backgroundColor: palette.surface, borderColor: palette.border },
-                ]}
-              >
+              <GlassCard key={title} padded={false} style={styles.row}>
                 <View style={[styles.iconWrap, { backgroundColor: palette.accentMuted }]}>
                   <Icon size={16} color={palette.accent} />
                 </View>
@@ -109,7 +106,7 @@ export default function Permissions() {
                     {body}
                   </Text>
                 </View>
-              </View>
+              </GlassCard>
             ))}
           </View>
         </View>
@@ -138,7 +135,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: spacing.xl,
   },
-  heading: { gap: spacing.sm },
+  heading: { gap: spacing.sm, position: "relative" },
   rows: { gap: spacing.sm },
   row: {
     flexDirection: "row",
@@ -146,8 +143,6 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    borderRadius: radii.lg,
-    borderWidth: 1,
   },
   iconWrap: {
     width: 32,
