@@ -34,6 +34,25 @@ export interface Palette {
   warning: string;
   danger: string;
   glow: string;
+  // Premium glassmorphism tokens. Glass cards layer a low-alpha fill on top of
+  // a BlurView with a cyan-tinted hairline border. The fill is tuned to keep
+  // text legible even when the BlurView falls back to no-blur on lower-end
+  // Android. `glassFillStrong` is for the "active / focused" card state.
+  glassFill: string;
+  glassFillStrong: string;
+  glassBorder: string;
+  glassBorderStrong: string;
+  glassHighlight: string;
+  // Ambient background gradient stops, painted via an absolute LinearGradient
+  // behind every Screen. Top-left → mid → bottom-right with a barely-there
+  // shift toward the cyan accent and Solana purple. Restraint is deliberate —
+  // the goal is depth, not chroma.
+  gradientStart: string;
+  gradientMid: string;
+  gradientEnd: string;
+  // Cyan radial bloom used by HeroGlow behind hero blocks (welcome wordmark,
+  // dashboard score). Higher alpha = more glow.
+  heroGlow: string;
 }
 
 const dark: Palette = {
@@ -52,6 +71,15 @@ const dark: Palette = {
   warning: "#FFB800",
   danger: "#FF3B3B",
   glow: "rgba(34, 211, 230, 0.18)",
+  glassFill: "rgba(255, 255, 255, 0.04)",
+  glassFillStrong: "rgba(34, 211, 230, 0.06)",
+  glassBorder: "rgba(255, 255, 255, 0.08)",
+  glassBorderStrong: "rgba(34, 211, 230, 0.32)",
+  glassHighlight: "rgba(255, 255, 255, 0.08)",
+  gradientStart: "#06080F",
+  gradientMid: "#000000",
+  gradientEnd: "#0A061A",
+  heroGlow: "rgba(34, 211, 230, 0.22)",
 };
 
 const light: Palette = {
@@ -70,6 +98,15 @@ const light: Palette = {
   warning: "#D97706",
   danger: "#DC2626",
   glow: "rgba(10, 173, 188, 0.15)",
+  glassFill: "rgba(255, 255, 255, 0.6)",
+  glassFillStrong: "rgba(10, 173, 188, 0.06)",
+  glassBorder: "rgba(0, 0, 0, 0.06)",
+  glassBorderStrong: "rgba(10, 173, 188, 0.32)",
+  glassHighlight: "rgba(255, 255, 255, 0.7)",
+  gradientStart: "#FAFAF8",
+  gradientMid: "#F4F4F0",
+  gradientEnd: "#EEF1F4",
+  heroGlow: "rgba(10, 173, 188, 0.18)",
 };
 
 export const palettes: Record<Mode, Palette> = { dark, light };

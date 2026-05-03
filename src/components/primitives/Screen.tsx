@@ -5,6 +5,8 @@ import { Edge, SafeAreaView } from "react-native-safe-area-context";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
+import { AmbientBackground } from "./AmbientBackground";
+
 interface ScreenProps {
   children: ReactNode;
   scroll?: boolean;
@@ -12,6 +14,10 @@ interface ScreenProps {
   edges?: readonly Edge[];
   contentStyle?: ViewStyle;
   testID?: string;
+  /** Disable the ambient gradient + cyan bloom behind content. Use only
+   *  for capture-style surfaces that need an undecorated black backdrop
+   *  (e.g. the verify capture canvas). Default false. */
+  bare?: boolean;
 }
 
 export const Screen = ({
@@ -21,6 +27,7 @@ export const Screen = ({
   edges = ["top", "bottom"],
   contentStyle,
   testID,
+  bare = false,
 }: ScreenProps) => {
   const { palette, mode } = useTheme();
   const padding = padded ? spacing.xxl : 0;
@@ -34,6 +41,7 @@ export const Screen = ({
   return (
     <SafeAreaView edges={edges} style={[styles.safe, { backgroundColor: palette.background }]}>
       <StatusBar barStyle={mode === "dark" ? "light-content" : "dark-content"} />
+      {bare ? null : <AmbientBackground />}
       {scroll ? (
         <ScrollView
           contentContainerStyle={{ paddingVertical: spacing.xl, flexGrow: 1 }}
