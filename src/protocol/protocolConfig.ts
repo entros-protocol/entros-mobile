@@ -51,15 +51,19 @@ export async function fetchProtocolConfig(
   let decoded: Record<string, unknown>;
   try {
     const coder = new BorshAccountsCoder(entrosRegistryIdl as unknown as Idl);
-    decoded = coder.decode("protocolConfig", accountInfo.data) as Record<string, unknown>;
+    // Anchor 0.30+ IDL spec: account names are PascalCase and field names
+    // stay snake_case in the decoded object. Using camelCase here silently
+    // throws "Account not found" which the catch below swallows as null,
+    // falling back to hardcoded fee values rather than the live config.
+    decoded = coder.decode("ProtocolConfig", accountInfo.data) as Record<string, unknown>;
   } catch (err) {
     devWarn("[Entros] ProtocolConfig decode failed", err);
     return null;
   }
 
   return {
-    verificationFeeLamports: Number(decoded["verificationFee"]),
-    challengeExpirySeconds: Number(decoded["challengeExpiry"]),
+    verificationFeeLamports: Number(decoded["verification_fee"]),
+    challengeExpirySeconds: Number(decoded["challenge_expiry"]),
   };
 }
 
