@@ -8,6 +8,8 @@ export {
   PROOF_C_SIZE,
   TOTAL_PROOF_SIZE,
 } from "./constants";
+export { classifyHammingDistance } from "./bounds";
+export type { HammingVerdict } from "./bounds";
 export { prepareCircuitInput } from "./input";
 export { serializeProof, toBigEndian32 } from "./serializer";
 export type { CircuitInput, ProofResult, RawProof, SolanaProof } from "./types";

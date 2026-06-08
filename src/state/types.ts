@@ -13,6 +13,7 @@ export type FailureBucket =
   | "insufficient-funds" // fee payer balance below verification_fee + rent
   | "validator-mismatch" // entros-anchor receipt-rejected family (6015-6021); Phase 5 hard-fail
   | "retry-now" // transient — congestion / wallet hung / RPC drop / clock skew; "Try again"
+  | "capture-drift" // behavioral drift past the consistency ceiling; retry with a steady capture
   | "report-bug" // proof-rejected / programming-error; CTA = copy diagnostics
   | "generic"; // last resort
 
