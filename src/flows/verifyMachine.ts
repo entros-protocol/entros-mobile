@@ -82,7 +82,7 @@ export const stageCopy: Record<
     title: "Server-side validation",
     subtitle: "Anti-replay and challenge-binding checks.",
   },
-  computing: { title: "Generating ZK proof", subtitle: "Hamming distance commitment, on-device." },
+  computing: { title: "Generating ZK proof", subtitle: "Proving consistency, on-device." },
   signing: {
     title: "Waiting for wallet signature",
     subtitle: "Approve in your wallet.",
