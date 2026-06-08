@@ -60,10 +60,11 @@ import { ProcessingStage } from "@/components/pulse/ProcessingStage";
 import { Screen } from "@/components/primitives/Screen";
 import { extractFeatures, MIN_AUDIO_SAMPLES } from "@/extraction";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
-import { bigintToBytes32, generateTBH, simhash } from "@/hashing";
+import { bigintToBytes32, generateTBH, hammingDistance, simhash } from "@/hashing";
 import type { TBH } from "@/hashing";
 import { loadBaseline, storeBaseline, wipeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
+import { classifyHammingDistance, DEFAULT_MIN_DISTANCE, DEFAULT_THRESHOLD } from "@/proof";
 import { generateSolanaProof } from "@/proof/prover";
 import { parseSubmitError, type ParsedSubmitError } from "@/protocol/errors";
 import type { SignedReceiptDto } from "@/protocol/receipt";
@@ -111,6 +112,17 @@ export default function Processing() {
         pathname: "/verify/failure",
         params: message ? { bucket, message } : { bucket },
       });
+    };
+
+    // Like failOut but does NOT record a failed VerificationEvent in history —
+    // for pre-proof, capture-quality retries (Hamming drift / replay floor) that
+    // never reached the chain. Matches the soft-reject philosophy: a transient
+    // "try again" is not a verification failure. The failure screen is still
+    // driven entirely by the bucket param.
+    const failOutNoLog = (bucket: FailureBucket) => {
+      if (cancelled) return;
+      setForceOutcome(null);
+      router.replace({ pathname: "/verify/failure", params: { bucket } });
     };
 
     // Soft-rejects don't count against the verification history (matches
@@ -250,7 +262,8 @@ export default function Processing() {
               firstVerify: boolean;
             }
           | { kind: "fail"; outcome: Exclude<ValidateOutcome, { kind: "ok" }> }
-          | { kind: "cancelled" };
+          | { kind: "cancelled" }
+          | { kind: "drift"; bucket: FailureBucket };
         const stagesResult: StagesResult = await (async (): Promise<StagesResult> => {
           // Stage 3: SimHash + Poseidon TBH.
           const fingerprint = simhash(result.normalized);
@@ -325,6 +338,19 @@ export default function Processing() {
               commitment: previousCommitment,
               commitmentBytes: bigintToBytes32(previousCommitment),
             };
+            // Pre-flight: classify the Hamming distance against the same band
+            // the circuit enforces (entros_hamming.circom). A drift past the
+            // ceiling would otherwise throw a raw circom assert inside the
+            // native prover and surface verbatim through the outer catch —
+            // route to a clean retry bucket before proving or signing. Below
+            // the replay floor stays opaque (generic).
+            const verdict = classifyHammingDistance(
+              hammingDistance(tbh.fingerprint, previousTbh.fingerprint),
+              DEFAULT_THRESHOLD,
+              DEFAULT_MIN_DISTANCE,
+            );
+            if (verdict === "drift_too_high") return { kind: "drift", bucket: "capture-drift" };
+            if (verdict === "below_min_distance") return { kind: "drift", bucket: "generic" };
             const proofStartedAt = Date.now();
             const solanaProof = await generateSolanaProof(tbh, previousTbh);
             const proofMs = Date.now() - proofStartedAt;
@@ -346,6 +372,16 @@ export default function Processing() {
 
         if (stagesResult.kind === "fail") {
           routeFromValidateOutcome(stagesResult.outcome);
+          return;
+        }
+
+        if (stagesResult.kind === "drift") {
+          // Pre-flight Hamming bounds rejection — drift past the consistency
+          // ceiling (capture-drift) or below the replay floor (generic/opaque).
+          // Route to a friendly retry surface without proving or signing, and
+          // without logging it as a failed verification (it never reached the
+          // chain).
+          failOutNoLog(stagesResult.bucket);
           return;
         }
 

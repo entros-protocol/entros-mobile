@@ -90,6 +90,7 @@ const ALL_FAILURE_BUCKETS: ReadonlySet<FailureBucket> = new Set<FailureBucket>([
   "insufficient-funds",
   "validator-mismatch",
   "retry-now",
+  "capture-drift",
   "report-bug",
   "generic",
 ]);
@@ -99,8 +100,13 @@ const ALL_FAILURE_BUCKETS: ReadonlySet<FailureBucket> = new Set<FailureBucket>([
  *  intervention. `allowsImmediateRetry=false` for buckets where the wait
  *  is large and a "Try again" CTA would be misleading (e.g. the on-chain
  *  reset cooldown is 7 days). */
-type RetryBucket = "rate-limited" | "chain-rate-limited" | "retry-now";
-const RETRY_BUCKETS = new Set<FailureBucket>(["rate-limited", "chain-rate-limited", "retry-now"]);
+type RetryBucket = "rate-limited" | "chain-rate-limited" | "retry-now" | "capture-drift";
+const RETRY_BUCKETS = new Set<FailureBucket>([
+  "rate-limited",
+  "chain-rate-limited",
+  "retry-now",
+  "capture-drift",
+]);
 
 const retryBucketConfig: Record<
   RetryBucket,
@@ -145,6 +151,15 @@ const retryBucketConfig: Record<
     countdownPrefix: "",
     countdownSuffix: "",
     settledSubtitle: "The network or wallet didn't respond cleanly. Try again now.",
+    allowsImmediateRetry: true,
+  },
+  "capture-drift": {
+    label: "TRY AGAIN",
+    title: "Let's try that again",
+    countdownPrefix: "",
+    countdownSuffix: "",
+    settledSubtitle:
+      "That capture didn't closely match your usual pattern. It often happens after an interrupted or rushed recording. Try again with a steady, uninterrupted capture.",
     allowsImmediateRetry: true,
   },
 };
