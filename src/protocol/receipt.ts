@@ -38,7 +38,8 @@ export interface SignedReceiptDto {
 /**
  * Decoded byte form of a `SignedReceiptDto`. `null` from `decodeSignedReceipt`
  * indicates the caller should treat the receipt as unusable and fall back to
- * the no-receipt mint flow (Phase 3 on-chain check logs and proceeds).
+ * the no-receipt mint flow — which `mint_anchor` rejects whenever the
+ * protocol's `validator_pubkey` is configured.
  */
 export interface DecodedReceipt {
   publicKey: Uint8Array;
@@ -92,14 +93,13 @@ export function decodeSignedReceipt(receipt: SignedReceiptDto): DecodedReceipt |
 
 /**
  * Build the `Ed25519Program::verify` instruction that binds a validator-signed
- * mint receipt to the immediately-following `mint_anchor` instruction
- * (master-list #146 Phase 4).
+ * mint receipt to the immediately-following `mint_anchor` instruction.
  *
  * Returns `null` if the receipt fails to decode — caller should fall back to
- * sending `mint_anchor` without an Ed25519 prefix. Phase 3's on-chain check
- * is log-only, so the fallback still works on the deployed program; once
- * Phase 5 enforcement flips, missing receipts hard-fail and the SDK's no-op
- * fallback becomes a deliberate "no-receipt" path that mint_anchor rejects.
+ * sending `mint_anchor` without an Ed25519 prefix. That fallback only mints
+ * successfully against a program whose `validator_pubkey` is unconfigured;
+ * wherever it is configured (e.g. devnet) `mint_anchor` hard-fails a mint with
+ * no preceding receipt.
  *
  * Web3.js's `Ed25519Program.createInstructionWithPublicKey` defaults the
  * three `*_instruction_index` fields to `0xFFFF`, the "current instruction"

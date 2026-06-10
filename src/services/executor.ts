@@ -60,11 +60,12 @@ export const SOFT_REJECT_REASONS: readonly ValidateReason[] = [
 /** Discriminated outcome of a /validate-features call.
  *
  *  - `ok`: validation passed; verify flow advances to ZK proof generation.
- *    `signedReceipt` is present when the request carried `commitment_new_hex`
- *    AND the validator has a signing key configured (master-list #146
- *    Phase 4). The first-verify path bundles it as an Ed25519 prefix before
- *    `mint_anchor`; re-verify ignores it (update_anchor enforces binding via
- *    the VerificationResult PDA instead).
+ *    When the validator has a signing key, `signedReceipt` carries the Ed25519
+ *    receipt and `commitmentHex`/`saltHex` carry the SERVER-derived commitment
+ *    + salt the client must adopt and mint (C2 — the client no longer chooses
+ *    its own commitment). The first-verify path bundles the receipt as an
+ *    Ed25519 prefix before `mint_anchor`; re-verify ignores the receipt
+ *    (update_anchor binds via the VerificationResult PDA instead).
  *  - `soft-reject`: user-recoverable; surface hint + Try Again
  *  - `rate-limited`: per-wallet cap exceeded (executor 429); surface cooldown
  *  - `hard-reject`: 400 with no safe reason — opaque attack-signal rejection
@@ -73,7 +74,13 @@ export const SOFT_REJECT_REASONS: readonly ValidateReason[] = [
  *  - `service-down`: 5xx, network error, or abort — show "try again later"
  *  - `unknown`: anything else; logged status for triage */
 export type ValidateOutcome =
-  | { kind: "ok"; remainingQuota: number | null; signedReceipt: SignedReceiptDto | null }
+  | {
+      kind: "ok";
+      remainingQuota: number | null;
+      signedReceipt: SignedReceiptDto | null;
+      commitmentHex: string | null;
+      saltHex: string | null;
+    }
   | { kind: "soft-reject"; reason: ValidateReason }
   | { kind: "rate-limited"; retryAfterSec: number }
   | { kind: "hard-reject" }
@@ -180,6 +187,8 @@ interface ValidateBody {
   reason?: string;
   retry_after?: number;
   signed_receipt?: SignedReceiptDto;
+  commitment_hex?: string;
+  salt_hex?: string;
 }
 
 /** POST /validate-features. Always resolves with a ValidateOutcome — never
@@ -209,6 +218,10 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
     audio_samples_b64: input.audioSamplesB64,
     audio_sample_rate_hz: input.audioSampleRateHz,
     commitment_new_hex: input.commitmentNewHex,
+    // Explicit mint-intent signal. New validators sign a receipt over a
+    // commitment THEY derive from `features`; `commitment_new_hex` is still
+    // sent so older validators (which trust it) keep working.
+    request_receipt: true,
   });
 
   const controller = new AbortController();
@@ -239,6 +252,8 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
       kind: "ok",
       remainingQuota: typeof parsed.remaining_quota === "number" ? parsed.remaining_quota : null,
       signedReceipt: parsed.signed_receipt ?? null,
+      commitmentHex: parsed.commitment_hex ?? null,
+      saltHex: parsed.salt_hex ?? null,
     };
   }
 
