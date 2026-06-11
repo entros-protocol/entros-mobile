@@ -4,16 +4,17 @@
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
 // - Stage 2 (134-feature extraction) runs in the `extracting` step here.
 // - Stage 3 (SimHash + Poseidon TBH) runs FIRST inside the stages IIFE,
-//   producing the 32-byte commitment that all forward stages — including
-//   Stage 4 — depend on. Mirrors pulse-sdk pulse.ts:148-291 (master-list
-//   #146 Phase 4): the commitment must be transmitted as `commitment_new_hex`
-//   so the validator can sign a (wallet, commitment, validated_at) receipt
-//   bundled before mint_anchor on first-verify.
-// - Stage 4 (server-side validation) POSTs the 134-feature vector + cross-
-//   modal time-series + audio b64 + commitment_new_hex to the executor's
-//   /validate-features endpoint, surfacing soft-rejects with a friendly
-//   retry UX and routing service / rate-limit errors to the appropriate
-//   failure bucket. The signed receipt comes back on the ok outcome.
+//   producing a local 32-byte commitment. Mirrors pulse-sdk pulse.ts: a
+//   legacy `commitment_new_hex` is still sent so older validators keep working,
+//   but new validators derive the commitment themselves from the features and
+//   return it (C2). Stage 4 then swaps the validator's commitment + salt into
+//   the TBH so the client mints exactly what the validator signed.
+// - Stage 4 (server-side validation) POSTs the feature vector + cross-modal
+//   time-series + audio b64 + commitment_new_hex + request_receipt to the
+//   executor's /validate-features endpoint, surfacing soft-rejects with a
+//   friendly retry UX and routing service / rate-limit errors to the
+//   appropriate failure bucket. The signed receipt plus the server-derived
+//   commitment + salt come back on the ok outcome.
 // - Stage 5 (encrypted baseline persistence) encrypts the
 //   {fingerprint, salt, commitment, timestamp} bundle with AES-256-GCM
 //   inside the same IIFE as Stage 3 so the fingerprint never escapes its
@@ -60,7 +61,13 @@ import { ProcessingStage } from "@/components/pulse/ProcessingStage";
 import { Screen } from "@/components/primitives/Screen";
 import { extractFeatures, MIN_AUDIO_SAMPLES } from "@/extraction";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
-import { bigintToBytes32, generateTBH, hammingDistance, simhash } from "@/hashing";
+import {
+  bigintToBytes32,
+  computeCommitment,
+  generateTBH,
+  hammingDistance,
+  simhash,
+} from "@/hashing";
 import type { TBH } from "@/hashing";
 import { loadBaseline, storeBaseline, wipeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
@@ -267,7 +274,11 @@ export default function Processing() {
         const stagesResult: StagesResult = await (async (): Promise<StagesResult> => {
           // Stage 3: SimHash + Poseidon TBH.
           const fingerprint = simhash(result.normalized);
-          const tbh = await generateTBH(fingerprint);
+          // Local TBH with a client-random salt — the fallback used when the
+          // validator doesn't return a server-derived commitment (older
+          // deploys). When it does, we swap in the server's salt + commitment
+          // below (C2); the fingerprint stays ours either way.
+          let tbh = await generateTBH(fingerprint);
           const commitmentNewHex = Array.from(tbh.commitmentBytes)
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");
@@ -293,6 +304,37 @@ export default function Processing() {
           });
           if (cancelled) return { kind: "cancelled" };
           if (outcome.kind !== "ok") return { kind: "fail", outcome };
+
+          // C2: adopt the validator-derived commitment + salt (mirrors
+          // pulse-sdk/pulse.ts). The validator signs — and `mint_anchor`
+          // enforces — a commitment it computed from the features we sent, not
+          // one we chose, so we mint exactly that. The fingerprint is unchanged
+          // and stays consistent with the server commitment (parity-tested
+          // across mobile/web/validator/circuit), so the {fingerprint, salt,
+          // commitment} triple still opens for future rotation proofs. Every
+          // downstream consumer (setCommitment, storeBaseline, the re-verify
+          // proof) reads `tbh`, so this single swap covers them all.
+          if (outcome.commitmentHex && outcome.saltHex) {
+            const serverCommitment = BigInt("0x" + outcome.commitmentHex);
+            const serverSalt = BigInt("0x" + outcome.saltHex);
+            tbh = {
+              fingerprint,
+              salt: serverSalt,
+              commitment: serverCommitment,
+              commitmentBytes: bigintToBytes32(serverCommitment),
+            };
+            if (__DEV__) {
+              // Runtime cross-check of the parity contract: a mismatch means
+              // the installed app and the deployed validator have drifted —
+              // future rotation proofs would silently fail to open.
+              const localCheck = await computeCommitment(fingerprint, serverSalt);
+              if (localCheck !== serverCommitment) {
+                devWarn(
+                  "[Entros] Commitment parity check failed: validator-derived commitment != local recomputation. Mobile and validator may be out of sync.",
+                );
+              }
+            }
+          }
 
           // Advance to "computing" before Stage 5 + 6 work fires so the UI
           // shows the "Generating ZK proof" copy while AES-GCM + arkworks
