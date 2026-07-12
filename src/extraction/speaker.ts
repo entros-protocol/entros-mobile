@@ -1,60 +1,84 @@
-// PORTED VERBATIM from pulse-sdk/src/extraction/speaker.ts.
-// Speaker-dependent audio features (44 dims): F0 stats, F0 delta, jitter,
-// shimmer, HNR, formant ratios, LTAS, voicing ratio, amplitude stats.
-//
-// Cross-platform reproducibility (Stage 3) requires bit-identical output
-// between web and mobile, so this stays in sync with the web SDK.
-//
-// Hermes notes:
-// - `pitchfinder` is pure TypeScript and works without polyfills.
-// - `meyda` is loaded dynamically; if its Web Audio paths break under
-//   Hermes, the LTAS block returns zeros and the rest still computes.
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * Speaker-dependent audio feature extraction.
+ *
+ * Extracts features that characterize HOW someone speaks (prosody, vocal physiology)
+ * rather than WHAT they say (phonetic content). These features are stable across
+ * different utterances from the same speaker.
+ */
 import type { AudioCapture } from "./types";
-import { condense, entropy } from "./statistics";
-import { extractFormantRatios } from "./lpc";
+import { condense, entropy, mean as meanOf, variance as varianceOf } from "./statistics";
+import { extractLpcAnalysis } from "./lpc";
+import { extractMfccFeatures, MFCC_FEATURE_COUNT } from "./mfcc";
+import {
+  extractVoiceQualityFeatures,
+  VOICE_QUALITY_FEATURE_COUNT,
+} from "./voice-quality";
+import { pitchContourShape, PITCH_CONTOUR_SHAPE_FEATURE_COUNT } from "./dct";
 import { yieldToMainThread } from "../lib/yield";
 import { sdkWarn } from "./log";
 
+/**
+ * Compute frame size adaptive to actual sample rate.
+ * YIN pitch detection requires: frameSize >= 4 * sampleRate / minF0
+ * (because YIN halves the buffer twice internally).
+ * Returns next power of 2 for FFT compatibility.
+ */
 function getFrameSize(sampleRate: number): number {
-  const MIN_F0 = 50;
+  const MIN_F0 = 50; // lowest detectable pitch (Hz)
   const minSize = Math.ceil((4 * sampleRate) / MIN_F0);
-  let size = 512;
+  let size = 512; // minimum
   while (size < minSize) size *= 2;
   return size;
 }
 
+/**
+ * Compute hop size as ~10ms at the given sample rate.
+ */
 function getHopSize(sampleRate: number): number {
   return Math.max(1, Math.round(sampleRate * 0.01));
 }
 
-const SPEAKER_FEATURE_COUNT = 44;
+// Existing legacy 44 features (preserved at the start of the audio block so
+// the validator's named sub-range constants — JITTER, SHIMMER,
+// LTAS_FLATNESS_VAR, VOICING_RATIO, etc. — keep pointing at the same
+// indices and the TTS detector's threshold checks remain unchanged).
+const LEGACY_SPEAKER_FEATURE_COUNT = 44;
 
+// LPC coefficient statistics: 12 coefficients × {mean, variance} per
+// coefficient time series.
+const LPC_COEFFICIENT_STATS = 12 * 2;
+
+// Formant absolute values + dynamics: F1/F2/F3 absolute (6) + F1/F2/F3
+// derivative (6) + F1/F2 bandwidth (4) = 16. F3 bandwidth omitted because
+// LPC pole bandwidth on the 3rd formant is consistently noisier than the
+// underlying frequency signal — keeping it would dilute the block.
+const FORMANT_TRAJECTORY_FEATURE_COUNT = 16;
+
+const SPEAKER_FEATURE_COUNT =
+  LEGACY_SPEAKER_FEATURE_COUNT +
+  MFCC_FEATURE_COUNT +
+  LPC_COEFFICIENT_STATS +
+  FORMANT_TRAJECTORY_FEATURE_COUNT +
+  VOICE_QUALITY_FEATURE_COUNT +
+  PITCH_CONTOUR_SHAPE_FEATURE_COUNT;
+// = 44 + 72 + 24 + 16 + 9 + 5 = 170.
+
+// Dynamic imports for browser compatibility
 let pitchDetector: ((buf: Float32Array) => number | null) | null = null;
 let pitchDetectorRate = 0;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let meydaModule: any = null;
-
-// Fallback used when `pitchfinder` fails to load under Hermes (rare, but
-// `meyda` already has the same belt-and-braces in `getMeyda()`). Returning
-// null per frame degrades the F0/jitter/shimmer block to zeros — `detectF0Contour`
-// already treats null as unvoiced — rather than crashing the whole extraction.
-const noPitch = (_: Float32Array): number | null => null;
 
 async function getPitchDetector(sampleRate: number): Promise<(buf: Float32Array) => number | null> {
   if (!pitchDetector || pitchDetectorRate !== sampleRate) {
-    try {
-      const PitchFinder = await import("pitchfinder");
-      pitchDetector = (PitchFinder as any).YIN({ sampleRate, threshold: 0.15 });
-      pitchDetectorRate = sampleRate;
-    } catch {
-      pitchDetector = noPitch;
-      pitchDetectorRate = sampleRate;
-    }
+    const PitchFinder = await import("pitchfinder");
+    pitchDetector = PitchFinder.YIN({ sampleRate, threshold: 0.15 });
+    pitchDetectorRate = sampleRate;
   }
-  return pitchDetector!;
+  return pitchDetector;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getMeyda(): Promise<any> {
   if (!meydaModule) {
     try {
@@ -68,16 +92,20 @@ async function getMeyda(): Promise<any> {
 
 /**
  * Frame batch size between cooperative yields inside `detectF0Contour`.
- * Mirrors `pulse-sdk/src/extraction/speaker.ts` — keeps the F0 loop
- * yielding to the host roughly every 60 fps paint budget so the verify
- * spinner repaints smoothly through the dominant block of extraction
- * work right after capture ends.
+ * YIN at 16 kHz / 1024-sample frame is ~1 ms per frame on commodity
+ * hardware, so 16 frames ≈ one 60 fps paint budget — yielding here keeps
+ * the verify spinner repainting smoothly through the dominant block of
+ * extraction work (which the user perceives as the freeze right after
+ * the 12 s capture ends, before any other yield site fires).
  */
 const F0_YIELD_EVERY_N_FRAMES = 16;
 
+/**
+ * Detect F0 (fundamental frequency) contour and amplitude peaks per frame.
+ */
 async function detectF0Contour(
   samples: Float32Array,
-  sampleRate: number,
+  sampleRate: number
 ): Promise<{ f0: number[]; amplitudes: number[]; periods: number[] }> {
   const detect = await getPitchDetector(sampleRate);
   const frameSize = getFrameSize(sampleRate);
@@ -88,9 +116,7 @@ async function detectF0Contour(
   const numFrames = Math.floor((samples.length - frameSize) / hopSize) + 1;
 
   if (sampleRate !== 16000) {
-    sdkWarn(
-      `[Entros] Audio captured at ${sampleRate}Hz (expected 16kHz). Frame size adjusted to ${frameSize}.`,
-    );
+    sdkWarn(`[Entros SDK] Audio captured at ${sampleRate}Hz (requested 16kHz). Frame size adjusted to ${frameSize}.`);
   }
 
   for (let i = 0; i < numFrames; i++) {
@@ -100,20 +126,25 @@ async function detectF0Contour(
     // (and matching GC pressure on Hermes).
     const frame = samples.subarray(start, start + frameSize);
 
+    // F0 detection
     const pitch = detect(frame);
     if (pitch && pitch > 50 && pitch < 600) {
       f0.push(pitch);
       periods.push(1 / pitch);
     } else {
-      f0.push(0);
+      f0.push(0); // unvoiced frame
     }
 
+    // RMS amplitude per frame
     let sum = 0;
     for (let j = 0; j < frame.length; j++) {
       sum += (frame[j] ?? 0) * (frame[j] ?? 0);
     }
     amplitudes.push(Math.sqrt(sum / frame.length));
 
+    // Cooperative yield every N frames so the host UI gets a paint frame
+    // mid-loop. Skipped on frame 0 (no work done yet) and the last frame
+    // (the function returns immediately after).
     if (i > 0 && i < numFrames - 1 && (i % F0_YIELD_EVERY_N_FRAMES) === 0) {
       await yieldToMainThread();
     }
@@ -122,6 +153,10 @@ async function detectF0Contour(
   return { f0, amplitudes, periods };
 }
 
+/**
+ * Compute jitter measures from pitch period contour.
+ * Jitter = cycle-to-cycle perturbation of the fundamental period.
+ */
 function computeJitter(periods: number[]): number[] {
   const voiced = periods.filter((p) => p > 0);
   if (voiced.length < 3) return [0, 0, 0, 0];
@@ -129,12 +164,14 @@ function computeJitter(periods: number[]): number[] {
   const meanPeriod = voiced.reduce((a, b) => a + b, 0) / voiced.length;
   if (meanPeriod === 0) return [0, 0, 0, 0];
 
+  // Jitter (local): average absolute difference between consecutive periods
   let localSum = 0;
   for (let i = 1; i < voiced.length; i++) {
     localSum += Math.abs(voiced[i]! - voiced[i - 1]!);
   }
   const jitterLocal = localSum / (voiced.length - 1) / meanPeriod;
 
+  // RAP: Relative Average Perturbation (3-point running average)
   let rapSum = 0;
   for (let i = 1; i < voiced.length - 1; i++) {
     const avg3 = (voiced[i - 1]! + voiced[i]! + voiced[i + 1]!) / 3;
@@ -142,16 +179,17 @@ function computeJitter(periods: number[]): number[] {
   }
   const jitterRAP = voiced.length > 2 ? rapSum / (voiced.length - 2) / meanPeriod : 0;
 
+  // PPQ5: Five-Point Period Perturbation Quotient
   let ppq5Sum = 0;
   let ppq5Count = 0;
   for (let i = 2; i < voiced.length - 2; i++) {
-    const avg5 =
-      (voiced[i - 2]! + voiced[i - 1]! + voiced[i]! + voiced[i + 1]! + voiced[i + 2]!) / 5;
+    const avg5 = (voiced[i - 2]! + voiced[i - 1]! + voiced[i]! + voiced[i + 1]! + voiced[i + 2]!) / 5;
     ppq5Sum += Math.abs(voiced[i]! - avg5);
     ppq5Count++;
   }
   const jitterPPQ5 = ppq5Count > 0 ? ppq5Sum / ppq5Count / meanPeriod : 0;
 
+  // DDP: Difference of Differences of Periods
   let ddpSum = 0;
   for (let i = 1; i < voiced.length - 1; i++) {
     const d1 = voiced[i]! - voiced[i - 1]!;
@@ -163,19 +201,26 @@ function computeJitter(periods: number[]): number[] {
   return [jitterLocal, jitterRAP, jitterPPQ5, jitterDDP];
 }
 
+/**
+ * Compute shimmer measures from amplitude peaks.
+ * Shimmer = cycle-to-cycle amplitude perturbation.
+ */
 function computeShimmer(amplitudes: number[], f0: number[]): number[] {
+  // Use amplitudes only at voiced frames
   const voicedAmps = amplitudes.filter((_, i) => f0[i]! > 0);
   if (voicedAmps.length < 3) return [0, 0, 0, 0];
 
   const meanAmp = voicedAmps.reduce((a, b) => a + b, 0) / voicedAmps.length;
   if (meanAmp === 0) return [0, 0, 0, 0];
 
+  // Shimmer (local)
   let localSum = 0;
   for (let i = 1; i < voicedAmps.length; i++) {
     localSum += Math.abs(voicedAmps[i]! - voicedAmps[i - 1]!);
   }
   const shimmerLocal = localSum / (voicedAmps.length - 1) / meanAmp;
 
+  // APQ3: 3-point Amplitude Perturbation Quotient
   let apq3Sum = 0;
   for (let i = 1; i < voicedAmps.length - 1; i++) {
     const avg3 = (voicedAmps[i - 1]! + voicedAmps[i]! + voicedAmps[i + 1]!) / 3;
@@ -183,21 +228,17 @@ function computeShimmer(amplitudes: number[], f0: number[]): number[] {
   }
   const shimmerAPQ3 = voicedAmps.length > 2 ? apq3Sum / (voicedAmps.length - 2) / meanAmp : 0;
 
+  // APQ5
   let apq5Sum = 0;
   let apq5Count = 0;
   for (let i = 2; i < voicedAmps.length - 2; i++) {
-    const avg5 =
-      (voicedAmps[i - 2]! +
-        voicedAmps[i - 1]! +
-        voicedAmps[i]! +
-        voicedAmps[i + 1]! +
-        voicedAmps[i + 2]!) /
-      5;
+    const avg5 = (voicedAmps[i - 2]! + voicedAmps[i - 1]! + voicedAmps[i]! + voicedAmps[i + 1]! + voicedAmps[i + 2]!) / 5;
     apq5Sum += Math.abs(voicedAmps[i]! - avg5);
     apq5Count++;
   }
   const shimmerAPQ5 = apq5Count > 0 ? apq5Sum / apq5Count / meanAmp : 0;
 
+  // DDA: Difference of Differences of Amplitudes
   let ddaSum = 0;
   for (let i = 1; i < voicedAmps.length - 1; i++) {
     const d1 = voicedAmps[i]! - voicedAmps[i - 1]!;
@@ -209,7 +250,14 @@ function computeShimmer(amplitudes: number[], f0: number[]): number[] {
   return [shimmerLocal, shimmerAPQ3, shimmerAPQ5, shimmerDDA];
 }
 
-function computeHNR(samples: Float32Array, sampleRate: number, f0Contour: number[]): number[] {
+/**
+ * Compute Harmonic-to-Noise Ratio per frame using autocorrelation.
+ */
+function computeHNR(
+  samples: Float32Array,
+  sampleRate: number,
+  f0Contour: number[]
+): number[] {
   const frameSize = getFrameSize(sampleRate);
   const hopSize = getHopSize(sampleRate);
   const hnr: number[] = [];
@@ -217,7 +265,7 @@ function computeHNR(samples: Float32Array, sampleRate: number, f0Contour: number
 
   for (let i = 0; i < numFrames && i < f0Contour.length; i++) {
     const f0 = f0Contour[i]!;
-    if (f0 <= 0) continue;
+    if (f0 <= 0) continue; // Skip unvoiced frames
 
     const start = i * hopSize;
     // Read-only autocorrelation — view is safe.
@@ -226,6 +274,7 @@ function computeHNR(samples: Float32Array, sampleRate: number, f0Contour: number
 
     if (period <= 0 || period >= frame.length) continue;
 
+    // Autocorrelation at the fundamental period
     let num = 0;
     let den = 0;
     for (let j = 0; j < frame.length - period; j++) {
@@ -243,36 +292,38 @@ function computeHNR(samples: Float32Array, sampleRate: number, f0Contour: number
   return hnr;
 }
 
-async function computeLTAS(samples: Float32Array, sampleRate: number): Promise<number[]> {
+/**
+ * Compute LTAS (Long-Term Average Spectrum) features using Meyda.
+ * Returns 8 values: spectral centroid, rolloff, flatness, spread — each mean + variance.
+ */
+async function computeLTAS(
+  samples: Float32Array,
+  sampleRate: number
+): Promise<number[]> {
   const frameSize = getFrameSize(sampleRate);
   const hopSize = getHopSize(sampleRate);
   const Meyda = await getMeyda();
   if (!Meyda) return new Array(8).fill(0);
+
+  Meyda.bufferSize = frameSize;
+  Meyda.sampleRate = sampleRate;
 
   const centroids: number[] = [];
   const rolloffs: number[] = [];
   const flatnesses: number[] = [];
   const spreads: number[] = [];
   const numFrames = Math.floor((samples.length - frameSize) / hopSize) + 1;
-  // Pre-allocate the buffer Meyda receives — frames are exactly `frameSize`
-  // (the loop bounds guarantee no overrun), so we can overwrite each
-  // iteration via `.set()` instead of allocating ~1.2k Float32Arrays.
+  // Pre-allocate the buffer Meyda receives
   const paddedFrame = new Float32Array(frameSize);
 
   for (let i = 0; i < numFrames; i++) {
     const start = i * hopSize;
     paddedFrame.set(samples.subarray(start, start + frameSize), 0);
 
-    let features: any;
-    try {
-      features = Meyda.extract(
-        ["spectralCentroid", "spectralRolloff", "spectralFlatness", "spectralSpread"],
-        paddedFrame,
-        { sampleRate, bufferSize: frameSize },
-      );
-    } catch {
-      continue;
-    }
+    const features = Meyda.extract(
+      ["spectralCentroid", "spectralRolloff", "spectralFlatness", "spectralSpread"],
+      paddedFrame,
+    );
 
     if (features) {
       if (Number.isFinite(features.spectralCentroid)) centroids.push(features.spectralCentroid);
@@ -282,7 +333,7 @@ async function computeLTAS(samples: Float32Array, sampleRate: number): Promise<n
     }
   }
 
-  const m = (arr: number[]) => (arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+  const m = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
   const v = (arr: number[]) => {
     if (arr.length < 2) return 0;
     const mu = m(arr);
@@ -290,17 +341,16 @@ async function computeLTAS(samples: Float32Array, sampleRate: number): Promise<n
   };
 
   return [
-    m(centroids),
-    v(centroids),
-    m(rolloffs),
-    v(rolloffs),
-    m(flatnesses),
-    v(flatnesses),
-    m(spreads),
-    v(spreads),
+    m(centroids), v(centroids),
+    m(rolloffs), v(rolloffs),
+    m(flatnesses), v(flatnesses),
+    m(spreads), v(spreads),
   ];
 }
 
+/**
+ * Compute derivative (frame-to-frame differences) of a time series.
+ */
 function derivative(values: number[]): number[] {
   const d: number[] = [];
   for (let i = 1; i < values.length; i++) {
@@ -310,7 +360,7 @@ function derivative(values: number[]): number[] {
 }
 
 /**
- * Extract 44 speaker features AND the raw F0 contour.
+ * Extracts 170 speaker features AND the raw F0 contour.
  */
 export async function extractSpeakerFeaturesDetailed(
   audio: AudioCapture,
@@ -318,7 +368,7 @@ export async function extractSpeakerFeaturesDetailed(
   const { samples, sampleRate } = audio;
 
   if (!Number.isFinite(sampleRate) || sampleRate <= 0 || samples.length === 0) {
-    sdkWarn("[Entros] Invalid audio data. Speaker features will be zeros.");
+    sdkWarn("[Entros SDK] Invalid audio data. Speaker features will be zeros.");
     return { features: new Array(SPEAKER_FEATURE_COUNT).fill(0), f0Contour: [] };
   }
 
@@ -327,19 +377,17 @@ export async function extractSpeakerFeaturesDetailed(
 
   const numFrames = Math.floor((samples.length - frameSize) / hopSize) + 1;
   if (numFrames < 5) {
-    sdkWarn(`[Entros] Too few audio frames (${numFrames}). Speaker features will be zeros.`);
+    sdkWarn(`[Entros SDK] Too few audio frames (${numFrames}). Speaker features will be zeros.`);
     return { features: new Array(SPEAKER_FEATURE_COUNT).fill(0), f0Contour: [] };
   }
 
+  // Peak-normalize audio for robust pitch detection.
   let peakAmp = 0;
   for (let i = 0; i < samples.length; i++) {
     const abs = Math.abs(samples[i] ?? 0);
     if (abs > peakAmp) peakAmp = abs;
   }
 
-  // Single-allocation normalisation. Order of operations preserved exactly
-  // (`(s / peakAmp) * 0.9`) so the output is bit-identical to the previous
-  // `Float32Array(Array.from(samples, ...))` form.
   let normalizedSamples: Float32Array;
   if (peakAmp > 1e-6) {
     normalizedSamples = new Float32Array(samples.length);
@@ -350,19 +398,17 @@ export async function extractSpeakerFeaturesDetailed(
     normalizedSamples = samples;
   }
 
-  const { f0, periods } = await detectF0Contour(normalizedSamples, sampleRate);
-  // YIN pitch detection is the heaviest single block in the audio path
-  // (~120 frames × O(frameSize²)). Yield before HNR + formant extraction
-  // so the host UI can repaint the "Extracting features..." spinner.
+  // 1. F0 detection + amplitude contour (on normalized audio)
+  const { f0, amplitudes: normalizedAmplitudes, periods } = await detectF0Contour(normalizedSamples, sampleRate);
   await yieldToMainThread();
 
   const amplitudes: number[] = [];
   for (let i = 0; i < numFrames; i++) {
     const start = i * hopSize;
     let sum = 0;
-    const end = Math.min(start + frameSize, samples.length);
+    const end = Math.min(start + frameSize, normalizedSamples.length);
     for (let j = start; j < end; j++) {
-      sum += (samples[j] ?? 0) * (samples[j] ?? 0);
+      sum += (normalizedSamples[j] ?? 0) * (normalizedSamples[j] ?? 0);
     }
     amplitudes.push(Math.sqrt(sum / (end - start)));
   }
@@ -370,87 +416,128 @@ export async function extractSpeakerFeaturesDetailed(
   const voicedF0 = f0.filter((v) => v > 0);
   const voicedRatio = voicedF0.length / f0.length;
 
+  // 2. F0 statistics (5 values)
   const f0Stats = condense(voicedF0);
   const f0Entropy = entropy(voicedF0);
-  const f0Features = [
-    f0Stats.mean,
-    f0Stats.variance,
-    f0Stats.skewness,
-    f0Stats.kurtosis,
-    f0Entropy,
-  ];
+  const f0Features = [f0Stats.mean, f0Stats.variance, f0Stats.skewness, f0Stats.kurtosis, f0Entropy];
 
+  // 3. F0 delta statistics (4 values)
   const f0Delta = derivative(voicedF0);
   const f0DeltaStats = condense(f0Delta);
-  const f0DeltaFeatures = [
-    f0DeltaStats.mean,
-    f0DeltaStats.variance,
-    f0DeltaStats.skewness,
-    f0DeltaStats.kurtosis,
-  ];
+  const f0DeltaFeatures = [f0DeltaStats.mean, f0DeltaStats.variance, f0DeltaStats.skewness, f0DeltaStats.kurtosis];
 
+  // 4. Jitter (4 values)
   const jitterFeatures = computeJitter(periods);
+
+  // 5. Shimmer (4 values)
   const shimmerFeatures = computeShimmer(amplitudes, f0);
 
+  // 6. HNR statistics (5 values)
   const hnrValues = computeHNR(normalizedSamples, sampleRate, f0);
   const hnrStats = condense(hnrValues);
   const hnrEntropy = entropy(hnrValues);
-  const hnrFeatures = [
-    hnrStats.mean,
-    hnrStats.variance,
-    hnrStats.skewness,
-    hnrStats.kurtosis,
-    hnrEntropy,
-  ];
-  // HNR autocorrelation is per-frame and synchronous. Yield before LPC
-  // formant extraction so a paint frame can land between the two heaviest
-  // synchronous stages.
+  const hnrFeatures = [hnrStats.mean, hnrStats.variance, hnrStats.skewness, hnrStats.kurtosis, hnrEntropy];
   await yieldToMainThread();
 
-  const { f1f2, f2f3 } = extractFormantRatios(normalizedSamples, sampleRate, frameSize, hopSize);
-  const f1f2Stats = condense(f1f2);
-  const f2f3Stats = condense(f2f3);
+  // 7. Formant analysis
+  const lpc = extractLpcAnalysis(normalizedSamples, sampleRate, frameSize, hopSize);
+  const f1f2Stats = condense(lpc.f1f2);
+  const f2f3Stats = condense(lpc.f2f3);
   const formantFeatures = [
-    f1f2Stats.mean,
-    f1f2Stats.variance,
-    f1f2Stats.skewness,
-    f1f2Stats.kurtosis,
-    f2f3Stats.mean,
-    f2f3Stats.variance,
-    f2f3Stats.skewness,
-    f2f3Stats.kurtosis,
+    f1f2Stats.mean, f1f2Stats.variance, f1f2Stats.skewness, f1f2Stats.kurtosis,
+    f2f3Stats.mean, f2f3Stats.variance, f2f3Stats.skewness, f2f3Stats.kurtosis,
   ];
   await yieldToMainThread();
 
+  // 8. LTAS (8 values)
   const ltasFeatures = await computeLTAS(samples, sampleRate);
 
+  // 9. Voicing ratio (1 value)
   const voicingFeatures = [voicedRatio];
 
+  // 10. Amplitude statistics (5 values)
   const ampStats = condense(amplitudes);
   const ampEntropy = entropy(amplitudes);
-  const ampFeatures = [
-    ampStats.mean,
-    ampStats.variance,
-    ampStats.skewness,
-    ampStats.kurtosis,
-    ampEntropy,
+  const ampFeatures = [ampStats.mean, ampStats.variance, ampStats.skewness, ampStats.kurtosis, ampEntropy];
+
+  // ----- v2 feature pipeline additions -----
+
+  // 11. MFCC + delta-MFCC stats (72 values total)
+  await yieldToMainThread();
+  const mfccFeatures = await extractMfccFeatures(
+    normalizedSamples,
+    sampleRate,
+    frameSize,
+    hopSize,
+  );
+
+  // 12. LPC coefficient statistics (24 values)
+  const lpcStats: number[] = [];
+  for (let c = 0; c < 12; c++) {
+    const track = lpc.lpcCoefficients[c] ?? [];
+    const mu = meanOf(track);
+    lpcStats.push(mu, varianceOf(track, mu));
+  }
+
+  // 13. Formant trajectories (16 values)
+  const f1Stats = { mean: meanOf(lpc.f1), var: varianceOf(lpc.f1) };
+  const f2Stats = { mean: meanOf(lpc.f2), var: varianceOf(lpc.f2) };
+  const f3Stats = { mean: meanOf(lpc.f3), var: varianceOf(lpc.f3) };
+  const f1Delta = derivative(lpc.f1);
+  const f2Delta = derivative(lpc.f2);
+  const f3Delta = derivative(lpc.f3);
+  const f1DeltaMu = meanOf(f1Delta);
+  const f2DeltaMu = meanOf(f2Delta);
+  const f3DeltaMu = meanOf(f3Delta);
+  const b1Mu = meanOf(lpc.b1);
+  const b2Mu = meanOf(lpc.b2);
+  const formantTrajectoryFeatures = [
+    f1Stats.mean, f1Stats.var,
+    f2Stats.mean, f2Stats.var,
+    f3Stats.mean, f3Stats.var,
+    f1DeltaMu, varianceOf(f1Delta, f1DeltaMu),
+    f2DeltaMu, varianceOf(f2Delta, f2DeltaMu),
+    f3DeltaMu, varianceOf(f3Delta, f3DeltaMu),
+    b1Mu, varianceOf(lpc.b1, b1Mu),
+    b2Mu, varianceOf(lpc.b2, b2Mu),
   ];
 
+  // 14. Voice quality (9 values)
+  await yieldToMainThread();
+  const voiceQualityFeatures = await extractVoiceQualityFeatures(
+    normalizedSamples,
+    sampleRate,
+    frameSize,
+    hopSize,
+    f0,
+  );
+
+  // 15. Pitch contour shape (5 values)
+  const pitchShapeFeatures = pitchContourShape(f0, PITCH_CONTOUR_SHAPE_FEATURE_COUNT);
+
   const features = [
-    ...f0Features,
-    ...f0DeltaFeatures,
-    ...jitterFeatures,
-    ...shimmerFeatures,
-    ...hnrFeatures,
-    ...formantFeatures,
-    ...ltasFeatures,
-    ...voicingFeatures,
-    ...ampFeatures,
+    ...f0Features,                 // 5
+    ...f0DeltaFeatures,            // 4
+    ...jitterFeatures,             // 4
+    ...shimmerFeatures,            // 4
+    ...hnrFeatures,                // 5
+    ...formantFeatures,            // 8
+    ...ltasFeatures,               // 8
+    ...voicingFeatures,            // 1
+    ...ampFeatures,                // 5
+    ...mfccFeatures,               // 72
+    ...lpcStats,                   // 24
+    ...formantTrajectoryFeatures,  // 16
+    ...voiceQualityFeatures,       // 9
+    ...pitchShapeFeatures,         // 5
   ];
 
   return { features, f0Contour: f0 };
 }
 
+/**
+ * Extracts 170 speaker features.
+ */
 export async function extractSpeakerFeatures(audio: AudioCapture): Promise<number[]> {
   const { features } = await extractSpeakerFeaturesDetailed(audio);
   return features;

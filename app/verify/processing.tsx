@@ -232,9 +232,9 @@ export default function Processing() {
         // immediately instead of living until the simulated stages finish.
         captured = null;
 
-        const audioNZ = result.raw.slice(0, 44).filter((v) => v !== 0).length;
-        const motionNZ = result.raw.slice(44, 98).filter((v) => v !== 0).length;
-        const touchNZ = result.raw.slice(98, 134).filter((v) => v !== 0).length;
+        const audioNZ = result.raw.slice(0, 170).filter((v) => v !== 0).length;
+        const motionNZ = result.raw.slice(170, 251).filter((v) => v !== 0).length;
+        const touchNZ = result.raw.slice(251, 308).filter((v) => v !== 0).length;
         // Diagnostic — counts and lengths, never values. Dev-only.
         devWarn(
           `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,

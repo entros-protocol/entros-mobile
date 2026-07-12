@@ -2,7 +2,7 @@
 //
 // The executor is the wallet-connected verify flow's server side: it issues
 // a wallet-bound nonce + 5-word phrase via /challenge, then validates the
-// captured 134-feature vector + cross-modal time-series + audio b64 via
+// captured 308-feature vector + cross-modal time-series + audio b64 via
 // /validate-features. Wire format is the canonical one served by
 // executor-node/src/{challenge,validation}/handler.rs.
 //
@@ -80,6 +80,7 @@ export type ValidateOutcome =
       signedReceipt: SignedReceiptDto | null;
       commitmentHex: string | null;
       saltHex: string | null;
+      compositeRiskScore: number | null;
     }
   | { kind: "soft-reject"; reason: ValidateReason }
   | { kind: "rate-limited"; retryAfterSec: number }
@@ -189,6 +190,7 @@ interface ValidateBody {
   signed_receipt?: SignedReceiptDto;
   commitment_hex?: string;
   salt_hex?: string;
+  composite_risk_score?: number;
 }
 
 /** POST /validate-features. Always resolves with a ValidateOutcome — never
@@ -254,6 +256,7 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
       signedReceipt: parsed.signed_receipt ?? null,
       commitmentHex: parsed.commitment_hex ?? null,
       saltHex: parsed.salt_hex ?? null,
+      compositeRiskScore: typeof parsed.composite_risk_score === "number" ? parsed.composite_risk_score : null,
     };
   }
 

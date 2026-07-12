@@ -61,7 +61,7 @@ export interface ExtractedFeatures {
   accelMagnitude: number[];
 }
 
-export const AUDIO_FEATURE_COUNT = 44;
-export const MOTION_FEATURE_COUNT = 54;
-export const TOUCH_FEATURE_COUNT = 36;
+export const AUDIO_FEATURE_COUNT = 170;
+export const MOTION_FEATURE_COUNT = 81;
+export const TOUCH_FEATURE_COUNT = 57;
 export const TOTAL_FEATURE_COUNT = AUDIO_FEATURE_COUNT + MOTION_FEATURE_COUNT + TOUCH_FEATURE_COUNT;
