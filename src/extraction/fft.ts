@@ -86,7 +86,7 @@ export function realFFT(
         real[chunkStart + k] = ar + tr;
         imag[chunkStart + k] = ai + ti;
         real[chunkStart + k + halfSize] = ar - tr;
-        imag[chunkStart + k + halfSize] = ar - ti;
+        imag[chunkStart + k + halfSize] = ai - ti;
       }
     }
   }
