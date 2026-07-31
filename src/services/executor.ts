@@ -23,8 +23,21 @@
 import { config } from "@/config";
 import type { SignedReceiptDto } from "@/protocol/receipt";
 
+import { reasonDisposition, type VerificationReason } from "./reasons";
+
 const CHALLENGE_TIMEOUT_MS = 5_000;
-const VALIDATE_TIMEOUT_MS = 15_000;
+// Must exceed the executor's own ceiling, not sit inside it. The executor
+// waits up to VALIDATOR_REQUEST_TIMEOUT (20s) on the validation service and
+// pads every timed response to HANDLER_MIN_DURATION (4s), so a legitimate
+// two-pass validation can legitimately take past 24s.
+//
+// Aborting earlier does not cancel any of that. The executor has already
+// recorded the wallet attempt and deducted quota by the time it calls the
+// validator, and the refund only runs if the handler completes. A client that
+// walks away at 15s therefore burns an attempt with no refund, and five of
+// those lock the wallet out for an hour. The previous 15s was safe only while
+// the executor's own ceiling was 8s.
+const VALIDATE_TIMEOUT_MS = 45_000;
 
 export interface ChallengeResponse {
   /** 32-byte server-issued nonce. Bound to the wallet in the executor's
@@ -39,25 +52,11 @@ export interface ChallengeResponse {
   expiresIn: number;
 }
 
-/** Soft-reject reasons that map to the retry-with-hint UX. Mirrored from
- *  entros-validation::ReasonCode::safe_label and entros.io's RETRYABLE_REASONS
- *  (verify-wallet-connected.tsx:270-275). Drift in any direction = a reason
- *  either escapes to hard-fail (annoying) or slips into soft-fail without a
- *  hint (confusing). */
-export type ValidateReason =
-  | "variance_floor"
-  | "entropy_bounds"
-  | "temporal_coupling_low"
-  | "phrase_content_mismatch";
-
-export const SOFT_REJECT_REASONS: readonly ValidateReason[] = [
-  "variance_floor",
-  "entropy_bounds",
-  "temporal_coupling_low",
-  "phrase_content_mismatch",
-];
-
-/** Discriminated outcome of a /validate-features call.
+/** Discriminated outcome of a /validate-features call. Which reasons are
+ *  recoverable is not decided here: `reasonDisposition` from ./reasons is the
+ *  only thing that classifies a label, so mobile and web cannot disagree about
+ *  whether a given rejection offers a retry. This union is the mobile routing
+ *  shape layered on top of that verdict.
  *
  *  - `ok`: validation passed; verify flow advances to ZK proof generation.
  *    When the validator has a signing key, `signedReceipt` carries the Ed25519
@@ -66,12 +65,20 @@ export const SOFT_REJECT_REASONS: readonly ValidateReason[] = [
  *    its own commitment). The first-verify path bundles the receipt as an
  *    Ed25519 prefix before `mint_anchor`; re-verify ignores the receipt
  *    (update_anchor binds via the VerificationResult PDA instead).
- *  - `soft-reject`: user-recoverable; surface hint + Try Again
- *  - `rate-limited`: per-wallet cap exceeded (executor 429); surface cooldown
- *  - `hard-reject`: 400 with no safe reason — opaque attack-signal rejection
+ *  - `soft-reject`: a `retry` reason; surface hint + Try Again
+ *  - `rate-limited`: a cooldown is in force (executor 429, or a `wait` reason
+ *    on any status); surface the countdown
+ *  - `hard-reject`: the opaque attack-signal rejection. A 400 carrying no
+ *    reason, an unrecognised one, or a `fatal` one.
+ *  - `payload-too-large`: the executor refused the body unread (413). Its own
+ *    kind rather than a `hard-reject` so the copy can say what happened, and
+ *    so `hard-reject` keeps meaning what its line above says.
  *  - `quota-exhausted`: integrator API key out of quota (402)
  *  - `unauthorized`: API key missing/wrong (401) — config bug, surfaces generic
- *  - `service-down`: 5xx, network error, or abort — show "try again later"
+ *  - `timeout`: the request outlived VALIDATE_TIMEOUT_MS and we aborted it.
+ *    Separate from `service-down` because the executor may be healthy and the
+ *    upload merely slow, which makes "can't reach the service" a lie.
+ *  - `service-down`: 5xx, or a transport failure that never became a response
  *  - `unknown`: anything else; logged status for triage */
 export type ValidateOutcome =
   | {
@@ -82,11 +89,13 @@ export type ValidateOutcome =
       saltHex: string | null;
       compositeRiskScore: number | null;
     }
-  | { kind: "soft-reject"; reason: ValidateReason }
+  | { kind: "soft-reject"; reason: VerificationReason }
   | { kind: "rate-limited"; retryAfterSec: number }
   | { kind: "hard-reject" }
+  | { kind: "payload-too-large" }
   | { kind: "quota-exhausted" }
   | { kind: "unauthorized" }
+  | { kind: "timeout" }
   | { kind: "service-down"; message: string }
   | { kind: "unknown"; status: number; message: string };
 
@@ -127,8 +136,6 @@ const requireRelayer = (): RelayerConfig => {
   }
   return { baseUrl, apiKey: config.relayerApiKey };
 };
-
-const SOFT_REASON_SET: ReadonlySet<string> = new Set(SOFT_REJECT_REASONS);
 
 /** Fetch a fresh nonce + phrase for the given wallet. Throws on network
  *  error, non-2xx, or a malformed response — the caller (/verify/intro)
@@ -237,6 +244,13 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
       signal: controller.signal,
     });
   } catch (err) {
+    // The only thing that aborts this request is our own timer, so an
+    // AbortError means the upload outran VALIDATE_TIMEOUT_MS. Folding it into
+    // `service-down` told the user the executor was unreachable when it may
+    // have been healthy the whole time and the connection merely slow.
+    if (err instanceof Error && err.name === "AbortError") {
+      return { kind: "timeout" };
+    }
     const message = err instanceof Error ? err.message : String(err);
     return { kind: "service-down", message };
   } finally {
@@ -260,23 +274,42 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
     };
   }
 
+  // Cooldown length rides in the JSON body. The executor also sets a
+  // Retry-After header, but the body is the portable source: a browser cannot
+  // read that header cross-origin unless the server lists it in
+  // Access-Control-Expose-Headers, and it does not. 60 s covers a server that
+  // sent nothing usable.
+  const retryAfterSec =
+    typeof parsed.retry_after === "number" && parsed.retry_after > 0 ? parsed.retry_after : 60;
+
   if (response.status === 400) {
-    if (parsed.reason && SOFT_REASON_SET.has(parsed.reason)) {
-      return { kind: "soft-reject", reason: parsed.reason as ValidateReason };
+    // Classify by disposition, not by membership of a list kept here. The
+    // `wait` branch is defensive, since the executor sends cooldowns as 429
+    // today, but routing by label means a status change upstream cannot turn a
+    // cooldown into a dead end.
+    switch (reasonDisposition(parsed.reason)) {
+      case "retry":
+        return { kind: "soft-reject", reason: parsed.reason as VerificationReason };
+      case "wait":
+        return { kind: "rate-limited", retryAfterSec };
+      case "fatal":
+        return { kind: "hard-reject" };
     }
-    return { kind: "hard-reject" };
   }
 
   if (response.status === 401) return { kind: "unauthorized" };
   if (response.status === 402) return { kind: "quota-exhausted" };
+  // 413 carries `reason: "payload_too_large"`, whose disposition is `fatal`.
+  // Matched on the status so the outcome holds even when the body is a
+  // gateway's error page rather than the executor's JSON.
+  if (response.status === 413) return { kind: "payload-too-large" };
+  if (response.status === 429) return { kind: "rate-limited", retryAfterSec };
 
-  if (response.status === 429) {
-    const retryAfterSec =
-      typeof parsed.retry_after === "number" && parsed.retry_after > 0 ? parsed.retry_after : 60;
-    return { kind: "rate-limited", retryAfterSec };
-  }
-
-  if (response.status >= 502 && response.status <= 504) {
+  // Every 5xx, not just 502-504. A plain 500 (TransactionSubmissionFailed,
+  // AttestationServiceUnavailable) used to reach the user as an untriaged
+  // `unknown` despite being the same "nothing was decided, come back later"
+  // situation as a 502.
+  if (response.status >= 500) {
     return {
       kind: "service-down",
       message: parsed.error ?? `Executor returned HTTP ${response.status}.`,
