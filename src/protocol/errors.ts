@@ -6,7 +6,7 @@
 // on top via SendTransactionError.
 //
 // Source-of-truth error catalogues:
-// - protocol-core/programs/entros-anchor/src/errors.rs (codes 6000-6021)
+// - protocol-core/programs/entros-anchor/src/errors.rs (codes 6000-6025)
 // - protocol-core/programs/entros-verifier/src/errors.rs (codes 6000-6007)
 // - Solana runtime: SystemProgram InsufficientFunds, BlockhashNotFound,
 //   AlreadyProcessed, AccountAlreadyInitialized, AccountNotInitialized
@@ -169,9 +169,16 @@ function categorizeAnchorCode(code: number, raw: string): ParsedSubmitError {
     return { kind: "programming-error", raw, anchorCode: code };
   }
 
-  // entros-anchor: every other variant we haven't carved out — keep code for
-  // diagnostics, route to programming-error so the UI offers "report this".
-  return { kind: "programming-error", raw, anchorCode: code };
+  // entros-anchor: every other variant we haven't carved out. Keep the code for
+  // diagnostics, but route to `generic`, not `programming-error`.
+  //
+  // `programming-error` renders "report this", which is right for the two codes
+  // carved out above and wrong for everything else. Most unmatched variants are
+  // protocol state rather than bugs, and the program gains variants faster than
+  // this table does: 6025 landed here and told users to file a bug report for a
+  // rate limit. An unfamiliar code means this table is behind, not that the
+  // program is broken.
+  return { kind: "generic", raw, anchorCode: code };
 }
 
 /** Pull the most-informative message string out of any error shape.
