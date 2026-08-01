@@ -9,24 +9,34 @@ import { Countdown } from "@/components/primitives/Countdown";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
-import { ValidateReason } from "@/services/executor";
+import type { RetryableReason } from "@/services/reasons";
 import { useAppState } from "@/state/AppState";
 import { FailureBucket } from "@/state/types";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
-// Soft-reject hint dictionary, keyed by the validator's safe_label set
-// (entros-validation/src/types.rs:99-109). Mirrored byte-for-byte from
-// entros.io/src/components/verify/step-views.tsx:108-117 — drift in either
-// direction = a reason either escapes to hard-fail (annoying) or slips
-// into soft-fail without a hint (confusing). The Record<ValidateReason, …>
-// type pins exhaustivity: adding a fifth ValidateReason without updating
-// this table is a TS error.
-const SOFT_HINT: Record<ValidateReason, string> = {
+// Soft-reject hint dictionary. The keys are the taxonomy's retryable set, whose
+// source of truth is `VerificationReason` in src/services/reasons.ts; the copy
+// is kept in step with entros.io's SoftFailedView so the same rejection reads
+// the same on both platforms. Hints deliberately avoid technique names
+// ("temporal coupling", "Whisper", "SimHash"). They describe what the user can
+// DO, not what we measured.
+//
+// Typed against the retryable subset rather than every reason: a `wait` or
+// `fatal` reason never reaches this screen, so a hint for one would be dead
+// copy, while a retryable reason without a hint is a compile error.
+
+const SOFT_HINT: Record<RetryableReason, string> = {
   variance_floor: "Your signals were a bit flat. Try moving more and speaking with normal volume.",
   entropy_bounds: "Your gestures and speech were a bit too uniform. Try varying both naturally.",
   temporal_coupling_low: "Speak and move at the same time—they were a bit out of sync.",
   phrase_content_mismatch: "Read the phrase clearly at a normal pace, exactly as shown.",
+  captcha_required:
+    "Liveness pattern anomaly detected. Please complete this dynamic voice/motion challenge to verify your identity.",
+  validation_unavailable:
+    "We couldn't reach the verification service. Check your connection and try again.",
+  validation_timeout:
+    "Your connection stalled while sending the verification. Somewhere with a stronger signal should work.",
 };
 const SOFT_HINT_FALLBACK =
   "Something didn't come through cleanly. Give it another shot with natural movement and clear speech.";
@@ -74,6 +84,18 @@ const hardBucketCopy: Record<
     secondary: "Cancel",
   },
 };
+
+/**
+ * Own keys of {@link hardBucketCopy}, for exact membership tests.
+ *
+ * Deliberately not an `in` check. `in` walks the prototype chain, so a
+ * `bucket` of "toString" would select `Object.prototype.toString` and hand a
+ * function to the copy lookup. `bucket` is Set-validated before it reaches
+ * here today, so this is defence in depth rather than a live fix, but the
+ * identical construction produced a real defect in the reason taxonomy and
+ * costs nothing to close.
+ */
+const HARD_BUCKET_KEYS: ReadonlySet<string> = new Set(Object.keys(hardBucketCopy));
 
 /** Every FailureBucket value, kept in sync with the type union in
  *  src/state/types.ts. Used to validate the screen's `bucket` param at
@@ -194,8 +216,16 @@ export default function VerifyFailure() {
   // Soft-rejects are NOT logged in verification history (matches the web
   // flow's soft_failed transition — they're transient retries, not failures).
   if (params.bucket === "soft") {
-    const reason = typeof params.reason === "string" ? (params.reason as ValidateReason) : null;
-    const hint = (reason && SOFT_HINT[reason]) || SOFT_HINT_FALLBACK;
+    // Widened for the lookup: `reason` arrives from the URL/deeplink layer and
+    // can be any string, so casting it to a reason would be a lie. The
+    // exhaustiveness that matters is on the table's declaration; here anything
+    // unrecognised takes the fallback. Indexing an object literal with an
+    // attacker-chosen key can resolve to Object.prototype (`reason=toString`
+    // returns a function), so the result is type-checked, not just presence-
+    // checked, before it reaches a Text node.
+    const reason = typeof params.reason === "string" ? params.reason : "";
+    const rawHint = (SOFT_HINT as Record<string, unknown>)[reason];
+    const hint = typeof rawHint === "string" ? rawHint : SOFT_HINT_FALLBACK;
     return (
       <Screen>
         <View style={styles.wrap}>
@@ -342,7 +372,7 @@ export default function VerifyFailure() {
   }
 
   // Hard failure branches — danger tone, AlertIcon.
-  const hardKey = (bucket as HardBucket) in hardBucketCopy ? (bucket as HardBucket) : "generic";
+  const hardKey = HARD_BUCKET_KEYS.has(bucket) ? (bucket as HardBucket) : "generic";
   const copy = hardBucketCopy[hardKey];
 
   const handlePrimary = () => {

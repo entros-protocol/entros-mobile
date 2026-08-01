@@ -17,7 +17,7 @@
       "bundleIdentifier": "io.entros.mobile",
       "supportsTablet": false,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Entros records a short voice sample on this device. Audio is processed locally and discarded immediately after a 134-feature statistical summary is extracted.",
+        "NSMicrophoneUsageDescription": "Entros records a short voice sample on this device. Audio is processed locally and discarded immediately after a 308-feature statistical summary is extracted.",
         "NSMotionUsageDescription": "Entros samples motion sensors to measure how you hold the phone. Raw sensor data stays on this device and is discarded immediately after feature extraction.",
         "ITSAppUsesNonExemptEncryption": false
       }

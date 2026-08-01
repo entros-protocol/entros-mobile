@@ -13,6 +13,7 @@ import { devWarn } from "@/lib/log";
 
 import { FINGERPRINT_BITS, SIMHASH_SEED } from "./constants";
 import type { TemporalFingerprint } from "./types";
+import { TOTAL_FEATURE_COUNT } from "../extraction/types";
 
 // Mulberry32 PRNG: deterministic, fast, good distribution
 function mulberry32(seed: number): () => number {
@@ -65,7 +66,7 @@ function getHyperplanes(dimension: number): number[][] {
  * Uses deterministic random hyperplanes seeded from the protocol constant.
  * Similar feature vectors produce fingerprints with low Hamming distance.
  */
-const EXPECTED_FEATURE_DIMENSION = 134; // 44 speaker + 54 motion/mouse + 36 touch
+const EXPECTED_FEATURE_DIMENSION = TOTAL_FEATURE_COUNT;
 
 export function simhash(features: number[]): TemporalFingerprint {
   if (features.length === 0) {

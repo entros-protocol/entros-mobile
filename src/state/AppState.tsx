@@ -16,6 +16,13 @@ import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 import * as mwa from "@/wallet/mwa";
 
+/**
+ * Width of one Trust Score activity bin, mirroring `BIN_SIZE_SECS` in
+ * entros-anchor. The on-chain ring records at most one timestamp per bin, so
+ * anything that predicts what the chain will hold has to use the same width.
+ */
+const SCORING_BIN_MS = 7 * 24 * 60 * 60 * 1000;
+
 import { presets } from "./presets";
 import {
   ConnectionState,
@@ -240,13 +247,23 @@ const reducer = (state: AppState, action: Action): AppState => {
       };
       const newScore = Math.min(100, state.identity.trustScore + action.trustDelta);
       // Optimistically push the new timestamp onto the chain-derived
-      // `recentTimestamps` buffer so the activity tab shows the row
-      // before hydrateIdentity reconciles. Cap at 52 to match the on-chain
-      // ring-buffer width. Defensive `?? []` for Fast-Refresh sessions
-      // where the in-memory identity object pre-dates the field — the
+      // `recentTimestamps` buffer so the activity tab shows the row before
+      // hydrateIdentity reconciles. Defensive `?? []` for Fast-Refresh
+      // sessions where the in-memory identity object pre-dates the field. The
       // alternative `...undefined` would throw and crash the verify flow.
+      //
+      // The gate mirrors `record_verification` in entros-anchor: the ring
+      // holds at most one entry per weekly scoring bin, so a second
+      // verification inside the same week is not written on chain. Pushing it
+      // here anyway would show a row that hydrate then removes.
       const prior = state.identity.recentTimestamps ?? [];
-      const recentTimestamps = [now, ...prior].slice(0, 52);
+      const newestPrior = prior[0]?.getTime();
+      const opensNewBin =
+        newestPrior === undefined ||
+        now.getTime() - newestPrior >= SCORING_BIN_MS;
+      const recentTimestamps = opensNewBin
+        ? [now, ...prior].slice(0, 52)
+        : prior;
       return {
         ...state,
         identity: {

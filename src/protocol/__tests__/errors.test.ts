@@ -126,6 +126,15 @@ describe("parseSubmitError — Anchor numeric codes", () => {
     expect(parseSubmitError({ message: "Error Number: 6021" }).kind).toBe("receipt-rejected");
   });
 
+  test("an unmatched anchor code is generic, not a bug report", () => {
+    // The table lags the program, and an unfamiliar code means this file is
+    // behind rather than that the program is broken. 6025 sat here and told
+    // users to report a rate limit as a bug.
+    const parsed = parseSubmitError({ message: "Error Number: 6025" });
+    expect(parsed.kind).toBe("generic");
+    expect(parsed.anchorCode).toBe(6025);
+  });
+
   test("ArithmeticOverflow (6002) → programming-error", () => {
     expect(parseSubmitError({ message: "Error Number: 6002" }).kind).toBe("programming-error");
   });

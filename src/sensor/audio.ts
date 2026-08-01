@@ -224,7 +224,7 @@ export const startAudioRecording = async (
       }
       // Drop refs so the chunk array is GC-eligible immediately.
       chunks.length = 0;
-      return { pcm, sampleRate: TARGET_AUDIO_SAMPLE_RATE, durationMs };
+      return { pcm, sampleRate: TARGET_AUDIO_SAMPLE_RATE, durationMs, startedAt };
     },
     cancel: async () => {
       teardown();

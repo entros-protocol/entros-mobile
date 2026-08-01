@@ -76,7 +76,7 @@ export const stageCopy: Record<
   capturing: null,
   extracting: {
     title: "Extracting features",
-    subtitle: "Voice, motion, and touch reduced to 134 numbers.",
+    subtitle: "Voice, motion, and touch reduced to 308 numbers.",
   },
   validating: {
     title: "Server-side validation",

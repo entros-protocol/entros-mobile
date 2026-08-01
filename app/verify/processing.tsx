@@ -77,7 +77,8 @@ import { parseSubmitError, type ParsedSubmitError } from "@/protocol/errors";
 import type { SignedReceiptDto } from "@/protocol/receipt";
 import { submitReset, submitVerify } from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
-import { validateFeatures, ValidateOutcome, ValidateReason } from "@/services/executor";
+import { validateFeatures, ValidateOutcome } from "@/services/executor";
+import type { VerificationReason } from "@/services/reasons";
 import { useAppState } from "@/state/AppState";
 import { clearCapture, takeCapture } from "@/state/captureBuffer";
 import { clearChallenge, takeChallenge } from "@/state/challengeBuffer";
@@ -136,7 +137,7 @@ export default function Processing() {
     // the web flow's soft_failed transition) — they're transient retries
     // surfaced through a friendlier UX. Hard buckets above use `failOut`
     // which DOES log to history.
-    const routeSoftReject = (reason: ValidateReason) => {
+    const routeSoftReject = (reason: VerificationReason) => {
       if (cancelled) return;
       setForceOutcome(null);
       router.replace({
@@ -165,9 +166,25 @@ export default function Processing() {
           devWarn(`[Entros] /validate-features rate-limited retryAfter=${outcome.retryAfterSec}s`);
           routeRateLimited(outcome.retryAfterSec);
           return;
+        case "timeout":
+          // We aborted the request ourselves, so no verdict exists to record.
+          // Route to the transient-retry surface rather than "relayer not
+          // connected", and skip the history write for the same reason the
+          // taxonomy marks validation_timeout client-origin: nothing was
+          // judged, so nothing failed.
+          devWarn("[Entros] /validate-features timed out");
+          failOutNoLog("retry-now");
+          return;
         case "service-down":
           devWarn(`[Entros] /validate-features service-down: ${outcome.message}`);
           failOut("relayer-down");
+          return;
+        case "payload-too-large":
+          // The client assembled a body the executor refused to read. Resending
+          // it earns the same rejection, so this is report-and-stop rather than
+          // a retry. The diagnostics code is what moves it forward.
+          devWarn("[Entros] /validate-features rejected (payload-too-large)");
+          failOut("report-bug", "payload_too_large");
           return;
         case "quota-exhausted":
         case "unauthorized":
@@ -232,9 +249,9 @@ export default function Processing() {
         // immediately instead of living until the simulated stages finish.
         captured = null;
 
-        const audioNZ = result.raw.slice(0, 44).filter((v) => v !== 0).length;
-        const motionNZ = result.raw.slice(44, 98).filter((v) => v !== 0).length;
-        const touchNZ = result.raw.slice(98, 134).filter((v) => v !== 0).length;
+        const audioNZ = result.raw.slice(0, 170).filter((v) => v !== 0).length;
+        const motionNZ = result.raw.slice(170, 251).filter((v) => v !== 0).length;
+        const touchNZ = result.raw.slice(251, 308).filter((v) => v !== 0).length;
         // Diagnostic — counts and lengths, never values. Dev-only.
         devWarn(
           `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,
