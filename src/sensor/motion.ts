@@ -68,7 +68,7 @@ export const startMotionRecording = async (
       teardown();
       const durationMs = Date.now() - startedAt;
       const sampleRate = durationMs > 0 ? (samples.length * 1000) / durationMs : 0;
-      return { samples, sampleRate, durationMs };
+      return { samples, sampleRate, durationMs, startedAt };
     },
     cancel: async () => {
       teardown();

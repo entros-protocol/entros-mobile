@@ -8,6 +8,15 @@ export interface AudioCapture {
   samples: Float32Array;
   sampleRate: number;
   duration: number;
+  /**
+   * Wall-clock instant, in the `Date.now()` domain, of the first sample.
+   * Motion is aligned to this before its contour is correlated against the F0
+   * contour server-side. Mirrors `AudioCapture` in `@entros/pulse-sdk`, whose
+   * shape this file exists to track.
+   */
+  windowStartMs: number;
+  /** Wall-clock instant just past the last sample. */
+  windowEndMs: number;
 }
 
 export interface MotionSample {

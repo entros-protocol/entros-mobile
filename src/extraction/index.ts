@@ -1,6 +1,9 @@
 // Extraction entry point. Adapts mobile sensor capture types to the
 // pulse-sdk-shaped types expected by the ported extractors, then runs the
-// same 134-element feature pipeline as the web SDK.
+// same 308-element feature pipeline as the web SDK (170 audio + 81 motion +
+// 57 touch). This said 134 until 2026-08-01, long after the v3 port landed,
+// and the stale figure was read back as fact when deciding whether a defect
+// in this file could reach the validator.
 //
 // Cross-platform reproducibility (Stage 3): identical inputs on web and
 // mobile must produce identical raw feature vectors. The adapter sets
@@ -41,11 +44,25 @@ const adaptAudio = (cap: MobileAudioCapture): AudioCapture => ({
   samples: cap.pcm,
   sampleRate: cap.sampleRate,
   duration: cap.durationMs / 1000,
+  windowStartMs: cap.startedAt,
+  windowEndMs: cap.startedAt + cap.durationMs,
 });
 
-const adaptMotion = (samples: MobileMotionSample[]): MotionSample[] =>
+/**
+ * `epochMs` converts motion's capture-relative `t` to the absolute `Date.now()`
+ * domain audio reports its window in. Both sensors already stamp `Date.now()`
+ * at start, and each counted from its own, so neither could be placed against
+ * the other. Recording starts motion one `await` before audio, so the offset is
+ * real rather than notional.
+ *
+ * No feature moves as a result. Every consumer of `timestamp` reads differences
+ * only: `sampleRateFromTimestamps`, `captureDurationSec` and the inter-sample
+ * gaps in `computeMotionV2`. Touch is deliberately left capture-relative,
+ * because nothing correlates it against audio.
+ */
+const adaptMotion = (samples: MobileMotionSample[], epochMs: number): MotionSample[] =>
   samples.map((s) => ({
-    timestamp: s.t,
+    timestamp: epochMs + s.t,
     ax: s.ax,
     ay: s.ay,
     az: s.az,
@@ -75,7 +92,7 @@ const adaptTouch = (samples: MobileTouchSample[]): TouchSample[] =>
  */
 export async function extractFeatures(sensorData: MobileSensorData): Promise<ExtractedFeatures> {
   const audio = adaptAudio(sensorData.audio);
-  const motion = adaptMotion(sensorData.motion.samples);
+  const motion = adaptMotion(sensorData.motion.samples, sensorData.motion.startedAt);
   const touch = adaptTouch(sensorData.touch.samples);
 
   const { features: audioFeatures, f0Contour } = await extractSpeakerFeaturesDetailed(audio);
@@ -101,8 +118,17 @@ export async function extractFeatures(sensorData: MobileSensorData): Promise<Ext
   const touchFeatures = extractTouchFeatures(touch);
   await yieldToMainThread();
 
+  // Resampled onto the exact stretch of wall-clock time the transmitted audio
+  // covers, so the validator's cross-correlation compares two views of one
+  // moment. Empty if motion is absent, F0 produced no frames, or motion does
+  // not span enough of the audio window.
   const accelMagnitude =
-    hasMotion && f0Contour.length > 0 ? extractAccelerationMagnitude(motion, f0Contour.length) : [];
+    hasMotion && f0Contour.length > 0
+      ? extractAccelerationMagnitude(motion, f0Contour.length, {
+          startMs: audio.windowStartMs,
+          endMs: audio.windowEndMs,
+        })
+      : [];
 
   return {
     raw: fuseRawFeatures(audioFeatures, motionFeatures, touchFeatures),

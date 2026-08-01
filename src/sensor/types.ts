@@ -37,6 +37,12 @@ export interface AudioCapture {
   sampleRate: number;
   /** Capture duration in milliseconds. */
   durationMs: number;
+  /**
+   * `Date.now()` at the instant recording began. Together with
+   * {@link durationMs} this places the buffer on the same timeline as motion,
+   * which is what the cross-modal coupling check needs the two to share.
+   */
+  startedAt: number;
 }
 
 export interface MotionSample {
@@ -57,6 +63,12 @@ export interface MotionCapture {
   /** Effective sample rate (computed from samples.length / duration). */
   sampleRate: number;
   durationMs: number;
+  /**
+   * `Date.now()` at the instant recording began, which is what {@link
+   * MotionSample.t} counts from. Audio carries its own, and the two are the
+   * only way to place both streams on one timeline.
+   */
+  startedAt: number;
 }
 
 export interface TouchSample {
