@@ -399,7 +399,7 @@ export async function extractSpeakerFeaturesDetailed(
   }
 
   // 1. F0 detection + amplitude contour (on normalized audio)
-  const { f0, amplitudes: normalizedAmplitudes, periods } = await detectF0Contour(normalizedSamples, sampleRate);
+  const { f0, periods } = await detectF0Contour(normalizedSamples, sampleRate);
   await yieldToMainThread();
 
   const amplitudes: number[] = [];

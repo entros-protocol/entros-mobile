@@ -499,7 +499,6 @@ export function extractMouseDynamics(samples: TouchSample[]): number[] {
   const x = samples.map((s) => s.x);
   const y = samples.map((s) => s.y);
   const pressure = samples.map((s) => s.pressure);
-  const area = samples.map((s) => s.width * s.height);
 
   // Velocity
   const vx = derivative(x);
