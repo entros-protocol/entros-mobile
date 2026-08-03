@@ -11,11 +11,12 @@ Thanks for your interest. This document covers the contribution flow and the non
 
 Android emulator or device is required to exercise the wallet flow (Mobile Wallet Adapter is Android-only).
 
-## Branch and commit conventions
+## Pull requests
 
-- Branch from `develop`. Names: `feature/<thing>`, `fix/<thing>`, `chore/<thing>`. Lowercase, hyphenated, descriptive of the work.
-- One commit per logical unit. Imperative mood, single sentence, no emoji, no `feat:` / `fix:` prefix, no Co-Authored-By trailer.
-- Open a PR against `develop`. PR description states what changed and how to test it. Use bullet points for the test plan, not checkboxes.
+- Open a PR against `develop`. `main` is the release branch.
+- Keep one logical change per PR. Smaller PRs get reviewed sooner.
+- The PR description states what changed and how to test it. Use bullet points for the test plan, not checkboxes.
+- Commit style and branch naming are yours to choose.
 
 ## Required checks
 
@@ -29,10 +30,10 @@ npm test
 
 CI runs the same set. Reviewers will not merge a red PR.
 
-## Privacy invariants — non-negotiable
+## Privacy invariants, non-negotiable
 
 - Raw audio, motion, and touch samples must never be written to disk, transmitted, or logged.
-- The 134-feature baseline lives only in `expo-secure-store` (Keychain / Keystore) and is bound to the device. No iCloud / Google Drive sync.
+- The 308-feature baseline lives only in `expo-secure-store` (Keychain / Keystore) and is bound to the device. No iCloud / Google Drive sync.
 - Wallet auth tokens are stored in `expo-secure-store` only. They never appear in JS bridges, logs, or analytics events.
 
 PRs that violate these will be closed without merge.
