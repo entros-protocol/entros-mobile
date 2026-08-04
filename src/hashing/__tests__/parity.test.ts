@@ -10,7 +10,7 @@
 // settles it, so run it rather than trusting this paragraph.
 //
 // It reads the SDK sources directly instead of `dist/`, so it needs no build
-// and cannot report a stale bundle. Run from `/Users/johnny/Entros/pulse-sdk/`:
+// and cannot report a stale bundle. Run it from a `pulse-sdk` checkout:
 //
 //   npx tsx -e '
 //     import { simhash } from "./src/hashing/simhash";
