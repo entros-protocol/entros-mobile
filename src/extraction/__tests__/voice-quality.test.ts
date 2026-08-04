@@ -69,7 +69,12 @@ describe("extractVoiceQualityFeatures parity with pulse-sdk", () => {
       // so V8 differs by an ULP between architectures. Pinned exactly, these
       // passed on macOS arm64 and failed CI on Linux x64 by one digit. The
       // exact guard lives in the basis test below.
-      const tolerance = Math.max(Math.abs(want) * 1e-12, 1e-20);
+      // The absolute floor is 1e-18 because the near-zero entries are variances
+      // of nearly-identical per-frame values. Catastrophic cancellation leaves
+      // them with an absolute error far larger than their magnitude implies: an
+      // ULP disagreement on inputs around 310 surfaces as roughly 1e-20 on an
+      // output of 4e-11. A relative-only bound cannot express that.
+      const tolerance = Math.max(Math.abs(want) * 1e-9, 1e-18);
       expect(Math.abs(features[i]! - want)).toBeLessThanOrEqual(tolerance);
     }
   }, 60_000);
