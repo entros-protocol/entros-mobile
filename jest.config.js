@@ -5,6 +5,15 @@
 // they're needed; for Stage 3 we only need to test the hashing layer,
 // which is Buffer-free pure TS that runs identically on Node and Hermes.
 
+// The `test` script sets NODE_OPTIONS=--experimental-vm-modules. Without it,
+// any `await import(...)` inside the code under test throws "A dynamic import
+// callback was invoked without --experimental-vm-modules", and the extraction
+// modules swallow that in a try/catch and fall back to a zero feature vector.
+// That failed silently rather than loudly: a test would see all zeros, compare
+// them against other zeros, and pass. It is why no test in this repository had
+// ever exercised Meyda, which supplies the spectra behind the voice-quality
+// and MFCC features. Removing the flag re-hides that whole path.
+
 module.exports = {
   testEnvironment: "node",
   transform: {
