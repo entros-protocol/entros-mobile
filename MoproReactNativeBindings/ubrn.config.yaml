@@ -1,5 +1,9 @@
+# `directory` is relative to this file, so the bindings build from any checkout
+# with entros-mopro cloned as a sibling of entros-mobile. It previously held an
+# absolute path to a directory that stopped existing at the April rebrand, so
+# `ubrn build` could not have succeeded against it.
 rust:
-  directory: /Users/johnny/IAM/entros-mopro
+  directory: ../../entros-mopro
   manifestPath: Cargo.toml
 
 android:
