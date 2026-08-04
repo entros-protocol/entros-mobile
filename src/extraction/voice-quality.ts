@@ -118,7 +118,14 @@ async function getMeyda(): Promise<any> {
 let cppBasisKey = "";
 let cppBasisTable: Float64Array | null = null;
 
-function cppBasis(N: number, qMin: number, bandLen: number): Float64Array {
+/**
+ * @internal Exported for tests only. The invariant worth checking is that a
+ * cached coefficient equals the inline expression it replaced, and that has to
+ * be checked against `Math.cos` on the machine running the test. `Math.cos` is
+ * not required by IEEE-754 to be correctly rounded, so its results differ by an
+ * ULP between architectures and a hardcoded vector cannot express this.
+ */
+export function cppBasis(N: number, qMin: number, bandLen: number): Float64Array {
   const key = `${N}:${qMin}:${bandLen}`;
   if (cppBasisTable !== null && cppBasisKey === key) return cppBasisTable;
 
@@ -222,10 +229,7 @@ function cepstralPeakProminence(
  * Returns 0 on degenerate input. Bands below 100 Hz are excluded
  * because they're dominated by DC + room noise.
  */
-function spectralTilt(
-  powerSpectrum: Float32Array | number[],
-  sampleRate: number,
-): number {
+function spectralTilt(powerSpectrum: Float32Array | number[], sampleRate: number): number {
   const N = powerSpectrum.length;
   if (N < 8) return 0;
   const FLOOR = 1e-12;
@@ -265,11 +269,7 @@ function spectralTilt(
  * Returns 0 if F0 is invalid (≤ 0) or harmonics fall outside the
  * spectrum.
  */
-function h1MinusH2(
-  powerSpectrum: Float32Array | number[],
-  sampleRate: number,
-  f0: number,
-): number {
+function h1MinusH2(powerSpectrum: Float32Array | number[], sampleRate: number, f0: number): number {
   if (!Number.isFinite(f0) || f0 <= 0) return 0;
   const N = powerSpectrum.length;
   if (N < 8) return 0;
@@ -434,15 +434,5 @@ export async function extractVoiceQualityFeatures(
   const midMean = meanOf(midRatios);
   const highMean = meanOf(highRatios);
 
-  return [
-    cppMean,
-    cppVar,
-    tiltMean,
-    tiltVar,
-    h1h2Mean,
-    h1h2Var,
-    lowMean,
-    midMean,
-    highMean,
-  ];
+  return [cppMean, cppVar, tiltMean, tiltVar, h1h2Mean, h1h2Var, lowMean, midMean, highMean];
 }

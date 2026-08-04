@@ -22,7 +22,7 @@
 //
 // Values produced by pulse-sdk at commit `cf2bf5f`.
 
-import { extractVoiceQualityFeatures } from "../voice-quality";
+import { extractVoiceQualityFeatures, cppBasis } from "../voice-quality";
 
 const SAMPLE_RATE = 16000;
 const FRAME_SIZE = 2048;
@@ -63,7 +63,38 @@ describe("extractVoiceQualityFeatures parity with pulse-sdk", () => {
 
     expect(features).toHaveLength(EXPECTED.length);
     for (let i = 0; i < EXPECTED.length; i++) {
-      expect(features[i]).toBe(EXPECTED[i]);
+      const want = EXPECTED[i]!;
+      // Relative, not exact. The cepstral path runs through Math.log and
+      // Math.cos, neither of which IEEE-754 requires to be correctly rounded,
+      // so V8 differs by an ULP between architectures. Pinned exactly, these
+      // passed on macOS arm64 and failed CI on Linux x64 by one digit. The
+      // exact guard lives in the basis test below.
+      const tolerance = Math.max(Math.abs(want) * 1e-12, 1e-20);
+      expect(Math.abs(features[i]! - want)).toBeLessThanOrEqual(tolerance);
     }
   }, 60_000);
+});
+
+describe("cepstral DCT basis matches the expression it replaced", () => {
+  it("reproduces the inline computation exactly at 16 kHz", () => {
+    // Portable and exact, because the reference is recomputed in-process
+    // rather than hardcoded. Catches any reassociation of the grouping, which
+    // no usable tolerance can separate from platform noise.
+    const N = 1024;
+    const qMin = 40;
+    const bandLen = 227;
+    const basis = cppBasis(N, qMin, bandLen);
+    const piOverN = Math.PI / N;
+
+    expect(basis).toHaveLength(bandLen * N);
+    for (let bIdx = 0; bIdx < bandLen; bIdx++) {
+      const k = qMin + bIdx;
+      const row = bIdx * N;
+      for (let n = 0; n < N; n++) {
+        if (basis[row + n] !== Math.cos(piOverN * (n + 0.5) * k)) {
+          throw new Error(`basis[${bIdx}][${n}] diverged from the inline form`);
+        }
+      }
+    }
+  });
 });

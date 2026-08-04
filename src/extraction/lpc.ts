@@ -28,7 +28,13 @@
  */
 const hammingWindows = new Map<number, Float64Array>();
 
-function hammingWindow(frameSize: number): Float64Array {
+/**
+ * @internal Exported for tests only. See the note on `cppBasis` in
+ * voice-quality.ts: the invariant is that a cached coefficient equals the
+ * inline expression it replaced, which can only be checked against `Math.cos`
+ * on the machine running the test.
+ */
+export function hammingWindow(frameSize: number): Float64Array {
   let coefficients = hammingWindows.get(frameSize);
   if (coefficients === undefined) {
     coefficients = new Float64Array(frameSize);
@@ -219,8 +225,7 @@ function extractFrameAnalysis(
 
     const freq = (Math.atan2(imag, real) / (2 * Math.PI)) * sampleRate;
     const bandwidth =
-      (-sampleRate / (2 * Math.PI)) *
-      Math.log(Math.sqrt(real * real + imag * imag));
+      (-sampleRate / (2 * Math.PI)) * Math.log(Math.sqrt(real * real + imag * imag));
 
     // Filter: formants are in 200-5000Hz range with reasonable bandwidth.
     if (freq > 200 && freq < 5000 && bandwidth < 500) {
@@ -270,7 +275,7 @@ export function extractFormantRatios(
   samples: Float32Array,
   sampleRate: number,
   frameSize: number,
-  hopSize: number
+  hopSize: number,
 ): { f1f2: number[]; f2f3: number[] } {
   const f1f2: number[] = [];
   const f2f3: number[] = [];
@@ -367,7 +372,14 @@ export function extractLpcAnalysis(
   if (numFrames < 1) {
     return {
       lpcCoefficients,
-      f1, f2, f3, b1, b2, b3, f1f2, f2f3,
+      f1,
+      f2,
+      f3,
+      b1,
+      b2,
+      b3,
+      f1f2,
+      f2f3,
       numFramesAnalyzed: 0,
     };
   }
@@ -416,7 +428,14 @@ export function extractLpcAnalysis(
 
   return {
     lpcCoefficients,
-    f1, f2, f3, b1, b2, b3, f1f2, f2f3,
+    f1,
+    f2,
+    f3,
+    b1,
+    b2,
+    b3,
+    f1f2,
+    f2f3,
     numFramesAnalyzed,
   };
 }

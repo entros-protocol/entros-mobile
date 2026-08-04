@@ -23,7 +23,7 @@
 //
 // Values produced by pulse-sdk at commit `cf2bf5f`.
 
-import { extractLpcAnalysis } from "../lpc";
+import { extractLpcAnalysis, hammingWindow } from "../lpc";
 
 const SAMPLE_RATE = 16000;
 const FRAME_SIZE = 2048;
@@ -63,23 +63,43 @@ describe("extractLpcAnalysis parity with pulse-sdk", () => {
     { name: "f2f3", at: [0.6000226216107499, 0.6000226216107312, 0.6000226216107302] },
   ];
 
+  // Relative, not exact. These run through Math.cos, which IEEE-754 does not
+  // require to be correctly rounded, so V8 differs by an ULP across
+  // architectures. The exact guard on the windowing is the hammingWindow test
+  // below, which recomputes its reference in-process and holds everywhere.
+  const near = (got: number, want: number) => {
+    expect(Math.abs(got - want)).toBeLessThanOrEqual(Math.abs(want) * 1e-12);
+  };
+
   for (const { name, at } of series) {
     it(`holds the pinned ${name} series`, () => {
       const track = (analysis as unknown as Record<string, number[]>)[name]!;
       expect(track).toHaveLength(1188);
-      expect(track[0]).toBe(at[0]);
-      expect(track[MID]).toBe(at[1]);
-      expect(track[LAST]).toBe(at[2]);
+      near(track[0]!, at[0]);
+      near(track[MID]!, at[1]);
+      near(track[LAST]!, at[2]);
     });
   }
 
   it("holds the pinned LPC coefficient tracks", () => {
     const first = analysis.lpcCoefficients[0]!;
     const twelfth = analysis.lpcCoefficients[11]!;
-    expect(first[0]).toBe(-2.211867471627163);
-    expect(first[first.length - 1]).toBe(-2.211867471722756);
-    expect(twelfth[0]).toBe(0.3522504587991376);
-    expect(twelfth[twelfth.length - 1]).toBe(0.35225045877833444);
+    near(first[0]!, -2.211867471627163);
+    near(first[first.length - 1]!, -2.211867471722756);
+    near(twelfth[0]!, 0.3522504587991376);
+    near(twelfth[twelfth.length - 1]!, 0.35225045877833444);
+  });
+
+  it("builds the Hamming window exactly as the inline expression did", () => {
+    for (const frameSize of [512, 1024, 2048]) {
+      const window = hammingWindow(frameSize);
+      expect(window).toHaveLength(frameSize);
+      for (let j = 0; j < frameSize; j++) {
+        if (window[j] !== 0.54 - 0.46 * Math.cos((2 * Math.PI * j) / (frameSize - 1))) {
+          throw new Error(`window[${j}] at frameSize ${frameSize} diverged`);
+        }
+      }
+    }
   });
 
   it("recovers the input tones, so the vectors pin a correct analysis", () => {
