@@ -31,8 +31,8 @@
         "*.xcframework/**"
     ],
     "scripts": {
-        "ubrn:ios": "ubrn build ios --and-generate --release && (cd example/ios && pod install)",
-        "ubrn:android": "ubrn build android --and-generate --release --targets aarch64-linux-android",
+        "ubrn:ios": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/build\" ubrn build ios --and-generate --release && (cd example/ios && pod install)",
+        "ubrn:android": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/build\" ubrn build android --and-generate --release --targets aarch64-linux-android",
         "test": "jest",
         "typecheck": "tsc",
         "lint": "eslint \"**/*.{js,ts,tsx}\"",
