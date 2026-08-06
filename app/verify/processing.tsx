@@ -2,7 +2,7 @@
 //
 // Stages 1–7 are all real:
 // - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
-// - Stage 2 (134-feature extraction) runs in the `extracting` step here.
+// - Stage 2 (feature extraction) runs in the `extracting` step here.
 // - Stage 3 (SimHash + Poseidon TBH) runs FIRST inside the stages IIFE,
 //   producing a local 32-byte commitment. Mirrors pulse-sdk pulse.ts: a
 //   legacy `commitment_new_hex` is still sent so older validators keep working,
