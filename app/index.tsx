@@ -40,7 +40,7 @@ export default function Splash() {
               Proof of Personhood{"\n"}for Solana.
             </Text>
             <Text variant="body" tone="muted" align="center">
-              Behavioural temporal consistency, proven on-device.
+              Private behavioral continuity, computed on-device.
             </Text>
           </View>
         </View>

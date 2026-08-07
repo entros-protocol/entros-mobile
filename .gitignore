@@ -59,7 +59,7 @@ coverage/
 # EAS
 .easignore
 
-# Internal sprint notes — kept locally, not for the public repo.
-# Re-enable on release.
+# Internal sprint notes stay local.
 docs/
 README.md
+!/README.md

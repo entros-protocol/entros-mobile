@@ -2,7 +2,7 @@
   "name": "entros-mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "Entros Protocol mobile client \u2014 Solana-native Proof-of-Personhood for Solana Mobile / Seeker.",
+  "description": "Development client for Entros behavioral verification on Solana Mobile and Seeker",
   "license": "MIT",
   "homepage": "https://entros.io",
   "repository": {

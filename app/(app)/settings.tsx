@@ -140,7 +140,7 @@ export default function Settings() {
           </View>
         </GlowCard>
         <Text variant="caption" tone="subtle">
-          Mainnet ships with Entros v1.0.
+          Mainnet support is planned after external review and release gates.
         </Text>
       </Section>
 

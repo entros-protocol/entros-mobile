@@ -143,7 +143,7 @@ export default function Welcome() {
                 Proof of Personhood,{"\n"}built for Solana.
               </Text>
               <Text variant="body" tone="muted" align="center">
-                Proves you're still you, every time.
+                Designed to help prove you are still you over time.
               </Text>
             </View>
           </View>

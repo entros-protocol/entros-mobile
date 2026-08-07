@@ -28,7 +28,7 @@
 //   generation. The proof byte payload is held in `proofBuffer`.
 // - Stage 7 (on-chain submit via MWA) is the terminal step. Branches on
 //   flow.intent + previousBaseline:
-//   - intent="verify" + no prior baseline → (optional Ed25519 receipt) +
+//   - intent="verify" + no prior baseline → Ed25519 receipt +
 //                                            mint_anchor
 //   - intent="verify" + prior baseline → ComputeBudget + create_challenge
 //                                        + verify_proof + update_anchor batch
@@ -272,8 +272,8 @@ export default function Processing() {
         // (signed receipt + remaining quota) escape for logging + Stage 7.
         //
         // Order is simhash + Poseidon → /validate-features → baseline
-        // persistence → Groth16 proof, mirroring pulse-sdk pulse.ts:148-291
-        // (master-list #146 Phase 4). The commitment must be computed before
+        // persistence → Groth16 proof, mirroring the Pulse SDK flow. The
+        // commitment must be computed before
         // validation so it can be transmitted as `commitment_new_hex` for
         // the validator to sign. Cost of hashing a payload that ends up
         // rejected: ~20 ms — invisible on the 2-5 s validate round-trip.
@@ -449,7 +449,7 @@ export default function Processing() {
         // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
         // 32-byte commitment, never the fingerprint bits, never the salt.
         // The receipt is logged only as "present" / "absent" so the dev
-        // can see Phase 4 wiring is live without leaking validator-signed
+        // can confirm receipt wiring without leaking validator-signed
         // bytes (public protocol artefacts, but log noise either way).
         devWarn(
           `[Entros] commitment=${commitmentHexPrefix}… intent=${flowIntent} firstVerify=${firstVerify} receipt=${signedReceipt ? "present" : "absent"}`,
@@ -497,9 +497,9 @@ export default function Processing() {
                 nonce,
                 // First-verify only — submit.ts ignores it on the re-verify
                 // branch. Receipt is the validator's Ed25519-signed binding
-                // to (wallet, commitment, validated_at) per master-list #146
-                // Phase 4. `null` falls back to no-receipt mint (Phase 3
-                // log-only OK).
+                // to (wallet, commitment, validated_at).
+                // The first-verification path requires this receipt.
+                // Re-verification ignores it.
                 signedReceipt: signedReceipt ?? undefined,
               },
               () => dispatch({ type: "advance" }), // → "submitting" once signed

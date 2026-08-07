@@ -85,7 +85,7 @@ export default function Dashboard() {
             ? identity.trustScore === 0
               ? "Baseline established. Re-verify to start building your score."
               : "Re-verify weekly to keep your score active."
-            : "Mint your Entros Anchor with a single 12-second verification."}
+            : "Mint your Entros Anchor after one 12-second behavioral capture."}
         </Text>
         <Button
           label={identity.hasAnchor ? "Re-verify" : "Mint Entros Anchor"}

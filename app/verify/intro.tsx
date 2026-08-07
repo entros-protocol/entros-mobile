@@ -164,8 +164,8 @@ export default function VerifyIntro() {
           <SectionLabel>VERIFICATION</SectionLabel>
           <Text variant="title">Three signals,{"\n"}twelve seconds.</Text>
           <Text variant="body" tone="muted">
-            We capture how you speak, hold, and tap, then prove your humanness with a zero-knowledge
-            proof. Raw signals stay on the device.
+            We analyse how you speak, hold, and tap. Raw motion and full-resolution touch stay on
+            the device. Phrase audio is sent for transient validation.
           </Text>
           <View style={styles.steps}>
             {steps.map((s, i) => (
@@ -186,7 +186,7 @@ export default function VerifyIntro() {
         <View style={styles.footer}>
           <View style={styles.feeRow}>
             <Text variant="caption" tone="muted">
-              Network fee
+              Protocol fee
             </Text>
             <Text variant="mono">{feeLabel}</Text>
           </View>

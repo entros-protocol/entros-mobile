@@ -11,7 +11,7 @@ export type FailureBucket =
   | "rate-limited" // HTTP 429 from /validate-features; per-wallet quota ceiling
   | "chain-rate-limited" // entros-anchor cooldown (6012); 7-day reset gate
   | "insufficient-funds" // fee payer balance below verification_fee + rent
-  | "validator-mismatch" // entros-anchor receipt-rejected family (6015-6021); Phase 5 hard-fail
+  | "validator-mismatch" // missing, malformed, or rejected validator receipt
   | "retry-now" // transient — congestion / wallet hung / RPC drop / clock skew; "Try again"
   | "capture-drift" // behavioral drift past the consistency ceiling; retry with a steady capture
   | "report-bug" // proof-rejected / programming-error; CTA = copy diagnostics

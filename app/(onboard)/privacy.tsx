@@ -40,10 +40,10 @@ export default function Privacy() {
         <View style={styles.body}>
           <View style={styles.heading}>
             <SectionLabel>PRIVACY</SectionLabel>
-            <Text variant="title">Your signals never{"\n"}leave the phone.</Text>
+            <Text variant="title">Raw motion and touch{"\n"}stay on your phone.</Text>
             <Text variant="body" tone="muted">
-              Audio, motion, and touch process on-device. Only a zero-knowledge proof and a Poseidon
-              commitment go on-chain.
+              The client sends phrase audio for transient validation and a derived feature summary
+              for private checks. Protocol transactions contain commitments and account state.
             </Text>
           </View>
 
@@ -61,8 +61,8 @@ export default function Privacy() {
                 No biometrics. No images.
               </Text>
               <Text variant="body" tone="muted">
-                No faces, irises, or fingerprints. The signal is how you move, sampled for twelve
-                seconds, then encrypted on this phone for re-verification.
+                No faces, irises, or anatomical fingerprints. The client stores an encrypted
+                behavioral baseline for re-verification.
               </Text>
             </View>
           </View>
