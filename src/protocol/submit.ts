@@ -20,7 +20,6 @@ import { AnchorProvider, Idl, Program } from "@coral-xyz/anchor";
 import { Connection, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 import { config, getConnection } from "@/config";
-import { devWarn } from "@/lib/log";
 import type { SolanaProof } from "@/proof";
 import type { WalletKind } from "@/state/types";
 import * as mwa from "@/wallet/mwa";
@@ -39,7 +38,7 @@ import {
   COMPUTE_UNITS_RESET,
   COMPUTE_UNITS_REVERIFY,
 } from "./instructions";
-import { buildEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
+import { requireEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
 
 /** Result of a successful on-chain submission. */
 export interface SubmitResult {
@@ -129,7 +128,7 @@ export interface SubmitVerifyArgs extends SubmitBase {
   isFirstVerify: boolean;
   proof?: SolanaProof;
   nonce?: number[];
-  /** Validator-signed mint receipt (master-list #146 Phase 4). First-verify
+  /** Validator-signed mint receipt. First-verify
    *  bundles it as an `Ed25519Program::verify` instruction immediately
    *  before `mint_anchor` so the on-chain program can verify the validator
    *  endorsed the commitment via the Instructions sysvar. Re-verify ignores
@@ -141,30 +140,17 @@ export async function submitVerify(
   args: SubmitVerifyArgs,
   onSigned?: () => void,
 ): Promise<SubmitResult> {
+  const firstReceiptIxs = args.isFirstVerify ? [requireEd25519ReceiptIx(args.signedReceipt)] : [];
   const ctx = buildContext(args.walletAddress);
   const connection = getConnection();
 
   let ixs: TransactionInstruction[];
   if (args.isFirstVerify) {
     // Tx layout:
-    //   [0] (optional) Ed25519Program::verify(receipt)
+    //   [0] Ed25519Program::verify(receipt)
     //   [1] mint_anchor(initial_commitment)
-    // Phase 3's on-chain check is log-only, so a missing or undecodeable
-    // receipt is fine for now; once Phase 5 enforcement flips, missing
-    // receipts hard-fail mint_anchor and this fallback becomes a deliberate
-    // "no-receipt" path the program rejects.
-    const ed25519Ix = args.signedReceipt ? buildEd25519ReceiptIx(args.signedReceipt) : null;
     const mintIx = await buildMintAnchorIx(ctx, args.commitment);
-    if (args.signedReceipt && ed25519Ix) {
-      devWarn("[Entros] Bundling validator-signed mint receipt before mint_anchor");
-    } else if (args.signedReceipt) {
-      devWarn("[Entros] signedReceipt provided but failed to decode; minting without binding");
-    } else {
-      devWarn(
-        "[Entros] No validator receipt available; minting without binding (Phase 3 log-only)",
-      );
-    }
-    ixs = ed25519Ix ? [ed25519Ix, mintIx] : [mintIx];
+    ixs = [...firstReceiptIxs, mintIx];
   } else {
     if (!args.proof || !args.nonce) {
       throw new Error(

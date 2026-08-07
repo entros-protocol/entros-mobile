@@ -69,6 +69,20 @@ describe("parseSubmitError — sign-time wallet rejection via message", () => {
   });
 });
 
+describe("parseSubmitError - local receipt validation", () => {
+  test("missing receipt maps to receipt-rejected", () => {
+    const out = parseSubmitError(
+      new Error("First verification requires a validator-signed receipt."),
+    );
+    expect(out.kind).toBe("receipt-rejected");
+  });
+
+  test("malformed receipt maps to receipt-rejected", () => {
+    const out = parseSubmitError(new Error("The validator-signed receipt is malformed."));
+    expect(out.kind).toBe("receipt-rejected");
+  });
+});
+
 describe("parseSubmitError — Anchor numeric codes", () => {
   test("AnchorError shape with errorCode.number=6010 → commitment-binding", () => {
     const err = {

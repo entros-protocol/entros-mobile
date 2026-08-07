@@ -14,7 +14,12 @@
 
 import { Ed25519Program } from "@solana/web3.js";
 
-import { buildEd25519ReceiptIx, decodeSignedReceipt, type SignedReceiptDto } from "../receipt";
+import {
+  buildEd25519ReceiptIx,
+  decodeSignedReceipt,
+  requireEd25519ReceiptIx,
+  type SignedReceiptDto,
+} from "../receipt";
 
 /** Build a deterministic 32-byte hex string from a single seed byte: 0xAA →
  *  "aaaaaaaa…aa". Using one repeating byte keeps the fixture compact and
@@ -98,5 +103,24 @@ describe("buildEd25519ReceiptIx", () => {
 
   test("returns null when the receipt fails to decode", () => {
     expect(buildEd25519ReceiptIx({ ...VALID_RECEIPT, signature_hex: "" })).toBeNull();
+  });
+});
+
+describe("requireEd25519ReceiptIx", () => {
+  test("rejects a missing first-verification receipt", () => {
+    expect(() => requireEd25519ReceiptIx(undefined)).toThrow(
+      "First verification requires a validator-signed receipt.",
+    );
+  });
+
+  test("rejects a malformed first-verification receipt", () => {
+    expect(() => requireEd25519ReceiptIx({ ...VALID_RECEIPT, signature_hex: "" })).toThrow(
+      "The validator-signed receipt is malformed.",
+    );
+  });
+
+  test("returns an Ed25519 instruction for a valid receipt", () => {
+    const ix = requireEd25519ReceiptIx(VALID_RECEIPT);
+    expect(ix.programId.equals(Ed25519Program.programId)).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 // Validator-signed mint receipt decoder + Ed25519 instruction builder.
 // Mirrors pulse-sdk/src/submit/receipt.ts byte-for-byte; the cross-platform
 // receipt wire format is the contract enforced by entros-anchor's on-chain
-// `verify_mint_receipt` (master-list #146 Phase 3+).
+// `verify_mint_receipt`.
 //
 // Lifecycle: validator signs (wallet, commitment_new, validated_at) → executor
 // passes through → SDK prepends an `Ed25519Program::verify` instruction
@@ -37,9 +37,7 @@ export interface SignedReceiptDto {
 
 /**
  * Decoded byte form of a `SignedReceiptDto`. `null` from `decodeSignedReceipt`
- * indicates the caller should treat the receipt as unusable and fall back to
- * the no-receipt mint flow — which `mint_anchor` rejects whenever the
- * protocol's `validator_pubkey` is configured.
+ * means the caller must stop the first-verification flow.
  */
 export interface DecodedReceipt {
   publicKey: Uint8Array;
@@ -95,11 +93,8 @@ export function decodeSignedReceipt(receipt: SignedReceiptDto): DecodedReceipt |
  * Build the `Ed25519Program::verify` instruction that binds a validator-signed
  * mint receipt to the immediately-following `mint_anchor` instruction.
  *
- * Returns `null` if the receipt fails to decode — caller should fall back to
- * sending `mint_anchor` without an Ed25519 prefix. That fallback only mints
- * successfully against a program whose `validator_pubkey` is unconfigured;
- * wherever it is configured (e.g. devnet) `mint_anchor` hard-fails a mint with
- * no preceding receipt.
+ * Returns `null` if the receipt fails to decode. A first-verification caller
+ * must stop instead of sending an unbound mint transaction.
  *
  * Web3.js's `Ed25519Program.createInstructionWithPublicKey` defaults the
  * three `*_instruction_index` fields to `0xFFFF`, the "current instruction"
@@ -119,4 +114,23 @@ export function buildEd25519ReceiptIx(receipt: SignedReceiptDto): TransactionIns
     message: decoded.message,
     signature: decoded.signature,
   });
+}
+
+/**
+ * Build the receipt instruction required for a first verification.
+ * Throws before wallet or RPC work when the receipt is absent or malformed.
+ */
+export function requireEd25519ReceiptIx(
+  receipt: SignedReceiptDto | undefined,
+): TransactionInstruction {
+  if (!receipt) {
+    throw new Error("First verification requires a validator-signed receipt.");
+  }
+
+  const instruction = buildEd25519ReceiptIx(receipt);
+  if (!instruction) {
+    throw new Error("The validator-signed receipt is malformed.");
+  }
+
+  return instruction;
 }

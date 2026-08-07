@@ -54,7 +54,7 @@ export type SubmitErrorKind =
   | "anchor-already-exists" // Path A repeat for already-anchored wallet; route to reset_identity_state
   | "proof-rejected" // entros-verifier ProofVerificationFailed; circuit/key drift class
   | "commitment-binding" // entros-anchor 6010 / 6011; proof <-> on-chain mismatch
-  | "receipt-rejected" // entros-anchor 6015-6021; Phase 5 hard-fail family
+  | "receipt-rejected" // entros-anchor 6015-6021 hard-fail family
   | "challenge-stale" // entros-verifier ChallengeExpired / AlreadyUsed / NotUsed / InvalidNonce
   | "clock-drift" // entros-anchor 6014 (ProofFromFuture) / 6020 (ReceiptFromFuture)
   | "cooldown-active" // entros-anchor 6012; 7-day reset gate
@@ -144,7 +144,7 @@ function categorizeAnchorCode(code: number, raw: string): ParsedSubmitError {
     return { kind: "challenge-stale", raw, anchorCode: code };
   }
 
-  // entros-anchor: receipt family (Phase 5 hard-fail; Phase 3 logs without throwing)
+  // entros-anchor receipt failures.
   if (code >= 6015 && code <= 6021) {
     return { kind: "receipt-rejected", raw, anchorCode: code };
   }
@@ -229,6 +229,15 @@ export function parseSubmitError(err: unknown): ParsedSubmitError {
     /\b(?:user|wallet|approval)\b/i.test(raw)
   ) {
     return { kind: "wallet-rejected", raw, anchorCode: null };
+  }
+
+  // Local first-verification checks run before wallet or RPC work.
+  if (
+    /First verification requires a validator-signed receipt|validator-signed receipt is malformed/i.test(
+      raw,
+    )
+  ) {
+    return { kind: "receipt-rejected", raw, anchorCode: null };
   }
 
   // 3. Anchor numeric code path (mintAnchor / updateAnchor / verifyProof /
