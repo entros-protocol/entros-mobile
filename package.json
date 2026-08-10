@@ -30,6 +30,7 @@
     "@expo-google-fonts/jetbrains-mono": "^0.2.3",
     "@expo-google-fonts/vt323": "^0.4.1",
     "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^1.8.0",
     "@react-native-async-storage/async-storage": "1.23.1",
     "@solana-mobile/mobile-wallet-adapter-protocol": "^2.2.9",
     "@solana-mobile/mobile-wallet-adapter-protocol-web3js": "^2.2.9",

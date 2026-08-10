@@ -176,6 +176,38 @@ export async function buildUpdateAnchorIx(
 export async function buildResetIdentityStateIx(
   ctx: BuildContext,
   newCommitment: Uint8Array,
+  projectionVersion: number,
+): Promise<TransactionInstruction> {
+  const anchorProgramId = ctx.anchorProgram.programId;
+  const identityPda = findIdentityPda(ctx.walletPubkey, anchorProgramId);
+  const protocolConfigPda = findProtocolConfigPda(ctx.registryProgramId);
+  const treasuryPda = findTreasuryPda(ctx.registryProgramId);
+
+  let resetBuilder = ctx.anchorProgram.methods
+    .resetIdentityState(Array.from(newCommitment), projectionVersion)
+    .accounts({
+      authority: ctx.walletPubkey,
+      identityState: identityPda,
+      protocolConfig: protocolConfigPda,
+      treasury: treasuryPda,
+      systemProgram: SystemProgram.programId,
+    });
+  if (projectionVersion >= 1) {
+    resetBuilder = resetBuilder.remainingAccounts([
+      {
+        pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+        isSigner: false,
+        isWritable: false,
+      },
+    ]);
+  }
+  return resetBuilder.instruction();
+}
+
+export async function buildRebaselineAnchorIx(
+  ctx: BuildContext,
+  newCommitment: Uint8Array,
+  projectionVersion: number,
 ): Promise<TransactionInstruction> {
   const anchorProgramId = ctx.anchorProgram.programId;
   const identityPda = findIdentityPda(ctx.walletPubkey, anchorProgramId);
@@ -183,12 +215,13 @@ export async function buildResetIdentityStateIx(
   const treasuryPda = findTreasuryPda(ctx.registryProgramId);
 
   return ctx.anchorProgram.methods
-    .resetIdentityState(Array.from(newCommitment))
+    .rebaselineAnchor(Array.from(newCommitment), projectionVersion)
     .accounts({
       authority: ctx.walletPubkey,
       identityState: identityPda,
       protocolConfig: protocolConfigPda,
       treasury: treasuryPda,
+      instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
       systemProgram: SystemProgram.programId,
     })
     .instruction();
@@ -199,6 +232,7 @@ export async function buildResetIdentityStateIx(
  *  the ~205K typical re-verify total without burning the user's fee. */
 export const COMPUTE_UNITS_REVERIFY = 250_000;
 export const COMPUTE_UNITS_RESET = 150_000;
+export const COMPUTE_UNITS_REBASELINE = 150_000;
 
 export const buildComputeBudgetIx = (units: number): TransactionInstruction =>
   ComputeBudgetProgram.setComputeUnitLimit({ units });

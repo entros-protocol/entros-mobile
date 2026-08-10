@@ -6,12 +6,6 @@
     "spec": "0.1.0",
     "description": "Non-transferable identity token for Entros Protocol"
   },
-  "docs": [
-    "Mint account space for Token-2022 with NonTransferable extension.",
-    "Base mint = 82 bytes, account type = 1 byte, extension type (2) + length (2) = 4 bytes,",
-    "NonTransferable data = 0 bytes. Plus multisig padding from Token-2022.",
-    "We use a constant derived from the Token-2022 spec."
-  ],
   "instructions": [
     {
       "name": "authorize_new_wallet",
@@ -748,7 +742,7 @@
         {
           "name": "instructions_sysvar",
           "docs": [
-            "receipt verification (master-list #146 Phase 3) to inspect the",
+            "receipt verification to inspect the",
             "preceding Ed25519Program::verify instruction in the same tx.",
             "Address is constrained to the canonical sysvar pubkey, so the",
             "program is guaranteed to be reading the real sysvar regardless of",
@@ -770,6 +764,220 @@
       ]
     },
     {
+      "name": "rebaseline_anchor",
+      "docs": [
+        "Rebaseline the user's commitment to the new version projection space.",
+        "Skips the cross-space Hamming proof. Verification is performed via a",
+        "validator-signed humanness receipt for the new-version commitment."
+      ],
+      "discriminator": [
+        129,
+        211,
+        18,
+        16,
+        17,
+        54,
+        143,
+        18
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity_state",
+          "docs": [
+            "legacy-layout accounts to the new layout before deserialization.",
+            "PDA validated by seeds; ownership verified in instruction body after deserialization."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "protocol_config",
+          "docs": [
+            "Supplies the verification fee amount charged on rebaseline."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
+              ]
+            }
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                81,
+                130,
+                250,
+                230,
+                30,
+                253,
+                246,
+                69,
+                82,
+                96,
+                7,
+                173,
+                78,
+                160,
+                131,
+                188,
+                70,
+                106,
+                173,
+                59,
+                102,
+                163,
+                198,
+                189,
+                82,
+                37,
+                225,
+                38,
+                52,
+                233,
+                157,
+                117
+              ]
+            }
+          }
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "Ed25519Program::verify instruction containing the validator-signed receipt."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_commitment",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "projection_version",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "reset_identity_state",
       "docs": [
         "Reset the caller's identity state to a fresh baseline.",
@@ -786,15 +994,12 @@
         "- 7-day cooldown (`RESET_COOLDOWN_SECS`) bounds abuse frequency.",
         "- Full zero of `verification_count`, `trust_score`, and",
         "`recent_timestamps` means an attacker who compromises the",
-        "wallet key and passes Tier 1 validation starts from zero.",
+        "wallet key and passes server-side validation starts from zero.",
         "- Verification fee charged, matching mint/update economics.",
         "",
-        "No ZK proof is consumed: there is no prior fingerprint to",
-        "Hamming-compare against, and the Hamming circuit's",
-        "`min_distance ≥ 3` constraint would reject a same-fingerprint",
-        "proof anyway. Live-humanness evidence comes from the Tier 1",
-        "validation pipeline at the SAS attestation step (handled by",
-        "the off-chain executor, not this instruction)."
+        "Reset does not consume a ZK comparison proof because the client cannot",
+        "recover its prior fingerprint. Versioned projections require a fresh",
+        "validator receipt bound to this wallet, commitment, and reset purpose."
       ],
       "discriminator": [
         26,
@@ -990,6 +1195,136 @@
               32
             ]
           }
+        },
+        {
+          "name": "projection_version",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "set_encrypted_baseline",
+      "docs": [
+        "Write or overwrite the caller's encrypted baseline blob.",
+        "",
+        "The blob is opaque AES-256-GCM ciphertext of the",
+        "user's previous SimHash plus salt, produced off-chain in the SDK",
+        "under a key derived from a deterministic `signMessage`. The GCM",
+        "auth tag binds the blob to (wallet, this PDA's address, on-chain",
+        "`current_commitment` at encryption time), so a stale blob produced",
+        "before a `reset_identity_state` fails authentication under the new",
+        "commitment and the SDK falls back to a fresh-capture flow.",
+        "",
+        "The program never decrypts the blob. It only stores opaque bytes.",
+        "Plaintext biometric data never reaches chain at any point.",
+        "",
+        "Guards:",
+        "* Signer must equal the wallet that seeds the EncryptedBaseline",
+        "PDA (enforced by the seeds constraint on the Accounts struct).",
+        "* The caller's IdentityState PDA at `[b\"identity\", signer]` must",
+        "already exist. Pre-mint attempts are rejected with",
+        "`IdentityStateNotFound`. Anchor's seeds constraint validates the",
+        "PDA address; the `data_len() > 0` check confirms initialization."
+      ],
+      "discriminator": [
+        10,
+        73,
+        41,
+        36,
+        2,
+        145,
+        87,
+        111
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity_state",
+          "docs": [
+            "UncheckedAccount because we only need to verify the IdentityState",
+            "PDA exists at the expected address. We do not need to deserialize",
+            "its fields. The seeds constraint validates the PDA address."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "encrypted_baseline",
+          "docs": [
+            "The EncryptedBaseline PDA. Created on first call, overwritten on",
+            "subsequent calls. PDA seeds bind to the signer's wallet, so only",
+            "the wallet owner can write to their own baseline."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  110,
+                  99,
+                  114,
+                  121,
+                  112,
+                  116,
+                  101,
+                  100,
+                  95,
+                  98,
+                  97,
+                  115,
+                  101,
+                  108,
+                  105,
+                  110,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "blob",
+          "type": {
+            "array": [
+              "u8",
+              96
+            ]
+          }
         }
       ]
     },
@@ -1004,9 +1339,9 @@
         "Requires a matching, fresh `VerificationResult` PDA (owned by entros-verifier)",
         "whose `commitment_new` equals `new_commitment` and whose `commitment_prev`",
         "equals the identity's current stored commitment. Without this binding the",
-        "instruction would accept any commitment with no biometric proof — allowing",
+        "instruction would accept any commitment without biometric proof, allowing",
         "trust-score farming via per-call fee payment, which contradicts the",
-        "protocol's economic deterrence model. See AUDIT.md for details.",
+        "protocol's economic deterrence model.",
         "",
         "The `verification_nonce` argument supplies the challenge nonce used to",
         "derive the VerificationResult PDA (`seeds = [b\"verification\", authority, nonce]`).",
@@ -1064,7 +1399,7 @@
           "docs": [
             "PDA seeds validated by Anchor; layout + owner + cross-field constraints",
             "validated in instruction body. Binds the ZK proof to this specific",
-            "update — without this account, update_anchor would accept any commitment",
+            "update. Without this account, update_anchor would accept any commitment",
             "with no proof."
           ],
           "pda": {
@@ -1297,6 +1632,19 @@
   ],
   "accounts": [
     {
+      "name": "EncryptedBaseline",
+      "discriminator": [
+        235,
+        60,
+        246,
+        174,
+        131,
+        9,
+        248,
+        146
+      ]
+    },
+    {
       "name": "IdentityState",
       "discriminator": [
         156,
@@ -1325,6 +1673,19 @@
       ]
     },
     {
+      "name": "AnchorRebaselined",
+      "discriminator": [
+        67,
+        164,
+        86,
+        111,
+        122,
+        42,
+        157,
+        174
+      ]
+    },
+    {
       "name": "AnchorReset",
       "discriminator": [
         183,
@@ -1348,6 +1709,19 @@
         84,
         103,
         59
+      ]
+    },
+    {
+      "name": "EncryptedBaselineSet",
+      "discriminator": [
+        198,
+        176,
+        56,
+        167,
+        74,
+        225,
+        138,
+        121
       ]
     },
     {
@@ -1403,7 +1777,7 @@
     {
       "code": 6007,
       "name": "StaleVerificationResult",
-      "msg": "VerificationResult account has stale layout (pre-binding-patch)"
+      "msg": "VerificationResult account uses the legacy unbound layout"
     },
     {
       "code": 6008,
@@ -1432,48 +1806,108 @@
     },
     {
       "code": 6013,
+      "name": "RebaselineCooldownActive",
+      "msg": "Rebaseline cooldown has not elapsed since the last rebaseline"
+    },
+    {
+      "code": 6014,
       "name": "UnauthorizedNewWallet",
       "msg": "caller is not authorized by the old identity"
     },
     {
-      "code": 6014,
+      "code": 6015,
       "name": "ProofFromFuture",
       "msg": "VerificationResult.verified_at is in the future relative to the cluster clock"
     },
     {
-      "code": 6015,
+      "code": 6016,
       "name": "MissingValidatorReceipt",
-      "msg": "mint_anchor expected a preceding Ed25519Program::verify instruction with a validator-signed receipt; none found"
+      "msg": "Expected a preceding Ed25519Program::verify instruction with a validator-signed receipt"
     },
     {
-      "code": 6016,
+      "code": 6017,
       "name": "ReceiptValidatorMismatch",
       "msg": "Receipt was signed by a key that does not match ProtocolConfig.validator_pubkey"
     },
     {
-      "code": 6017,
-      "name": "ReceiptCommitmentMismatch",
-      "msg": "Receipt commitment does not match the mint_anchor commitment argument"
-    },
-    {
       "code": 6018,
-      "name": "ReceiptWalletMismatch",
-      "msg": "Receipt wallet does not match the mint signer"
+      "name": "ReceiptCommitmentMismatch",
+      "msg": "Receipt commitment does not match the requested commitment"
     },
     {
       "code": 6019,
+      "name": "ReceiptWalletMismatch",
+      "msg": "Receipt wallet does not match the instruction signer"
+    },
+    {
+      "code": 6020,
       "name": "ReceiptExpired",
       "msg": "Receipt has aged past MAX_RECEIPT_AGE_SECS"
     },
     {
-      "code": 6020,
+      "code": 6021,
       "name": "ReceiptFromFuture",
       "msg": "Receipt validated_at is in the future relative to the cluster clock"
     },
     {
-      "code": 6021,
+      "code": 6022,
       "name": "MalformedReceiptMessage",
       "msg": "Receipt message has malformed length or layout"
+    },
+    {
+      "code": 6023,
+      "name": "IdentityStateNotFound",
+      "msg": "set_encrypted_baseline called before mint_anchor: IdentityState PDA does not exist"
+    },
+    {
+      "code": 6024,
+      "name": "ValidatorNotConfigured",
+      "msg": "ProtocolConfig.validator_pubkey is unset. Receipt-bound instructions are disabled until a validator is configured"
+    },
+    {
+      "code": 6025,
+      "name": "VerificationIntervalTooShort",
+      "msg": "Retired. Verifications are no longer rate limited on chain."
+    },
+    {
+      "code": 6026,
+      "name": "ProjectionVersionTooOld",
+      "msg": "Identity projection version is below the minimum supported version"
+    },
+    {
+      "code": 6027,
+      "name": "ProjectionVersionTooNew",
+      "msg": "Identity projection version is newer than the current protocol version"
+    },
+    {
+      "code": 6028,
+      "name": "ProjectionVersionNotAdvanced",
+      "msg": "Rebaseline requires a newer current projection version"
+    },
+    {
+      "code": 6029,
+      "name": "ReceiptVersionMismatch",
+      "msg": "Receipt version does not match the required receipt format"
+    },
+    {
+      "code": 6030,
+      "name": "ReceiptPurposeMismatch",
+      "msg": "Receipt purpose does not match the requested instruction"
+    },
+    {
+      "code": 6031,
+      "name": "ReceiptProjectionVersionMismatch",
+      "msg": "Receipt projection version does not match the current protocol version"
+    },
+    {
+      "code": 6032,
+      "name": "ProjectionVersionMismatch",
+      "msg": "Requested projection version does not match the current protocol version"
+    },
+    {
+      "code": 6033,
+      "name": "InvalidResetReceiptAccounts",
+      "msg": "Reset requires exactly one instructions sysvar account for versioned projections and none for projection zero"
     }
   ],
   "types": [
@@ -1498,6 +1932,31 @@
                 32
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AnchorRebaselined",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "projection_version",
+            "type": "u16"
           }
         ]
       }
@@ -1552,6 +2011,64 @@
                 32
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "EncryptedBaseline",
+      "docs": [
+        "Wallet-keyed encrypted baseline blob, stored at PDA seeds",
+        "`[b\"encrypted_baseline\", wallet.key().as_ref()]`. Persists the user's",
+        "previous SimHash + salt across cache wipes and device changes so the",
+        "Hamming-distance ZK proof can recover its private witnesses on any",
+        "device with the originating wallet.",
+        "",
+        "The blob is opaque AES-256-GCM ciphertext produced",
+        "off-chain in the SDK under a key derived from a deterministic",
+        "`signMessage` on a domain-separated payload. The GCM AAD binds the",
+        "blob to (wallet, this PDA's address, current on-chain commitment),",
+        "so a stale blob (post-`reset_identity_state`) fails authentication",
+        "against the new commitment and the SDK falls back to a fresh-capture",
+        "flow.",
+        "",
+        "The program never decrypts the blob. It only stores opaque bytes.",
+        "Plaintext biometric data never reaches chain at any point."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "docs": [
+              "96-byte versioned ciphertext envelope.",
+              "Layout: version(1) || algo(1) || reserved(2) || iv(12) || ct+tag(80)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                96
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "PDA bump seed."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EncryptedBaselineSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
           }
         ]
       }
@@ -1625,9 +2142,10 @@
           {
             "name": "recent_timestamps",
             "docs": [
-              "Timestamps of last 52 verifications (newest at index 0).",
-              "52 slots covers 1 year of weekly or 4+ years of monthly verifications.",
-              "Older entries contribute negligible score due to exponential recency decay."
+              "Activity ring, newest at index 0, holding at most one entry per weekly",
+              "scoring bin. The Trust Score reads bin activation rather than a count,",
+              "so a repeat inside an active bin is not recorded and 52 slots cover a",
+              "full year however often a wallet verifies. See `record_verification`."
             ],
             "type": {
               "array": [
@@ -1651,6 +2169,20 @@
               "new wallet for migrate_identity()"
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "projection_version",
+            "docs": [
+              "Projection space version used for the current commitment."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "last_rebaseline_timestamp",
+            "docs": [
+              "Most recent `rebaseline_anchor` invocation"
+            ],
+            "type": "i64"
           }
         ]
       }

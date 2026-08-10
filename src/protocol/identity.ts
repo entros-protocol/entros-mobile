@@ -43,6 +43,7 @@ const OFFSET = {
   RECENT_TIMESTAMPS: 127, // [i64; 52] = 416 bytes (older accounts may have [i64; 10] = 80 bytes here)
   LAST_RESET_TIMESTAMP: 543, // i64 LE (only present on accounts ≥ 551 bytes)
   NEW_WALLET: 551, // 32 bytes (only present on accounts ≥ 583 bytes)
+  PROJECTION_VERSION: 583, // u16 LE (only present on accounts ≥ 585 bytes)
 } as const;
 
 /** Minimum account size that includes the verification counter — accounts
@@ -80,6 +81,7 @@ export interface OnChainIdentity {
    *  array length never exceeds N regardless of how many verifications a
    *  wallet has had — older entries roll out of the circular buffer. */
   recentTimestamps: number[];
+  projectionVersion: number;
 }
 
 /** Reads the user's `IdentityState` PDA. Tolerates the three account-size
@@ -91,18 +93,24 @@ export interface OnChainIdentity {
 export async function fetchIdentityState(
   walletPubkey: PublicKey,
   connection: Connection,
+  failClosed = false,
 ): Promise<OnChainIdentity | null> {
   const programId = config.programs.entrosAnchor;
   if (!programId) return null;
 
   const identityPda = findIdentityPda(walletPubkey, programId);
 
-  const accountInfo = await connection.getAccountInfo(identityPda, "confirmed").catch((err) => {
+  let accountInfo;
+  try {
+    accountInfo = await connection.getAccountInfo(identityPda, "confirmed");
+  } catch (err) {
+    if (failClosed) throw err;
     devWarn("[Entros] getAccountInfo(identity) failed", err);
     return null;
-  });
+  }
   if (!accountInfo) return null;
   if (accountInfo.data.length < MIN_ACCOUNT_SIZE) {
+    if (failClosed) throw new Error("The on-chain identity account is truncated.");
     devWarn(
       `[Entros] IdentityState account too small (${accountInfo.data.length}B < ${MIN_ACCOUNT_SIZE}B)`,
     );
@@ -153,6 +161,10 @@ export async function fetchIdentityState(
       accountInfo.data.length >= SIZE_WITH_RESET
         ? Number(view.getBigInt64(OFFSET.LAST_RESET_TIMESTAMP, true))
         : 0;
+    const projectionVersion =
+      accountInfo.data.length >= OFFSET.PROJECTION_VERSION + 2
+        ? view.getUint16(OFFSET.PROJECTION_VERSION, true)
+        : 0;
 
     return {
       owner,
@@ -163,9 +175,11 @@ export async function fetchIdentityState(
       currentCommitment,
       mint,
       lastResetTimestamp,
+      projectionVersion,
       recentTimestamps: timestamps,
     };
   } catch (err) {
+    if (failClosed) throw err;
     devWarn("[Entros] IdentityState decode failed", err);
     return null;
   }

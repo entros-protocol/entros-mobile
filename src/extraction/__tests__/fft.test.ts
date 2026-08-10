@@ -190,7 +190,7 @@ describe("downstream helpers read the corrected spectrum", () => {
         0.5 * Math.sin((2 * Math.PI * 20 * i) / sampleRate);
     }
     const { real, imag } = realFFT(input, size);
-    const { freq, amplitude } = peakInBand(real, imag, sampleRate, 4, 12);
+    const { freq, amplitude } = peakInBand(real, imag, sampleRate, 4, 12, input.length);
 
     expect(freq).toBeCloseTo(5, 6);
     // Amplitude is |X|²/N². For a unit-amplitude sine that is (N/2)²/N² = 0.25.
@@ -199,12 +199,23 @@ describe("downstream helpers read the corrected spectrum", () => {
 
   test("bandEnergy attributes a tone's power to the band containing it", () => {
     const { real, imag } = realFFT(sineSignal(size, 8, sampleRate, 1), size);
-    const inBand = bandEnergy(real, imag, sampleRate, 7, 9);
-    const offBand = bandEnergy(real, imag, sampleRate, 20, 30);
+    const inBand = bandEnergy(real, imag, sampleRate, 7, 9, size);
+    const offBand = bandEnergy(real, imag, sampleRate, 20, 30, size);
 
     // Bin-aligned tone, single positive-frequency bin: |X|²/N² = 0.25.
     expect(inBand).toBeCloseTo(0.25, 6);
     expect(offBand).toBeLessThan(1e-12);
+  });
+
+  test("preserves sine energy across sample rates and padding ratios", () => {
+    const low = sineSignal(180, 8, 60, 0.4);
+    const high = sineSignal(360, 8, 120, 0.4);
+    const lowSpectrum = realFFT(low, nextPow2(low.length));
+    const highSpectrum = realFFT(high, nextPow2(high.length));
+    const lowEnergy = bandEnergy(lowSpectrum.real, lowSpectrum.imag, 60, 7, 9, low.length);
+    const highEnergy = bandEnergy(highSpectrum.real, highSpectrum.imag, 120, 7, 9, high.length);
+
+    expect(Math.abs(lowEnergy - highEnergy) / highEnergy).toBeLessThan(5e-5);
   });
 });
 

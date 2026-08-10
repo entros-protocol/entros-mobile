@@ -90,12 +90,18 @@ const adaptTouch = (samples: MobileTouchSample[]): TouchSample[] =>
  * Mirrors pulse.ts:extractFeatures() bit-for-bit so SimHash commitments
  * stay reproducible across web and mobile.
  */
-export async function extractFeatures(sensorData: MobileSensorData): Promise<ExtractedFeatures> {
+export async function extractFeatures(
+  sensorData: MobileSensorData,
+  projectionVersion = 0,
+): Promise<ExtractedFeatures> {
   const audio = adaptAudio(sensorData.audio);
   const motion = adaptMotion(sensorData.motion.samples, sensorData.motion.startedAt);
   const touch = adaptTouch(sensorData.touch.samples);
 
-  const { features: audioFeatures, f0Contour } = await extractSpeakerFeaturesDetailed(audio);
+  const { features: audioFeatures, f0Contour } = await extractSpeakerFeaturesDetailed(
+    audio,
+    projectionVersion,
+  );
   // The audio path is the dominant cost. Yield once it's done so the
   // verify UI gets a paint frame before motion/touch extraction resumes
   // the JS-thread work.
@@ -104,18 +110,19 @@ export async function extractFeatures(sensorData: MobileSensorData): Promise<Ext
   const hasMotion = motion.length >= MIN_MOTION_SAMPLES;
   const hasTouch = touch.length >= MIN_TOUCH_SAMPLES;
 
-  // Same branch logic as pulse.ts. When both modalities are present,
-  // mouse-dynamics on the touch path takes precedence — IMU still
-  // contributes via the cross-modal accel_magnitude time series below.
   const motionFeatures =
-    hasMotion && hasTouch
-      ? extractMouseDynamics(touch)
-      : hasMotion
-        ? extractMotionFeatures(motion)
-        : extractMouseDynamics(touch);
+    projectionVersion >= 1
+      ? hasMotion
+        ? extractMotionFeatures(motion, projectionVersion)
+        : extractMouseDynamics(touch, projectionVersion)
+      : hasMotion && hasTouch
+        ? extractMouseDynamics(touch, projectionVersion)
+        : hasMotion
+          ? extractMotionFeatures(motion, projectionVersion)
+          : extractMouseDynamics(touch, projectionVersion);
   await yieldToMainThread();
 
-  const touchFeatures = extractTouchFeatures(touch);
+  const touchFeatures = extractTouchFeatures(touch, projectionVersion);
   await yieldToMainThread();
 
   // Resampled onto the exact stretch of wall-clock time the transmitted audio

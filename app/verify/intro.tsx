@@ -20,7 +20,11 @@ import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
 import { getConnection } from "@/config";
 import { devWarn } from "@/lib/log";
-import { fetchProtocolConfig, formatLamportsAsSol } from "@/protocol/protocolConfig";
+import {
+  fetchProjectionPolicy,
+  fetchProtocolConfig,
+  formatLamportsAsSol,
+} from "@/protocol/protocolConfig";
 import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
 import { fetchChallenge } from "@/services/executor";
 import { useAppState } from "@/state/AppState";
@@ -126,6 +130,16 @@ export default function VerifyIntro() {
         // Reachable if the dashboard let an unconnected user through. Send
         // them back to the connect picker rather than failing silently.
         router.replace("/connect");
+        return;
+      }
+
+      try {
+        await fetchProjectionPolicy(getConnection());
+      } catch (err) {
+        Alert.alert(
+          "Update required",
+          err instanceof Error ? err.message : "Could not read the active projection version.",
+        );
         return;
       }
 

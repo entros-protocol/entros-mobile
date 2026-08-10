@@ -52,6 +52,11 @@ export interface StoredBaseline {
   salt: string;
   commitment: string;
   timestamp: number;
+  projectionVersion: number;
+}
+
+export interface PreparedBaseline {
+  serializedEnvelope: string;
 }
 
 const getOrCreateAesKey = async (): Promise<Uint8Array> => {
@@ -67,7 +72,7 @@ const getOrCreateAesKey = async (): Promise<Uint8Array> => {
  * same secure-store key. Throws on secure-store I/O failure (caller decides
  * whether to fail the verify flow or log + continue).
  */
-export const storeBaseline = async (baseline: StoredBaseline): Promise<void> => {
+export const prepareBaseline = async (baseline: StoredBaseline): Promise<PreparedBaseline> => {
   const key = await getOrCreateAesKey();
   const iv = randomBytes(IV_BYTES);
   const plaintext = new TextEncoder().encode(JSON.stringify(baseline));
@@ -77,7 +82,15 @@ export const storeBaseline = async (baseline: StoredBaseline): Promise<void> => 
     iv: bytesToHex(iv),
     ct: bytesToHex(ct),
   };
-  await setSecure(SecureKeys.BASELINE_ENVELOPE, JSON.stringify(envelope));
+  return { serializedEnvelope: JSON.stringify(envelope) };
+};
+
+export const persistPreparedBaseline = async (prepared: PreparedBaseline): Promise<void> => {
+  await setSecure(SecureKeys.BASELINE_ENVELOPE, prepared.serializedEnvelope);
+};
+
+export const storeBaseline = async (baseline: StoredBaseline): Promise<void> => {
+  await persistPreparedBaseline(await prepareBaseline(baseline));
 };
 
 /**
@@ -110,7 +123,23 @@ export const loadBaseline = async (): Promise<StoredBaseline | null> => {
     const plaintext = gcm(hexToBytes(keyHex), hexToBytes(envelope.iv)).decrypt(
       hexToBytes(envelope.ct),
     );
-    return JSON.parse(new TextDecoder().decode(plaintext)) as StoredBaseline;
+    const decoded = JSON.parse(new TextDecoder().decode(plaintext)) as Partial<StoredBaseline>;
+    if (
+      !Array.isArray(decoded.fingerprint) ||
+      typeof decoded.salt !== "string" ||
+      typeof decoded.commitment !== "string" ||
+      typeof decoded.timestamp !== "number"
+    ) {
+      return null;
+    }
+    return {
+      fingerprint: decoded.fingerprint,
+      salt: decoded.salt,
+      commitment: decoded.commitment,
+      timestamp: decoded.timestamp,
+      projectionVersion:
+        typeof decoded.projectionVersion === "number" ? decoded.projectionVersion : 0,
+    };
   } catch {
     return null;
   }

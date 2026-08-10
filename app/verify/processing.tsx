@@ -56,10 +56,12 @@
 import { useRouter } from "expo-router";
 import { useEffect, useReducer } from "react";
 import { StyleSheet, View } from "react-native";
+import { PublicKey } from "@solana/web3.js";
 
 import { ProcessingStage } from "@/components/pulse/ProcessingStage";
 import { Screen } from "@/components/primitives/Screen";
 import { extractFeatures, MIN_AUDIO_SAMPLES } from "@/extraction";
+import { getConnection } from "@/config";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import {
   bigintToBytes32,
@@ -69,13 +71,15 @@ import {
   simhash,
 } from "@/hashing";
 import type { TBH } from "@/hashing";
-import { loadBaseline, storeBaseline, wipeBaseline } from "@/identity/baseline";
+import { loadBaseline, persistPreparedBaseline, prepareBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
 import { classifyHammingDistance, DEFAULT_MIN_DISTANCE, DEFAULT_THRESHOLD } from "@/proof";
 import { generateSolanaProof } from "@/proof/prover";
 import { parseSubmitError, type ParsedSubmitError } from "@/protocol/errors";
+import { fetchIdentityState } from "@/protocol/identity";
+import { fetchProjectionPolicy } from "@/protocol/protocolConfig";
 import type { SignedReceiptDto } from "@/protocol/receipt";
-import { submitReset, submitVerify } from "@/protocol/submit";
+import { submitRebaseline, submitReset, submitVerify } from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import { validateFeatures, ValidateOutcome } from "@/services/executor";
 import type { VerificationReason } from "@/services/reasons";
@@ -236,7 +240,35 @@ export default function Processing() {
           return;
         }
 
-        const result = await extractFeatures(captured);
+        let projectionPolicy;
+        let chainIdentity;
+        try {
+          const rpc = getConnection();
+          [projectionPolicy, chainIdentity] = await Promise.all([
+            fetchProjectionPolicy(rpc),
+            fetchIdentityState(new PublicKey(walletId), rpc, true),
+          ]);
+        } catch (err) {
+          failOut(
+            "retry-now",
+            err instanceof Error ? err.message : "Could not read protocol state.",
+          );
+          return;
+        }
+        const projectionVersion = projectionPolicy.current;
+        const rebaselineRequired =
+          chainIdentity !== null && chainIdentity.projectionVersion < projectionVersion;
+        if (
+          chainIdentity &&
+          (chainIdentity.projectionVersion > projectionVersion ||
+            (chainIdentity.projectionVersion < projectionPolicy.minimumSupported &&
+              !rebaselineRequired))
+        ) {
+          failOut("report-bug", "The identity projection version is not supported.");
+          return;
+        }
+
+        const result = await extractFeatures(captured, projectionVersion);
 
         // Encode audio for /validate-features BEFORE dropping the captured
         // ref so the Float32Array doesn't have to outlive its single use.
@@ -262,17 +294,27 @@ export default function Processing() {
         // submitReset takes only the new commitment, no ft_prev needed.
         // First verifies also return null and we skip Stage 6 proof
         // generation; mint_anchor takes no proof either.
-        const previousBaseline = flowIntent === "reset" ? null : await loadBaseline();
+        const storedBaseline = flowIntent === "reset" ? null : await loadBaseline();
+        const previousBaseline = chainIdentity && !rebaselineRequired ? storedBaseline : null;
+        if (
+          flowIntent === "verify" &&
+          chainIdentity &&
+          !rebaselineRequired &&
+          (!previousBaseline || previousBaseline.projectionVersion !== projectionVersion)
+        ) {
+          failOut("baseline-missing");
+          return;
+        }
         if (cancelled) return;
 
         // Stages 3 + 4 + 5 + 6 IIFE. The 256-bit fingerprint AND the
         // previously-stored baseline fingerprint live only inside this
         // scope; they fall out of scope as soon as the IIFE returns. Only
         // the 16-char commitment hex prefix and the validate outcome
-        // (signed receipt + remaining quota) escape for logging + Stage 7.
+        // (signed receipt + remaining quota) escape for logging and submission.
         //
         // Order is simhash + Poseidon → /validate-features → baseline
-        // persistence → Groth16 proof, mirroring the Pulse SDK flow. The
+        // encryption → Groth16 proof, mirroring the Pulse SDK flow. The
         // commitment must be computed before
         // validation so it can be transmitted as `commitment_new_hex` for
         // the validator to sign. Cost of hashing a payload that ends up
@@ -284,13 +326,15 @@ export default function Processing() {
               remainingQuota: number | null;
               signedReceipt: SignedReceiptDto | null;
               firstVerify: boolean;
+              rebaseline: boolean;
+              preparedBaseline: Awaited<ReturnType<typeof prepareBaseline>>;
             }
           | { kind: "fail"; outcome: Exclude<ValidateOutcome, { kind: "ok" }> }
           | { kind: "cancelled" }
           | { kind: "drift"; bucket: FailureBucket };
         const stagesResult: StagesResult = await (async (): Promise<StagesResult> => {
           // Stage 3: SimHash + Poseidon TBH.
-          const fingerprint = simhash(result.normalized);
+          const fingerprint = simhash(result.normalized, projectionVersion);
           // Local TBH with a client-random salt — the fallback used when the
           // validator doesn't return a server-derived commitment (older
           // deploys). When it does, we swap in the server's salt + commitment
@@ -312,12 +356,25 @@ export default function Processing() {
 
           const outcome = await validateFeatures({
             features: result.raw,
+            projectionVersion,
             walletId,
             f0Contour: result.f0Contour,
             accelMagnitude: result.accelMagnitude,
             audioSamplesB64,
             audioSampleRateHz,
             commitmentNewHex,
+            receiptPurpose:
+              flowIntent === "reset"
+                ? projectionVersion >= 1
+                  ? "reset"
+                  : undefined
+                : flowIntent === "verify"
+                  ? !chainIdentity
+                    ? "mint"
+                    : rebaselineRequired
+                      ? "rebaseline"
+                      : undefined
+                  : undefined,
           });
           if (cancelled) return { kind: "cancelled" };
           if (outcome.kind !== "ok") return { kind: "fail", outcome };
@@ -358,33 +415,26 @@ export default function Processing() {
           // proof generation run.
           dispatch({ type: "advance" });
 
-          // Stage 5: encrypted baseline persistence. setCommitment populates
-          // the handoff buffer Stage 7 reads from; storeBaseline writes the
-          // AES-GCM envelope to expo-secure-store.
+          // Prepare the encrypted baseline. The ciphertext remains
+          // in memory until the on-chain transaction confirms.
           setCommitment({
             commitment: tbh.commitment,
             salt: tbh.salt,
             commitmentBytes: tbh.commitmentBytes,
           });
+          let preparedBaseline;
           try {
-            // Pass `tbh.fingerprint` (same number[] as `fingerprint`) to
-            // match pulse-sdk/pulse.ts:458 byte-for-byte. The plaintext shape
-            // serialised here MUST stay identical to the web SDK so a future
-            // migration tool could read either platform's envelope.
-            await storeBaseline({
+            preparedBaseline = await prepareBaseline({
               fingerprint: tbh.fingerprint,
               salt: tbh.salt.toString(),
               commitment: tbh.commitment.toString(),
               timestamp: Date.now(),
+              projectionVersion,
             });
           } catch (err) {
-            // Persistence failure does NOT abort the current verify cycle
-            // — the commitment in commitmentBuffer is still valid for the
-            // downstream submit. Only re-verification on a future session
-            // depends on the baseline being on disk; the user will be
-            // treated as first-time again next session if this fails.
             const message = err instanceof Error ? err.message : String(err);
-            devWarn(`[Entros] storeBaseline failed: ${message}`);
+            devWarn(`[Entros] baseline preparation failed: ${message}`);
+            return { kind: "drift", bucket: "report-bug" };
           }
 
           // Stage 6: Groth16 proof on-device. Re-verify only — first-verify
@@ -424,7 +474,9 @@ export default function Processing() {
             commitmentHexPrefix: commitmentNewHex.slice(0, 16),
             remainingQuota: outcome.remainingQuota,
             signedReceipt: outcome.signedReceipt,
-            firstVerify: !previousBaseline,
+            firstVerify: chainIdentity === null,
+            rebaseline: rebaselineRequired,
+            preparedBaseline,
           };
         })();
         if (stagesResult.kind === "cancelled" || cancelled) return;
@@ -444,7 +496,14 @@ export default function Processing() {
           return;
         }
 
-        const { commitmentHexPrefix, remainingQuota, signedReceipt, firstVerify } = stagesResult;
+        const {
+          commitmentHexPrefix,
+          remainingQuota,
+          signedReceipt,
+          firstVerify,
+          rebaseline,
+          preparedBaseline,
+        } = stagesResult;
         devWarn(`[Entros] /validate-features ok q=${remainingQuota ?? "?"}`);
         // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
         // 32-byte commitment, never the fingerprint bits, never the salt.
@@ -481,8 +540,25 @@ export default function Processing() {
                 authToken,
                 walletKind,
                 commitment: commitmentBuf.commitmentBytes,
+                projectionVersion,
+                signedReceipt: signedReceipt ?? undefined,
               },
               () => dispatch({ type: "advance" }), // → "submitting" once signed
+            );
+          } else if (rebaseline) {
+            if (!signedReceipt) {
+              throw new Error("Projection migration requires a validator-signed receipt.");
+            }
+            result = await submitRebaseline(
+              {
+                walletAddress: walletId,
+                authToken,
+                walletKind,
+                commitment: commitmentBuf.commitmentBytes,
+                projectionVersion,
+                signedReceipt,
+              },
+              () => dispatch({ type: "advance" }),
             );
           } else {
             const nonce = challengeBuf?.nonce ? Array.from(challengeBuf.nonce) : undefined;
@@ -519,6 +595,13 @@ export default function Processing() {
             devWarn(`[Entros] auth_token persist failed: ${message}`);
           }
 
+          try {
+            await persistPreparedBaseline(preparedBaseline);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            devWarn(`[Entros] baseline persistence failed after confirmation: ${message}`);
+          }
+
           devWarn(
             `[Entros] on-chain ok intent=${flowIntent} sig=${result.txSignature.slice(0, 12)}…`,
           );
@@ -540,45 +623,6 @@ export default function Processing() {
           devWarn(
             `[Entros] on-chain submit failed kind=${parsed.kind} code=${parsed.anchorCode ?? "?"} raw=${parsed.raw.slice(0, 200)}`,
           );
-
-          // Local-state cleanup BEFORE the failure UI routes. Stage 5
-          // writes the new baseline INSIDE the IIFE (matching pulse-sdk
-          // for byte-identical envelope shape), which is correct for the
-          // happy path but leaves orphaned local state on submit failure:
-          //  (a) first-verify failure → no on-chain anchor exists yet, but
-          //      a baseline envelope is on disk. Next retry would loadBaseline
-          //      → previousBaseline non-null → firstVerify=false → try
-          //      update_anchor against a non-existent IdentityState PDA →
-          //      AccountNotInitialized. Wipe the orphan so retry restarts
-          //      cleanly as first-verify. Exception: anchor-already-exists
-          //      (Path A repeat for an already-anchored wallet) — DON'T wipe;
-          //      route to baseline-missing bucket so the user resets via
-          //      reset_identity_state instead.
-          //  (b) re-verify failure → baseline was overwritten with the new
-          //      fingerprint inside the IIFE, but the on-chain commitment
-          //      didn't update. Next retry would generate a proof binding
-          //      to the just-written commitment, which differs from the
-          //      on-chain current_commitment → PrevCommitmentMismatch.
-          //      Restore the previousBaseline envelope so subsequent retries
-          //      bind their proof to the on-chain truth.
-          // Reset-path failures aren't cleaned up here — the reset cycle
-          // works without a previous baseline and a partial overwrite is
-          // recoverable on the next reset attempt.
-          if (flowIntent !== "reset") {
-            try {
-              if (firstVerify) {
-                if (parsed.kind !== "anchor-already-exists") {
-                  await wipeBaseline();
-                }
-              } else if (previousBaseline) {
-                await storeBaseline(previousBaseline);
-              }
-            } catch (cleanupErr) {
-              const cleanupMsg =
-                cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-              devWarn(`[Entros] post-failure baseline cleanup failed: ${cleanupMsg}`);
-            }
-          }
 
           // Map parsed kind → FailureBucket. wallet-rejected is the one
           // silent path: the user explicitly cancelled in their wallet's

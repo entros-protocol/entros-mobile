@@ -45,6 +45,7 @@ const rejectWith = (name: string, message: string) => {
 const run = (): Promise<ValidateOutcome> =>
   validateFeatures({
     features: [1, 2, 3],
+    projectionVersion: 0,
     walletId: "So11111111111111111111111111111111111111112",
   });
 
@@ -153,6 +154,23 @@ describe("validateFeatures: an abort is not an unreachable host", () => {
 });
 
 describe("validateFeatures: remaining status mapping", () => {
+  it("sends the projection version and reset receipt intent at the top level", async () => {
+    respondWith(200, { valid: true });
+    await validateFeatures({
+      features: [1, 2, 3],
+      projectionVersion: 1,
+      walletId: "So11111111111111111111111111111111111111112",
+      receiptPurpose: "reset",
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      projection_version: 1,
+      request_receipt: true,
+      receipt_purpose: "reset",
+    });
+  });
+
   it("returns ok with the validator's commitment, salt and receipt", async () => {
     respondWith(200, {
       valid: true,

@@ -115,8 +115,11 @@ export function extractAccelerationMagnitude(
  * statistical / spectral aggregates (variances, covariances, band sums,
  * autocorrelation scalars). The full sample stream is never transmitted.
  */
-export function extractMotionFeatures(samples: MotionSample[]): number[] {
+export function extractMotionFeatures(samples: MotionSample[], projectionVersion = 0): number[] {
   if (samples.length < 5) return new Array(MOTION_FEATURE_COUNT).fill(0);
+
+  const corrected = usesCorrectedExtraction(projectionVersion);
+  const timestamps = samples.map((sample) => sample.timestamp);
 
   // Extract acceleration and rotation time series
   const axes = {
@@ -132,12 +135,12 @@ export function extractMotionFeatures(samples: MotionSample[]): number[] {
 
   for (const values of Object.values(axes)) {
     // Jerk = 3rd derivative of position = 1st derivative of acceleration
-    const jerk = derivative(values);
+    const jerk = derivativeForProjection(values, timestamps, corrected);
     // Jounce = 4th derivative of position = 2nd derivative of acceleration
-    const jounce = derivative(jerk);
+    const jounce = derivativeForProjection(jerk.values, jerk.timestamps, corrected);
 
-    const jerkStats = condense(jerk);
-    const jounceStats = condense(jounce);
+    const jerkStats = condense(jerk.values);
+    const jounceStats = condense(jounce.values);
 
     features.push(
       jerkStats.mean,
@@ -147,14 +150,14 @@ export function extractMotionFeatures(samples: MotionSample[]): number[] {
       jounceStats.mean,
       jounceStats.variance,
       jounceStats.skewness,
-      jounceStats.kurtosis
+      jounceStats.kurtosis,
     );
   }
 
   // Jitter variance per axis: variance of windowed jerk variance.
   // Captures temporal fluctuation in the motion signal.
   for (const values of Object.values(axes)) {
-    const jerk = derivative(values);
+    const jerk = derivativeForProjection(values, timestamps, corrected).values;
     const windowSize = Math.max(5, Math.floor(jerk.length / 4));
     const windowVariances: number[] = [];
     for (let i = 0; i <= jerk.length - windowSize; i += windowSize) {
@@ -164,7 +167,7 @@ export function extractMotionFeatures(samples: MotionSample[]): number[] {
   }
 
   // ---- v2 additions ----
-  features.push(...computeMotionV2(axes, samples));
+  features.push(...computeMotionV2(axes, samples, corrected));
 
   return features;
 }
@@ -176,12 +179,13 @@ export function extractMotionFeatures(samples: MotionSample[]): number[] {
  */
 function computeMotionV2(
   axes: Record<"ax" | "ay" | "az" | "gx" | "gy" | "gz", number[]>,
-  samples: MotionSample[]
+  samples: MotionSample[],
+  corrected: boolean,
 ): number[] {
   const out: number[] = [];
 
   // 1. Cross-axis covariance — 6 selected pairs (per blueprint §2.2).
-  const covPairs: Array<[number[], number[]]> = [
+  const covPairs: [number[], number[]][] = [
     [axes.ax, axes.gy],
     [axes.ay, axes.gx],
     [axes.az, axes.gz],
@@ -194,7 +198,8 @@ function computeMotionV2(
   // 2. FFT band energy on the 3 accelerometer axes.
   const sampleRate = sampleRateFromTimestamps(samples.map((s) => s.timestamp));
   const fftSize = nextPow2(Math.max(64, axes.ax.length));
-  const bands: Array<[number, number]> = [
+  const normalizationCount = corrected ? samples.length : fftSize;
+  const bands: [number, number][] = [
     [0, 2],
     [2, 6],
     [6, 12],
@@ -202,32 +207,34 @@ function computeMotionV2(
   ];
 
   const accelSpectra = [axes.ax, axes.ay, axes.az].map((axis) =>
-    realFFT(meanCenter(axis), fftSize)
+    realFFT(meanCenter(axis), fftSize),
   );
   for (const spectrum of accelSpectra) {
     for (const [lo, hi] of bands) {
-      out.push(bandEnergy(spectrum.real, spectrum.imag, sampleRate, lo, hi));
+      out.push(bandEnergy(spectrum.real, spectrum.imag, sampleRate, lo, hi, normalizationCount));
     }
   }
 
   // 3. Physiological-tremor peak (4-12 Hz) on motion magnitude.
-  const magnitude = samples.map((s) =>
-    Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az)
-  );
+  const magnitude = samples.map((s) => Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az));
   const magSpectrum = realFFT(meanCenter(magnitude), fftSize);
   const tremor = peakInBand(
     magSpectrum.real,
     magSpectrum.imag,
     sampleRate,
     4,
-    12
+    12,
+    normalizationCount,
   );
   out.push(tremor.freq, tremor.amplitude);
 
   // 4. Direction-reversal rate per second per accel axis (mean, variance).
   const duration = captureDurationSec(samples);
+  const timestamps = samples.map((sample) => sample.timestamp);
   const reversalRates = [axes.ax, axes.ay, axes.az].map((axis) =>
-    duration > 0 ? signChangeCount(derivative(axis)) / duration : 0
+    duration > 0
+      ? signChangeCount(derivativeForProjection(axis, timestamps, corrected).values) / duration
+      : 0,
   );
   out.push(mean(reversalRates), variance(reversalRates));
 
@@ -269,9 +276,11 @@ function computeMotionV2(
  * transmitted; downstream phase-content (e.g. typed text) is not
  * recoverable from the per-stroke summaries.
  */
-export function extractTouchFeatures(samples: TouchSample[]): number[] {
+export function extractTouchFeatures(samples: TouchSample[], projectionVersion = 0): number[] {
   if (samples.length < 5) return new Array(TOUCH_FEATURE_COUNT).fill(0);
 
+  const corrected = usesCorrectedExtraction(projectionVersion);
+  const timestamps = samples.map((sample) => sample.timestamp);
   const x = samples.map((s) => s.x);
   const y = samples.map((s) => s.y);
   const pressure = samples.map((s) => s.pressure);
@@ -280,16 +289,16 @@ export function extractTouchFeatures(samples: TouchSample[]): number[] {
   const features: number[] = [];
 
   // X velocity and acceleration
-  const vx = derivative(x);
-  const accX = derivative(vx);
-  features.push(...Object.values(condense(vx)));
-  features.push(...Object.values(condense(accX)));
+  const vx = derivativeForProjection(x, timestamps, corrected);
+  const accX = derivativeForProjection(vx.values, vx.timestamps, corrected);
+  features.push(...Object.values(condense(vx.values)));
+  features.push(...Object.values(condense(accX.values)));
 
   // Y velocity and acceleration
-  const vy = derivative(y);
-  const accY = derivative(vy);
-  features.push(...Object.values(condense(vy)));
-  features.push(...Object.values(condense(accY)));
+  const vy = derivativeForProjection(y, timestamps, corrected);
+  const accY = derivativeForProjection(vy.values, vy.timestamps, corrected);
+  features.push(...Object.values(condense(vy.values)));
+  features.push(...Object.values(condense(accY.values)));
 
   // Pressure statistics
   features.push(...Object.values(condense(pressure)));
@@ -298,13 +307,13 @@ export function extractTouchFeatures(samples: TouchSample[]): number[] {
   features.push(...Object.values(condense(area)));
 
   // Jerk of touch path
-  const jerkX = derivative(accX);
-  const jerkY = derivative(accY);
-  features.push(...Object.values(condense(jerkX)));
-  features.push(...Object.values(condense(jerkY)));
+  const jerkX = derivativeForProjection(accX.values, accX.timestamps, corrected);
+  const jerkY = derivativeForProjection(accY.values, accY.timestamps, corrected);
+  features.push(...Object.values(condense(jerkX.values)));
+  features.push(...Object.values(condense(jerkY.values)));
 
   // Jitter variance for touch signals
-  for (const values of [vx, vy, pressure, area]) {
+  for (const values of [vx.values, vy.values, pressure, area]) {
     const windowSize = Math.max(5, Math.floor(values.length / 4));
     const windowVariances: number[] = [];
     for (let i = 0; i <= values.length - windowSize; i += windowSize) {
@@ -314,7 +323,7 @@ export function extractTouchFeatures(samples: TouchSample[]): number[] {
   }
 
   // ---- v2 additions ----
-  features.push(...computeTouchV2(samples, vx, vy));
+  features.push(...computeTouchV2(samples, vx.values, vy.values, corrected));
 
   return features;
 }
@@ -326,13 +335,15 @@ export function extractTouchFeatures(samples: TouchSample[]): number[] {
 function computeTouchV2(
   samples: TouchSample[],
   vx: number[],
-  vy: number[]
+  vy: number[],
+  corrected: boolean,
 ): number[] {
   const out: number[] = [];
+  const timestamps = samples.map((sample) => sample.timestamp);
 
   // 1. Pressure first-derivative stats (4)
   const pressure = samples.map((s) => s.pressure);
-  const dPressure = derivative(pressure);
+  const dPressure = derivativeForProjection(pressure, timestamps, corrected).values;
   out.push(...Object.values(condense(dPressure)));
 
   // 2. Contact aspect ratio stats (mean, variance)
@@ -344,7 +355,7 @@ function computeTouchV2(
 
   // 3. Contact-area first-derivative stats (mean, variance)
   const area = samples.map((s) => s.width * s.height);
-  const dArea = derivative(area);
+  const dArea = derivativeForProjection(area, timestamps, corrected).values;
   out.push(mean(dArea), variance(dArea));
 
   // 4. Trajectory curvature stats (mean, var, skew).
@@ -355,10 +366,7 @@ function computeTouchV2(
     const v1y = vy[i - 1] ?? 0;
     const v2x = vx[i] ?? 0;
     const v2y = vy[i] ?? 0;
-    if (
-      Math.hypot(v1x, v1y) < CURVATURE_REST_EPS ||
-      Math.hypot(v2x, v2y) < CURVATURE_REST_EPS
-    ) {
+    if (Math.hypot(v1x, v1y) < CURVATURE_REST_EPS || Math.hypot(v2x, v2y) < CURVATURE_REST_EPS) {
       continue;
     }
     const a1 = Math.atan2(v1y, v1x);
@@ -386,29 +394,32 @@ function computeTouchV2(
   out.push(...Object.values(condense(gaps)));
 
   // 7. Path efficiency = straight-line displacement / total path length.
-  const totalPath = speed.reduce((a, b) => a + b, 0);
+  const stepDistances = coordinateStepDistances(samples);
+  const pathSeries = corrected
+    ? stepDistances
+    : vx.map((dx, index) => Math.hypot(dx, vy[index] ?? 0));
+  const totalPath = pathSeries.reduce((a, b) => a + b, 0);
   const dx = (samples[samples.length - 1]?.x ?? 0) - (samples[0]?.x ?? 0);
   const dy = (samples[samples.length - 1]?.y ?? 0) - (samples[0]?.y ?? 0);
   const straight = Math.sqrt(dx * dx + dy * dy);
   out.push(totalPath > 0 ? straight / totalPath : 0);
 
   // 8. Per-stroke total path length
-  const strokeLengths = perStrokePathLengths(speed);
+  const strokeLengths = perStrokePathLengths(pathSeries);
   out.push(mean(strokeLengths), variance(strokeLengths));
 
   return out;
 }
 
-/** Split a speed series into stroke segments at rest-points and return
- *  the cumulative speed of each stroke. */
-function perStrokePathLengths(speed: number[]): number[] {
+/** Split step distances at rest points and return each stroke's path length. */
+function perStrokePathLengths(stepDistances: number[]): number[] {
   const PAUSE_THRESHOLD = 0.5;
   const lengths: number[] = [];
   let acc = 0;
   let inStroke = false;
-  for (const s of speed) {
-    if (s >= PAUSE_THRESHOLD) {
-      acc += s;
+  for (const distance of stepDistances) {
+    if (distance >= PAUSE_THRESHOLD) {
+      acc += distance;
       inStroke = true;
     } else if (inStroke) {
       lengths.push(acc);
@@ -420,13 +431,68 @@ function perStrokePathLengths(speed: number[]): number[] {
   return lengths;
 }
 
-/** Compute discrete derivative (differences between consecutive values) */
-function derivative(values: number[]): number[] {
-  const d: number[] = [];
-  for (let i = 1; i < values.length; i++) {
-    d.push((values[i] ?? 0) - (values[i - 1] ?? 0));
+interface SampledSeries {
+  values: number[];
+  timestamps: number[];
+}
+
+function usesCorrectedExtraction(projectionVersion: number): boolean {
+  if (projectionVersion !== 0 && projectionVersion !== 1) {
+    throw new Error(`Unsupported projection version ${projectionVersion}`);
   }
-  return d;
+  return projectionVersion === 1;
+}
+
+function legacyDerivative(values: number[]): number[] {
+  const derivatives: number[] = [];
+  for (let index = 1; index < values.length; index++) {
+    derivatives.push((values[index] ?? 0) - (values[index - 1] ?? 0));
+  }
+  return derivatives;
+}
+
+function derivativeForProjection(
+  values: number[],
+  timestamps: number[],
+  corrected: boolean,
+): SampledSeries {
+  return corrected
+    ? differentiate(values, timestamps)
+    : {
+        values: legacyDerivative(values),
+        timestamps: timestamps.slice(1),
+      };
+}
+
+/** Differentiate a series using its measured sample intervals. */
+function differentiate(values: number[], timestamps: number[]): SampledSeries {
+  const derivatives: number[] = [];
+  const midpointTimestamps: number[] = [];
+  const count = Math.min(values.length, timestamps.length);
+  for (let i = 1; i < count; i++) {
+    const previousTimestamp = timestamps[i - 1] ?? 0;
+    const timestamp = timestamps[i] ?? previousTimestamp;
+    const intervalSeconds = (timestamp - previousTimestamp) / 1000;
+    const difference = (values[i] ?? 0) - (values[i - 1] ?? 0);
+    derivatives.push(
+      Number.isFinite(intervalSeconds) && intervalSeconds > 0 ? difference / intervalSeconds : 0,
+    );
+    midpointTimestamps.push((previousTimestamp + timestamp) / 2);
+  }
+  return { values: derivatives, timestamps: midpointTimestamps };
+}
+
+function coordinateStepDistances(samples: TouchSample[]): number[] {
+  const distances: number[] = [];
+  for (let i = 1; i < samples.length; i++) {
+    distances.push(
+      Math.hypot(
+        (samples[i]?.x ?? 0) - (samples[i - 1]?.x ?? 0),
+        (samples[i]?.y ?? 0) - (samples[i - 1]?.y ?? 0),
+      ),
+    );
+  }
+  return distances;
 }
 
 /** Subtract the arithmetic mean from a series; returns a new array. */
@@ -480,39 +546,44 @@ function sampleRateFromTimestamps(timestampsMs: number[]): number {
 }
 
 /** Capture duration in seconds from a millisecond-timestamped sample set. */
-function captureDurationSec(
-  samples: Array<{ timestamp: number }>
-): number {
+function captureDurationSec(samples: { timestamp: number }[]): number {
   if (samples.length < 2) return 0;
-  const span =
-    (samples[samples.length - 1]?.timestamp ?? 0) -
-    (samples[0]?.timestamp ?? 0);
+  const span = (samples[samples.length - 1]?.timestamp ?? 0) - (samples[0]?.timestamp ?? 0);
   return Number.isFinite(span) && span > 0 ? span / 1000 : 0;
 }
 
 /**
  * Extract mouse dynamics features as a desktop replacement for motion sensor data.
  */
-export function extractMouseDynamics(samples: TouchSample[]): number[] {
+export function extractMouseDynamics(samples: TouchSample[], projectionVersion = 0): number[] {
   if (samples.length < 10) return new Array(MOUSE_DYNAMICS_FEATURE_COUNT).fill(0);
 
+  const corrected = usesCorrectedExtraction(projectionVersion);
   const x = samples.map((s) => s.x);
   const y = samples.map((s) => s.y);
   const pressure = samples.map((s) => s.pressure);
+  const timestamps = samples.map((sample) => sample.timestamp);
+  const stepDistances = coordinateStepDistances(samples);
 
   // Velocity
-  const vx = derivative(x);
-  const vy = derivative(y);
+  const vxSeries = derivativeForProjection(x, timestamps, corrected);
+  const vySeries = derivativeForProjection(y, timestamps, corrected);
+  const vx = vxSeries.values;
+  const vy = vySeries.values;
   const speed = vx.map((dx, i) => Math.sqrt(dx * dx + (vy[i] ?? 0) * (vy[i] ?? 0)));
 
   // Acceleration
-  const accX = derivative(vx);
-  const accY = derivative(vy);
+  const accXSeries = derivativeForProjection(vx, vxSeries.timestamps, corrected);
+  const accYSeries = derivativeForProjection(vy, vySeries.timestamps, corrected);
+  const accX = accXSeries.values;
+  const accY = accYSeries.values;
   const acc = accX.map((ax, i) => Math.sqrt(ax * ax + (accY[i] ?? 0) * (accY[i] ?? 0)));
 
   // Jerk
-  const jerkX = derivative(accX);
-  const jerkY = derivative(accY);
+  const jerkXSeries = derivativeForProjection(accX, accXSeries.timestamps, corrected);
+  const jerkYSeries = derivativeForProjection(accY, accYSeries.timestamps, corrected);
+  const jerkX = jerkXSeries.values;
+  const jerkY = jerkYSeries.values;
   const jerk = jerkX.map((jx, i) => Math.sqrt(jx * jx + (jerkY[i] ?? 0) * (jerkY[i] ?? 0)));
 
   // Path curvature
@@ -537,27 +608,25 @@ export function extractMouseDynamics(samples: TouchSample[]): number[] {
     if (d1 * d2 < 0) reversals++;
   }
   const reversalRate = directions.length > 2 ? reversals / (directions.length - 2) : 0;
-  const reversalMagnitude = curvatures.length > 0
-    ? curvatures.reduce((a, b) => a + b, 0) / curvatures.length
-    : 0;
+  const reversalMagnitude =
+    curvatures.length > 0 ? curvatures.reduce((a, b) => a + b, 0) / curvatures.length : 0;
 
   // Pause detection
   const speedThreshold = 0.5;
-  const pauseFrames = speed.filter((s) => s < speedThreshold).length;
-  const pauseRatio = speed.length > 0 ? pauseFrames / speed.length : 0;
+  const pathSeries = corrected ? stepDistances : speed;
+  const pauseFrames = pathSeries.filter((distance) => distance < speedThreshold).length;
+  const pauseRatio = pathSeries.length > 0 ? pauseFrames / pathSeries.length : 0;
 
   // Path efficiency
-  const totalPathLength = speed.reduce((a, b) => a + b, 0);
-  const straightLine = Math.sqrt(
-    (x[x.length - 1]! - x[0]!) ** 2 + (y[y.length - 1]! - y[0]!) ** 2
-  );
+  const totalPathLength = pathSeries.reduce((a, b) => a + b, 0);
+  const straightLine = Math.sqrt((x[x.length - 1]! - x[0]!) ** 2 + (y[y.length - 1]! - y[0]!) ** 2);
   const pathEfficiency = totalPathLength > 0 ? straightLine / totalPathLength : 0;
 
   // Movement durations
   const movementDurations: number[] = [];
   let currentDuration = 0;
-  for (const s of speed) {
-    if (s >= speedThreshold) {
+  for (const distance of pathSeries) {
+    if (distance >= speedThreshold) {
       currentDuration++;
     } else if (currentDuration > 0) {
       movementDurations.push(currentDuration);
@@ -570,7 +639,7 @@ export function extractMouseDynamics(samples: TouchSample[]): number[] {
   const segmentLengths: number[] = [];
   let segLen = 0;
   for (let i = 1; i < directions.length; i++) {
-    segLen += speed[i] ?? 0;
+    segLen += pathSeries[i] ?? 0;
     const angleDiff = Math.abs(directions[i]! - directions[i - 1]!);
     if (angleDiff > Math.PI / 4) {
       segmentLengths.push(segLen);
@@ -589,9 +658,10 @@ export function extractMouseDynamics(samples: TouchSample[]): number[] {
   const speedJitter = windowVariances.length > 1 ? variance(windowVariances) : 0;
 
   // Path length
-  const duration = samples.length > 1
-    ? (samples[samples.length - 1]!.timestamp - samples[0]!.timestamp) / 1000
-    : 1;
+  const duration =
+    samples.length > 1
+      ? (samples[samples.length - 1]!.timestamp - samples[0]!.timestamp) / 1000
+      : 1;
   const normalizedPathLength = totalPathLength / Math.max(duration, 0.001);
 
   // Angle autocorrelation
@@ -627,28 +697,78 @@ export function extractMouseDynamics(samples: TouchSample[]): number[] {
   const segLenStats = condense(segmentLengths);
 
   const legacyMouseDynamics = [
-    curvatureStats.mean, curvatureStats.variance, curvatureStats.skewness, curvatureStats.kurtosis,
+    curvatureStats.mean,
+    curvatureStats.variance,
+    curvatureStats.skewness,
+    curvatureStats.kurtosis,
     dirEntropy,
-    speedStats.mean, speedStats.variance, speedStats.skewness, speedStats.kurtosis,
-    accStats.mean, accStats.variance, accStats.skewness, accStats.kurtosis,
-    reversalRate, reversalMagnitude,
+    speedStats.mean,
+    speedStats.variance,
+    speedStats.skewness,
+    speedStats.kurtosis,
+    accStats.mean,
+    accStats.variance,
+    accStats.skewness,
+    accStats.kurtosis,
+    reversalRate,
+    reversalMagnitude,
     pauseRatio,
     pathEfficiency,
     speedJitter,
-    jerkStats.mean, jerkStats.variance, jerkStats.skewness, jerkStats.kurtosis,
-    vxStats.mean, vxStats.variance, vxStats.skewness, vxStats.kurtosis,
-    vyStats.mean, vyStats.variance, vyStats.skewness, vyStats.kurtosis,
-    accXStats.mean, accXStats.variance, accXStats.skewness, accXStats.kurtosis,
-    accYStats.mean, accYStats.variance, accYStats.skewness, accYStats.kurtosis,
-    pressureStats.mean, pressureStats.variance, pressureStats.skewness, pressureStats.kurtosis,
-    moveDurStats.mean, moveDurStats.variance, moveDurStats.skewness, moveDurStats.kurtosis,
-    segLenStats.mean, segLenStats.variance, segLenStats.skewness, segLenStats.kurtosis,
-    angleAutoCorr[0] ?? 0, angleAutoCorr[1] ?? 0, angleAutoCorr[2] ?? 0,
+    jerkStats.mean,
+    jerkStats.variance,
+    jerkStats.skewness,
+    jerkStats.kurtosis,
+    vxStats.mean,
+    vxStats.variance,
+    vxStats.skewness,
+    vxStats.kurtosis,
+    vyStats.mean,
+    vyStats.variance,
+    vyStats.skewness,
+    vyStats.kurtosis,
+    accXStats.mean,
+    accXStats.variance,
+    accXStats.skewness,
+    accXStats.kurtosis,
+    accYStats.mean,
+    accYStats.variance,
+    accYStats.skewness,
+    accYStats.kurtosis,
+    pressureStats.mean,
+    pressureStats.variance,
+    pressureStats.skewness,
+    pressureStats.kurtosis,
+    moveDurStats.mean,
+    moveDurStats.variance,
+    moveDurStats.skewness,
+    moveDurStats.kurtosis,
+    segLenStats.mean,
+    segLenStats.variance,
+    segLenStats.skewness,
+    segLenStats.kurtosis,
+    angleAutoCorr[0] ?? 0,
+    angleAutoCorr[1] ?? 0,
+    angleAutoCorr[2] ?? 0,
     normalizedPathLength,
   ];
 
   // Mouse V2 additions
-  const v2 = computeMouseV2(samples, vx, vy, accX, accY, speed, acc, jerk, directions);
+  const v2 = computeMouseV2(
+    samples,
+    vx,
+    vy,
+    accX,
+    accY,
+    speed,
+    acc,
+    jerk,
+    directions,
+    vxSeries.timestamps,
+    accXSeries.timestamps,
+    jerkXSeries.timestamps,
+    corrected,
+  );
   return [...legacyMouseDynamics, ...v2];
 }
 
@@ -665,11 +785,15 @@ function computeMouseV2(
   acc: number[],
   jerk: number[],
   directions: number[],
+  velocityTimestamps: number[],
+  accelerationTimestamps: number[],
+  jerkTimestamps: number[],
+  corrected: boolean,
 ): number[] {
   const out: number[] = [];
 
   // 1. Cross-axis covariance
-  const covPairs: Array<[number[], number[]]> = [
+  const covPairs: [number[], number[]][] = [
     [vx, vy],
     [vx, accX],
     [vx, accY],
@@ -680,9 +804,11 @@ function computeMouseV2(
   for (const [a, b] of covPairs) out.push(covariance(a, b));
 
   // 2. FFT band energy
-  const sampleRate = sampleRateFromTimestamps(samples.map((s) => s.timestamp));
+  const sampleRate = sampleRateFromTimestamps(
+    corrected ? velocityTimestamps : samples.map((sample) => sample.timestamp),
+  );
   const fftSize = nextPow2(Math.max(64, speed.length));
-  const bands: Array<[number, number]> = [
+  const bands: [number, number][] = [
     [0, 2],
     [2, 6],
     [6, 12],
@@ -691,9 +817,23 @@ function computeMouseV2(
   const speedSpectrum = realFFT(meanCenter(speed), fftSize);
   const accSpectrum = realFFT(meanCenter(acc), fftSize);
   const jerkSpectrum = realFFT(meanCenter(jerk), fftSize);
-  for (const spectrum of [speedSpectrum, accSpectrum, jerkSpectrum]) {
+  for (const [spectrum, realSampleCount, spectrumSampleRate] of [
+    [speedSpectrum, corrected ? speed.length : fftSize, sampleRate],
+    [
+      accSpectrum,
+      corrected ? acc.length : fftSize,
+      corrected ? sampleRateFromTimestamps(accelerationTimestamps) : sampleRate,
+    ],
+    [
+      jerkSpectrum,
+      corrected ? jerk.length : fftSize,
+      corrected ? sampleRateFromTimestamps(jerkTimestamps) : sampleRate,
+    ],
+  ] as const) {
     for (const [lo, hi] of bands) {
-      out.push(bandEnergy(spectrum.real, spectrum.imag, sampleRate, lo, hi));
+      out.push(
+        bandEnergy(spectrum.real, spectrum.imag, spectrumSampleRate, lo, hi, realSampleCount),
+      );
     }
   }
 
@@ -704,13 +844,22 @@ function computeMouseV2(
     sampleRate,
     4,
     12,
+    corrected ? speed.length : fftSize,
   );
   out.push(tremor.freq, tremor.amplitude);
 
   // 4. Reversal rate per second per channel
   const duration = captureDurationSec(samples);
-  const reversalRates = [vx, vy, speed].map((channel) =>
-    duration > 0 ? signChangeCount(derivative(channel)) / duration : 0,
+  const reversalChannels: [number[], number[]][] = [
+    [vx, velocityTimestamps],
+    [vy, velocityTimestamps],
+    [speed, velocityTimestamps],
+  ];
+  const reversalRates = reversalChannels.map(([channel, channelTimestamps]) =>
+    duration > 0
+      ? signChangeCount(derivativeForProjection(channel, channelTimestamps, corrected).values) /
+        duration
+      : 0,
   );
   out.push(mean(reversalRates), variance(reversalRates));
 

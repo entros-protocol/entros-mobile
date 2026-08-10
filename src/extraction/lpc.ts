@@ -103,7 +103,7 @@ function levinsonDurbin(r: number[], order: number): number[] {
  *
  * Returns complex roots as [real, imag] pairs.
  */
-function findRoots(coefficients: number[], maxIterations: number = 50): [number, number][] {
+export function findRoots(coefficients: number[], maxIterations: number = 200): [number, number][] {
   const n = coefficients.length;
   if (n === 0) return [];
 
@@ -207,11 +207,12 @@ function extractFrameAnalysis(
   frame: Float32Array,
   sampleRate: number,
   lpcOrder: number = 12,
+  maxIterations: number = 50,
 ): FrameAnalysis {
   const r = autocorrelate(frame, lpcOrder);
   const coeffs = levinsonDurbin(r, lpcOrder);
 
-  const roots = findRoots(coeffs);
+  const roots = findRoots(coeffs, maxIterations);
 
   // Pair each candidate frequency with its corresponding bandwidth so we
   // can preserve the F1↔B1, F2↔B2, F3↔B3 alignment after sorting by
@@ -264,7 +265,7 @@ function extractFormants(
   sampleRate: number,
   lpcOrder: number = 12,
 ): [number, number, number] | null {
-  return extractFrameAnalysis(frame, sampleRate, lpcOrder).formants;
+  return extractFrameAnalysis(frame, sampleRate, lpcOrder, 50).formants;
 }
 
 /**
@@ -355,6 +356,7 @@ export function extractLpcAnalysis(
   frameSize: number,
   hopSize: number,
   lpcOrder: number = 12,
+  maxIterations: number = 50,
 ): LpcAnalysis {
   const lpcCoefficients: number[][] = Array.from({ length: lpcOrder }, () => []);
   const f1: number[] = [];
@@ -398,7 +400,7 @@ export function extractLpcAnalysis(
       windowed[j] = (frame[j] ?? 0) * hamming[j]!;
     }
 
-    const analysis = extractFrameAnalysis(windowed, sampleRate, lpcOrder);
+    const analysis = extractFrameAnalysis(windowed, sampleRate, lpcOrder, maxIterations);
     numFramesAnalyzed++;
 
     // LPC coefficients are always populated.

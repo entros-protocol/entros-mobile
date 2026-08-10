@@ -69,7 +69,7 @@ export const MFCC_FEATURE_COUNT =
  * (Furui 1981, ETSI ES 201 108). Returns a new buffer; does not mutate
  * the input.
  */
-function applyPreEmphasis(samples: Float32Array): Float32Array {
+export function preEmphasizeAudio(samples: Float32Array): Float32Array {
   const out = new Float32Array(samples.length);
   if (samples.length === 0) return out;
   out[0] = samples[0]!;
@@ -181,6 +181,21 @@ export async function extractMfccFeatures(
   frameSize: number,
   hopSize: number,
 ): Promise<number[]> {
+  return extractMfccFeaturesFromPreEmphasized(
+    preEmphasizeAudio(samples),
+    sampleRate,
+    frameSize,
+    hopSize,
+  );
+}
+
+/** Extract MFCC aggregates from a buffer that already has pre-emphasis. */
+export async function extractMfccFeaturesFromPreEmphasized(
+  samples: Float32Array,
+  sampleRate: number,
+  frameSize: number,
+  hopSize: number,
+): Promise<number[]> {
   if (
     !Number.isFinite(sampleRate) ||
     sampleRate <= 0 ||
@@ -205,10 +220,7 @@ export async function extractMfccFeatures(
   // Per-coefficient time series: mfccTracks[i][t] is the (i + MFCC_DROP_LEADING)-th
   // MFCC at frame t. Indexed by the USED coefficient slot, not Meyda's raw
   // [0..NUM_MFCC_COEFFICIENTS) range.
-  const mfccTracks: number[][] = Array.from(
-    { length: NUM_USED_MFCC },
-    () => [],
-  );
+  const mfccTracks: number[][] = Array.from({ length: NUM_USED_MFCC }, () => []);
 
   // Reusable frame buffer to avoid allocating per frame (matches the
   // pre-allocation pattern in speaker.ts::computeLTAS).
@@ -230,11 +242,9 @@ export async function extractMfccFeatures(
   // speakers live; without it MFCCs are dominated by F1 resonance which
   // is less speaker-discriminative. Cheap (one O(n) pass), allocates one
   // Float32Array of the input length.
-  const emphasized = applyPreEmphasis(samples);
-
   for (let i = 0; i < numFrames; i++) {
     const start = i * hopSize;
-    frame.set(emphasized.subarray(start, start + frameSize), 0);
+    frame.set(samples.subarray(start, start + frameSize), 0);
 
     const result = Meyda.extract("mfcc", frame) as number[] | null | undefined;
 

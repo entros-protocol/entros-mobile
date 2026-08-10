@@ -5,13 +5,12 @@
 // .env block isn't populated — and the unit tests don't need the runtime
 // config block to evaluate. These constants are pure values, no env reads.
 
-// Frozen at the original v1 string for backward compatibility — every
-// existing user's web baseline projects features into bit positions
-// derived from this seed, so changing it would invalidate every prior
-// fingerprint and force a global baseline reset. Kerckhoffs-compliant
-// either way (the seed is public). Mobile and web MUST keep this
-// byte-identical.
-export const SIMHASH_SEED = "IAM-PROTOCOL-SIMHASH-V1";
+export const SIMHASH_PUBLIC_SEED_HEX =
+  "9ee9c02f3fc6a2abce703010e64378d4531f8bcb110f0bc4c177c36a60c75bb5";
+
+export const LEGACY_SIMHASH_SEED = "IAM-PROTOCOL-SIMHASH-V1";
+
+export const CLIENT_PROJECTION_VERSION = 1;
 
 export const FINGERPRINT_BITS = 256;
 

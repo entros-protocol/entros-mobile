@@ -17,6 +17,7 @@ import { Ed25519Program } from "@solana/web3.js";
 import {
   buildEd25519ReceiptIx,
   decodeSignedReceipt,
+  receiptMatchesBinding,
   requireEd25519ReceiptIx,
   type SignedReceiptDto,
 } from "../receipt";
@@ -27,24 +28,45 @@ import {
 const repeatHex = (byte: number, lenBytes: number): string =>
   byte.toString(16).padStart(2, "0").repeat(lenBytes);
 
+const canonicalMessage = (): string => {
+  const message = Buffer.alloc(103);
+  Buffer.from("entros-validator-receipt-v2\0", "ascii").copy(message, 0);
+  message[28] = 2;
+  message.writeUInt16LE(1, 29);
+  Buffer.from(repeatHex(0x11, 32), "hex").copy(message, 31);
+  Buffer.from(repeatHex(0x22, 32), "hex").copy(message, 63);
+  message.writeBigInt64LE(1_786_310_400n, 95);
+  return message.toString("hex");
+};
+
 /** Synthetic but well-formed receipt. We only test the SDK side — actual
  *  Ed25519 signature validity is the validator's job and the on-chain
  *  Ed25519Program's domain. */
 const VALID_RECEIPT: SignedReceiptDto = {
   validator_pubkey_hex: repeatHex(0xaa, 32),
-  message_hex: repeatHex(0xbb, 72),
+  message_hex: canonicalMessage(),
   signature_hex: repeatHex(0xcc, 64),
 };
 
 describe("decodeSignedReceipt", () => {
-  test("decodes a valid receipt to (32B pubkey, 64B sig, 72B message)", () => {
+  test("decodes a valid receipt to (32B pubkey, 64B sig, 103B message)", () => {
     const decoded = decodeSignedReceipt(VALID_RECEIPT);
     expect(decoded).not.toBeNull();
     expect(decoded?.publicKey.length).toBe(32);
     expect(decoded?.signature.length).toBe(64);
-    expect(decoded?.message.length).toBe(72);
+    expect(decoded?.message.length).toBe(103);
     expect(decoded?.publicKey[0]).toBe(0xaa);
-    expect(decoded?.message[0]).toBe(0xbb);
+    expect(Buffer.from(decoded!.message.subarray(0, 28)).toString("ascii")).toBe(
+      "entros-validator-receipt-v2\0",
+    );
+    expect(decoded?.message[28]).toBe(2);
+    expect(
+      new DataView(
+        decoded!.message.buffer,
+        decoded!.message.byteOffset,
+        decoded!.message.byteLength,
+      ).getUint16(29, true),
+    ).toBe(1);
     expect(decoded?.signature[0]).toBe(0xcc);
   });
 
@@ -71,7 +93,7 @@ describe("decodeSignedReceipt", () => {
   });
 
   test("returns null when message hex is the wrong length", () => {
-    expect(decodeSignedReceipt({ ...VALID_RECEIPT, message_hex: repeatHex(0xbb, 71) })).toBeNull();
+    expect(decodeSignedReceipt({ ...VALID_RECEIPT, message_hex: repeatHex(0xbb, 102) })).toBeNull();
   });
 
   test("returns null on non-hex characters", () => {
@@ -94,10 +116,10 @@ describe("buildEd25519ReceiptIx", () => {
     expect(ix?.programId.equals(Ed25519Program.programId)).toBe(true);
     expect(ix?.keys).toEqual([]);
     // The ix data packs (header + offsets + pubkey + signature + message). The
-    // 72-byte message is the largest contiguous slice and trivial to find: we
+    // The message is the largest contiguous slice and trivial to find. We
     // assert it survives intact rather than reproducing the full layout here.
     const data = Buffer.from(ix!.data);
-    const messageBytes = Buffer.from(repeatHex(0xbb, 72), "hex");
+    const messageBytes = Buffer.from(canonicalMessage(), "hex");
     expect(data.includes(messageBytes)).toBe(true);
   });
 
@@ -122,5 +144,20 @@ describe("requireEd25519ReceiptIx", () => {
   test("returns an Ed25519 instruction for a valid receipt", () => {
     const ix = requireEd25519ReceiptIx(VALID_RECEIPT);
     expect(ix.programId.equals(Ed25519Program.programId)).toBe(true);
+  });
+});
+
+describe("receipt transition binding", () => {
+  test("accepts only the expected purpose, version, wallet, and commitment", () => {
+    const decoded = decodeSignedReceipt(VALID_RECEIPT)!;
+    const binding = {
+      purpose: 2 as const,
+      projectionVersion: 1,
+      wallet: decoded.message.subarray(31, 63),
+      commitment: decoded.message.subarray(63, 95),
+    };
+
+    expect(receiptMatchesBinding(VALID_RECEIPT, binding)).toBe(true);
+    expect(receiptMatchesBinding(VALID_RECEIPT, { ...binding, purpose: 3 })).toBe(false);
   });
 });

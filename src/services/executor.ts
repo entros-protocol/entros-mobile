@@ -101,6 +101,7 @@ export type ValidateOutcome =
 
 export interface ValidateInput {
   features: number[];
+  projectionVersion: number;
   walletId: string;
   f0Contour?: number[];
   accelMagnitude?: number[];
@@ -110,6 +111,7 @@ export interface ValidateInput {
    *  the validator signs a (wallet, commitment, validated_at) receipt and
    *  returns it on the `ok` outcome for first-verify Ed25519 binding. */
   commitmentNewHex?: string;
+  receiptPurpose?: "mint" | "rebaseline" | "reset";
 }
 
 /** Thrown when EXPO_PUBLIC_RELAYER_URL is not set. The intro screen
@@ -221,6 +223,7 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
 
   const body = JSON.stringify({
     features: input.features,
+    projection_version: input.projectionVersion,
     wallet_id: input.walletId,
     f0_contour: input.f0Contour,
     accel_magnitude: input.accelMagnitude,
@@ -230,7 +233,8 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
     // Explicit mint-intent signal. New validators sign a receipt over a
     // commitment THEY derive from `features`; `commitment_new_hex` is still
     // sent so older validators (which trust it) keep working.
-    request_receipt: true,
+    request_receipt: input.receiptPurpose !== undefined,
+    receipt_purpose: input.receiptPurpose,
   });
 
   const controller = new AbortController();
@@ -270,7 +274,8 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
       signedReceipt: parsed.signed_receipt ?? null,
       commitmentHex: parsed.commitment_hex ?? null,
       saltHex: parsed.salt_hex ?? null,
-      compositeRiskScore: typeof parsed.composite_risk_score === "number" ? parsed.composite_risk_score : null,
+      compositeRiskScore:
+        typeof parsed.composite_risk_score === "number" ? parsed.composite_risk_score : null,
     };
   }
 

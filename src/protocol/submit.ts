@@ -5,7 +5,7 @@
 //       First verify  → mintAnchor (single ix)
 //       Re-verify     → ComputeBudget + createChallenge + verifyProof + updateAnchor (4 ix in one tx)
 //
-//   - submitReset({ commitment }) → ComputeBudget + resetIdentityState (2 ix)
+//   - submitReset({ commitment }) uses a receipt before versioned resets.
 //
 // PRIVACY:
 // - The commitment + proofBytes + publicInputs + nonce all leave the device
@@ -30,15 +30,17 @@ import {
   buildComputeBudgetIx,
   buildCreateChallengeIx,
   buildMintAnchorIx,
+  buildRebaselineAnchorIx,
   buildResetIdentityStateIx,
   buildUpdateAnchorIx,
   buildVerifyProofIx,
   BuildContext,
   AnchorProgram,
   COMPUTE_UNITS_RESET,
+  COMPUTE_UNITS_REBASELINE,
   COMPUTE_UNITS_REVERIFY,
 } from "./instructions";
-import { requireEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
+import { receiptMatchesBinding, requireEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
 
 /** Result of a successful on-chain submission. */
 export interface SubmitResult {
@@ -185,6 +187,8 @@ export async function submitVerify(
  *  7-day cooldown before the next reset. */
 export interface SubmitResetArgs extends SubmitBase {
   commitment: Uint8Array;
+  projectionVersion: number;
+  signedReceipt?: SignedReceiptDto;
 }
 
 export async function submitReset(
@@ -194,8 +198,62 @@ export async function submitReset(
   const ctx = buildContext(args.walletAddress);
   const connection = getConnection();
 
-  const resetIx = await buildResetIdentityStateIx(ctx, args.commitment);
-  const ixs: TransactionInstruction[] = [buildComputeBudgetIx(COMPUTE_UNITS_RESET), resetIx];
+  const receiptIxs: TransactionInstruction[] = [];
+  if (args.projectionVersion >= 1) {
+    if (
+      !args.signedReceipt ||
+      !receiptMatchesBinding(args.signedReceipt, {
+        purpose: 3,
+        projectionVersion: args.projectionVersion,
+        wallet: ctx.walletPubkey.toBytes(),
+        commitment: args.commitment,
+      })
+    ) {
+      throw new Error("Baseline reset requires a matching validator-signed receipt.");
+    }
+    receiptIxs.push(requireEd25519ReceiptIx(args.signedReceipt));
+  }
+
+  const resetIx = await buildResetIdentityStateIx(ctx, args.commitment, args.projectionVersion);
+  const ixs: TransactionInstruction[] = [
+    buildComputeBudgetIx(COMPUTE_UNITS_RESET),
+    ...receiptIxs,
+    resetIx,
+  ];
+
+  const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
+  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  onSigned?.();
+  await confirmAndCheck(connection, result.signature);
+  return { txSignature: result.signature, authToken: result.authToken };
+}
+
+export interface SubmitRebaselineArgs extends SubmitBase {
+  commitment: Uint8Array;
+  projectionVersion: number;
+  signedReceipt: SignedReceiptDto;
+}
+
+/** Submit one authenticated projection migration transaction. */
+export async function submitRebaseline(
+  args: SubmitRebaselineArgs,
+  onSigned?: () => void,
+): Promise<SubmitResult> {
+  const ctx = buildContext(args.walletAddress);
+  const connection = getConnection();
+  if (
+    !receiptMatchesBinding(args.signedReceipt, {
+      purpose: 2,
+      projectionVersion: args.projectionVersion,
+      wallet: ctx.walletPubkey.toBytes(),
+      commitment: args.commitment,
+    })
+  ) {
+    throw new Error("Projection migration requires a matching validator-signed receipt.");
+  }
+  const receiptIx = requireEd25519ReceiptIx(args.signedReceipt);
+  const rebaselineIx = await buildRebaselineAnchorIx(ctx, args.commitment, args.projectionVersion);
+  const ixs = [buildComputeBudgetIx(COMPUTE_UNITS_REBASELINE), receiptIx, rebaselineIx];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
   const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);

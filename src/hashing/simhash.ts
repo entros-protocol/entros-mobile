@@ -11,54 +11,54 @@
 
 import { devWarn } from "@/lib/log";
 
-import { FINGERPRINT_BITS, SIMHASH_SEED } from "./constants";
+import { CLIENT_PROJECTION_VERSION, FINGERPRINT_BITS, LEGACY_SIMHASH_SEED } from "./constants";
+import { publicProjectionCoefficients } from "./hyperplanes";
 import type { TemporalFingerprint } from "./types";
 import { TOTAL_FEATURE_COUNT } from "../extraction/types";
 
-// Mulberry32 PRNG: deterministic, fast, good distribution
-function mulberry32(seed: number): () => number {
+const hyperplaneCache = new Map<string, Float64Array>();
+
+function legacyMulberry32(seed: number): () => number {
   let state = seed | 0;
   return () => {
     state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 0x1_0000_0000;
   };
 }
 
-// Derive a numeric seed from the protocol seed string
-function deriveSeed(seedStr: string): number {
+function legacySeed(value: string): number {
   let hash = 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    const ch = seedStr.charCodeAt(i);
-    hash = ((hash << 5) - hash + ch) | 0;
+  for (const character of value) {
+    hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
   }
   return hash;
 }
 
-let cachedHyperplanes: number[][] | null = null;
-let cachedDimension = 0;
+function legacyProjectionCoefficients(dimension: number): Float64Array {
+  const random = legacyMulberry32(legacySeed(LEGACY_SIMHASH_SEED));
+  return Float64Array.from({ length: FINGERPRINT_BITS * dimension }, () => random() * 2 - 1);
+}
 
-function getHyperplanes(dimension: number): number[][] {
-  if (cachedHyperplanes && cachedDimension === dimension) {
-    return cachedHyperplanes;
+function getHyperplanes(dimension: number, projectionVersion: number): Float64Array {
+  const cacheKey = `${projectionVersion}:${dimension}`;
+  const cached = hyperplaneCache.get(cacheKey);
+  if (cached) {
+    return cached;
   }
 
-  const rng = mulberry32(deriveSeed(SIMHASH_SEED));
-  const planes: number[][] = [];
-
-  for (let i = 0; i < FINGERPRINT_BITS; i++) {
-    const plane: number[] = [];
-    for (let j = 0; j < dimension; j++) {
-      // Random value in [-1, 1]
-      plane.push(rng() * 2 - 1);
-    }
-    planes.push(plane);
+  const hyperplanes =
+    projectionVersion === 0
+      ? legacyProjectionCoefficients(dimension)
+      : projectionVersion === 1
+        ? publicProjectionCoefficients(dimension)
+        : null;
+  if (!hyperplanes || projectionVersion > CLIENT_PROJECTION_VERSION) {
+    throw new Error(`Unsupported projection version ${projectionVersion}`);
   }
-
-  cachedHyperplanes = planes;
-  cachedDimension = dimension;
-  return planes;
+  hyperplaneCache.set(cacheKey, hyperplanes);
+  return hyperplanes;
 }
 
 /**
@@ -66,9 +66,15 @@ function getHyperplanes(dimension: number): number[][] {
  * Uses deterministic random hyperplanes seeded from the protocol constant.
  * Similar feature vectors produce fingerprints with low Hamming distance.
  */
+// Projection 0 binds schema 3 semantics. Projection 1 binds schema 4
+// corrections while retaining the same 308-value layout.
 const EXPECTED_FEATURE_DIMENSION = TOTAL_FEATURE_COUNT;
 
-export function simhash(features: number[]): TemporalFingerprint {
+export function simhash(features: number[], projectionVersion = 0): TemporalFingerprint {
+  if (projectionVersion === 1 && features.length !== EXPECTED_FEATURE_DIMENSION) {
+    throw new Error(`Projection version 1 requires exactly ${EXPECTED_FEATURE_DIMENSION} features`);
+  }
+
   if (features.length === 0) {
     return new Array(FINGERPRINT_BITS).fill(0);
   }
@@ -79,14 +85,14 @@ export function simhash(features: number[]): TemporalFingerprint {
     );
   }
 
-  const planes = getHyperplanes(features.length);
+  const planes = getHyperplanes(features.length, projectionVersion);
   const fingerprint: TemporalFingerprint = [];
 
   for (let i = 0; i < FINGERPRINT_BITS; i++) {
-    const plane = planes[i];
+    const planeOffset = i * features.length;
     let dot = 0;
     for (let j = 0; j < features.length; j++) {
-      dot += (features[j] ?? 0) * (plane?.[j] ?? 0);
+      dot += (features[j] ?? 0) * (planes[planeOffset + j] ?? 0);
     }
     fingerprint.push(dot >= 0 ? 1 : 0);
   }

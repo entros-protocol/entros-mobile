@@ -23,7 +23,34 @@
 //
 // Values produced by pulse-sdk at commit `cf2bf5f`.
 
-import { extractLpcAnalysis, hammingWindow } from "../lpc";
+import { extractLpcAnalysis, findRoots, hammingWindow } from "../lpc";
+
+function polynomialResidual(coefficients: number[], root: [number, number]): number {
+  let real = 1;
+  let imaginary = 0;
+  for (const coefficient of coefficients) {
+    const nextReal = real * root[0] - imaginary * root[1] + coefficient;
+    const nextImaginary = real * root[1] + imaginary * root[0];
+    real = nextReal;
+    imaginary = nextImaginary;
+  }
+  return Math.hypot(real, imaginary);
+}
+
+describe("Durand-Kerner convergence", () => {
+  it("resolves a sharp conjugate pole pair", () => {
+    const radius = 0.9995;
+    const angle = 0.42;
+    const coefficients = [-2 * radius * Math.cos(angle), radius * radius];
+    const roots = findRoots(coefficients);
+
+    expect(roots).toHaveLength(2);
+    for (const root of roots) {
+      expect(polynomialResidual(coefficients, root)).toBeLessThan(1e-12);
+      expect(Math.hypot(root[0], root[1])).toBeCloseTo(radius, 10);
+    }
+  });
+});
 
 const SAMPLE_RATE = 16000;
 const FRAME_SIZE = 2048;

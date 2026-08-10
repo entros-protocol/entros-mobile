@@ -13,8 +13,8 @@
 import { Ed25519Program, type TransactionInstruction } from "@solana/web3.js";
 
 /**
- * Validator-signed receipt binding (wallet, commitment, validated_at) for the
- * upcoming `mint_anchor` transaction. Returned in the `/validate-features`
+ * Validator-signed receipt binding the transition purpose and projection
+ * version to the wallet, commitment, and validation time.
  * response when the request includes `commitment_new_hex` and the validator
  * has a signing key configured.
  *
@@ -27,8 +27,7 @@ export interface SignedReceiptDto {
   /** Hex-encoded 32-byte Ed25519 public key of the validator. */
   validator_pubkey_hex: string;
   /**
-   * Hex-encoded 72-byte message:
-   *   wallet_pubkey (32) || commitment_new (32) || validated_at i64 LE (8)
+   * Hex-encoded 103-byte version 2 receipt message.
    */
   message_hex: string;
   /** Hex-encoded 64-byte Ed25519 signature over `message_hex`. */
@@ -51,13 +50,24 @@ export interface DecodedReceipt {
  * on-chain in `entros_anchor::verify_mint_receipt`.
  *
  * Pubkey: Ed25519 public key (32B). Signature: Ed25519 signature (64B).
- * Message: `wallet_pubkey (32) || commitment_new (32) || validated_at i64 LE (8) = 72B`.
+ * Message: domain (28), purpose (1), projection version (2), wallet (32),
+ * commitment (32), and validation time (8).
  */
 const PUBKEY_BYTES = 32;
 const SIGNATURE_BYTES = 64;
-const MESSAGE_BYTES = 72;
+const MESSAGE_BYTES = 103;
+const RECEIPT_DOMAIN = new TextEncoder().encode("entros-validator-receipt-v2\0");
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
+
+export type ReceiptPurpose = 1 | 2 | 3;
+
+export interface ReceiptBinding {
+  purpose: ReceiptPurpose;
+  projectionVersion: number;
+  wallet: Uint8Array;
+  commitment: Uint8Array;
+}
 
 /**
  * Decode a hex string into a Uint8Array of the expected byte length. Returns
@@ -89,9 +99,31 @@ export function decodeSignedReceipt(receipt: SignedReceiptDto): DecodedReceipt |
   return { publicKey, signature, message };
 }
 
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+/** Check the signed message fields before a wallet submits the transition. */
+export function receiptMatchesBinding(receipt: SignedReceiptDto, binding: ReceiptBinding): boolean {
+  const decoded = decodeSignedReceipt(receipt);
+  if (!decoded) return false;
+  const { message } = decoded;
+  const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
+  return (
+    equalBytes(message.subarray(0, 28), RECEIPT_DOMAIN) &&
+    message[28] === binding.purpose &&
+    view.getUint16(29, true) === binding.projectionVersion &&
+    equalBytes(message.subarray(31, 63), binding.wallet) &&
+    equalBytes(message.subarray(63, 95), binding.commitment)
+  );
+}
+
 /**
- * Build the `Ed25519Program::verify` instruction that binds a validator-signed
- * mint receipt to the immediately-following `mint_anchor` instruction.
+ * Build the Ed25519 verification instruction for a mint or rebaseline receipt.
  *
  * Returns `null` if the receipt fails to decode. A first-verification caller
  * must stop instead of sending an unbound mint transaction.
@@ -99,7 +131,7 @@ export function decodeSignedReceipt(receipt: SignedReceiptDto): DecodedReceipt |
  * Web3.js's `Ed25519Program.createInstructionWithPublicKey` defaults the
  * three `*_instruction_index` fields to `0xFFFF`, the "current instruction"
  * sentinel the on-chain parser pins to. Cross-ix substitution attacks are
- * closed by that sentinel — we never build a receipt that points at another
+ * closed by that sentinel. We never build a receipt that points at another
  * ix's data.
  *
  * Synchronous because `@solana/web3.js` is bundled directly on mobile (vs

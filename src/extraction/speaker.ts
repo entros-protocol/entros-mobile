@@ -8,11 +8,13 @@
 import type { AudioCapture } from "./types";
 import { condense, entropy, mean as meanOf, variance as varianceOf } from "./statistics";
 import { extractLpcAnalysis } from "./lpc";
-import { extractMfccFeatures, MFCC_FEATURE_COUNT } from "./mfcc";
 import {
-  extractVoiceQualityFeatures,
-  VOICE_QUALITY_FEATURE_COUNT,
-} from "./voice-quality";
+  extractMfccFeatures,
+  extractMfccFeaturesFromPreEmphasized,
+  MFCC_FEATURE_COUNT,
+  preEmphasizeAudio,
+} from "./mfcc";
+import { extractVoiceQualityFeatures, VOICE_QUALITY_FEATURE_COUNT } from "./voice-quality";
 import { pitchContourShape, PITCH_CONTOUR_SHAPE_FEATURE_COUNT } from "./dct";
 import { yieldToMainThread } from "../lib/yield";
 import { sdkWarn } from "./log";
@@ -105,7 +107,7 @@ const F0_YIELD_EVERY_N_FRAMES = 16;
  */
 async function detectF0Contour(
   samples: Float32Array,
-  sampleRate: number
+  sampleRate: number,
 ): Promise<{ f0: number[]; amplitudes: number[]; periods: number[] }> {
   const detect = await getPitchDetector(sampleRate);
   const frameSize = getFrameSize(sampleRate);
@@ -116,7 +118,9 @@ async function detectF0Contour(
   const numFrames = Math.floor((samples.length - frameSize) / hopSize) + 1;
 
   if (sampleRate !== 16000) {
-    sdkWarn(`[Entros SDK] Audio captured at ${sampleRate}Hz (requested 16kHz). Frame size adjusted to ${frameSize}.`);
+    sdkWarn(
+      `[Entros SDK] Audio captured at ${sampleRate}Hz (requested 16kHz). Frame size adjusted to ${frameSize}.`,
+    );
   }
 
   for (let i = 0; i < numFrames; i++) {
@@ -145,7 +149,7 @@ async function detectF0Contour(
     // Cooperative yield every N frames so the host UI gets a paint frame
     // mid-loop. Skipped on frame 0 (no work done yet) and the last frame
     // (the function returns immediately after).
-    if (i > 0 && i < numFrames - 1 && (i % F0_YIELD_EVERY_N_FRAMES) === 0) {
+    if (i > 0 && i < numFrames - 1 && i % F0_YIELD_EVERY_N_FRAMES === 0) {
       await yieldToMainThread();
     }
   }
@@ -183,7 +187,8 @@ function computeJitter(periods: number[]): number[] {
   let ppq5Sum = 0;
   let ppq5Count = 0;
   for (let i = 2; i < voiced.length - 2; i++) {
-    const avg5 = (voiced[i - 2]! + voiced[i - 1]! + voiced[i]! + voiced[i + 1]! + voiced[i + 2]!) / 5;
+    const avg5 =
+      (voiced[i - 2]! + voiced[i - 1]! + voiced[i]! + voiced[i + 1]! + voiced[i + 2]!) / 5;
     ppq5Sum += Math.abs(voiced[i]! - avg5);
     ppq5Count++;
   }
@@ -232,7 +237,13 @@ function computeShimmer(amplitudes: number[], f0: number[]): number[] {
   let apq5Sum = 0;
   let apq5Count = 0;
   for (let i = 2; i < voicedAmps.length - 2; i++) {
-    const avg5 = (voicedAmps[i - 2]! + voicedAmps[i - 1]! + voicedAmps[i]! + voicedAmps[i + 1]! + voicedAmps[i + 2]!) / 5;
+    const avg5 =
+      (voicedAmps[i - 2]! +
+        voicedAmps[i - 1]! +
+        voicedAmps[i]! +
+        voicedAmps[i + 1]! +
+        voicedAmps[i + 2]!) /
+      5;
     apq5Sum += Math.abs(voicedAmps[i]! - avg5);
     apq5Count++;
   }
@@ -253,11 +264,7 @@ function computeShimmer(amplitudes: number[], f0: number[]): number[] {
 /**
  * Compute Harmonic-to-Noise Ratio per frame using autocorrelation.
  */
-function computeHNR(
-  samples: Float32Array,
-  sampleRate: number,
-  f0Contour: number[]
-): number[] {
+function computeHNR(samples: Float32Array, sampleRate: number, f0Contour: number[]): number[] {
   const frameSize = getFrameSize(sampleRate);
   const hopSize = getHopSize(sampleRate);
   const hnr: number[] = [];
@@ -296,10 +303,7 @@ function computeHNR(
  * Compute LTAS (Long-Term Average Spectrum) features using Meyda.
  * Returns 8 values: spectral centroid, rolloff, flatness, spread — each mean + variance.
  */
-async function computeLTAS(
-  samples: Float32Array,
-  sampleRate: number
-): Promise<number[]> {
+async function computeLTAS(samples: Float32Array, sampleRate: number): Promise<number[]> {
   const frameSize = getFrameSize(sampleRate);
   const hopSize = getHopSize(sampleRate);
   const Meyda = await getMeyda();
@@ -333,7 +337,7 @@ async function computeLTAS(
     }
   }
 
-  const m = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const m = (arr: number[]) => (arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
   const v = (arr: number[]) => {
     if (arr.length < 2) return 0;
     const mu = m(arr);
@@ -341,10 +345,14 @@ async function computeLTAS(
   };
 
   return [
-    m(centroids), v(centroids),
-    m(rolloffs), v(rolloffs),
-    m(flatnesses), v(flatnesses),
-    m(spreads), v(spreads),
+    m(centroids),
+    v(centroids),
+    m(rolloffs),
+    v(rolloffs),
+    m(flatnesses),
+    v(flatnesses),
+    m(spreads),
+    v(spreads),
   ];
 }
 
@@ -364,6 +372,7 @@ function derivative(values: number[]): number[] {
  */
 export async function extractSpeakerFeaturesDetailed(
   audio: AudioCapture,
+  projectionVersion = 0,
 ): Promise<{ features: number[]; f0Contour: number[] }> {
   const { samples, sampleRate } = audio;
 
@@ -419,12 +428,23 @@ export async function extractSpeakerFeaturesDetailed(
   // 2. F0 statistics (5 values)
   const f0Stats = condense(voicedF0);
   const f0Entropy = entropy(voicedF0);
-  const f0Features = [f0Stats.mean, f0Stats.variance, f0Stats.skewness, f0Stats.kurtosis, f0Entropy];
+  const f0Features = [
+    f0Stats.mean,
+    f0Stats.variance,
+    f0Stats.skewness,
+    f0Stats.kurtosis,
+    f0Entropy,
+  ];
 
   // 3. F0 delta statistics (4 values)
   const f0Delta = derivative(voicedF0);
   const f0DeltaStats = condense(f0Delta);
-  const f0DeltaFeatures = [f0DeltaStats.mean, f0DeltaStats.variance, f0DeltaStats.skewness, f0DeltaStats.kurtosis];
+  const f0DeltaFeatures = [
+    f0DeltaStats.mean,
+    f0DeltaStats.variance,
+    f0DeltaStats.skewness,
+    f0DeltaStats.kurtosis,
+  ];
 
   // 4. Jitter (4 values)
   const jitterFeatures = computeJitter(periods);
@@ -436,16 +456,41 @@ export async function extractSpeakerFeaturesDetailed(
   const hnrValues = computeHNR(normalizedSamples, sampleRate, f0);
   const hnrStats = condense(hnrValues);
   const hnrEntropy = entropy(hnrValues);
-  const hnrFeatures = [hnrStats.mean, hnrStats.variance, hnrStats.skewness, hnrStats.kurtosis, hnrEntropy];
+  const hnrFeatures = [
+    hnrStats.mean,
+    hnrStats.variance,
+    hnrStats.skewness,
+    hnrStats.kurtosis,
+    hnrEntropy,
+  ];
   await yieldToMainThread();
 
+  if (projectionVersion !== 0 && projectionVersion !== 1) {
+    throw new Error(`Unsupported projection version ${projectionVersion}`);
+  }
+  const corrected = projectionVersion === 1;
+
   // 7. Formant analysis
-  const lpc = extractLpcAnalysis(normalizedSamples, sampleRate, frameSize, hopSize);
+  const lpcSamples = corrected ? preEmphasizeAudio(normalizedSamples) : normalizedSamples;
+  const lpc = extractLpcAnalysis(
+    lpcSamples,
+    sampleRate,
+    frameSize,
+    hopSize,
+    12,
+    corrected ? 200 : 50,
+  );
   const f1f2Stats = condense(lpc.f1f2);
   const f2f3Stats = condense(lpc.f2f3);
   const formantFeatures = [
-    f1f2Stats.mean, f1f2Stats.variance, f1f2Stats.skewness, f1f2Stats.kurtosis,
-    f2f3Stats.mean, f2f3Stats.variance, f2f3Stats.skewness, f2f3Stats.kurtosis,
+    f1f2Stats.mean,
+    f1f2Stats.variance,
+    f1f2Stats.skewness,
+    f1f2Stats.kurtosis,
+    f2f3Stats.mean,
+    f2f3Stats.variance,
+    f2f3Stats.skewness,
+    f2f3Stats.kurtosis,
   ];
   await yieldToMainThread();
 
@@ -458,18 +503,21 @@ export async function extractSpeakerFeaturesDetailed(
   // 10. Amplitude statistics (5 values)
   const ampStats = condense(amplitudes);
   const ampEntropy = entropy(amplitudes);
-  const ampFeatures = [ampStats.mean, ampStats.variance, ampStats.skewness, ampStats.kurtosis, ampEntropy];
+  const ampFeatures = [
+    ampStats.mean,
+    ampStats.variance,
+    ampStats.skewness,
+    ampStats.kurtosis,
+    ampEntropy,
+  ];
 
   // ----- v2 feature pipeline additions -----
 
   // 11. MFCC + delta-MFCC stats (72 values total)
   await yieldToMainThread();
-  const mfccFeatures = await extractMfccFeatures(
-    normalizedSamples,
-    sampleRate,
-    frameSize,
-    hopSize,
-  );
+  const mfccFeatures = corrected
+    ? await extractMfccFeaturesFromPreEmphasized(lpcSamples, sampleRate, frameSize, hopSize)
+    : await extractMfccFeatures(normalizedSamples, sampleRate, frameSize, hopSize);
 
   // 12. LPC coefficient statistics (24 values)
   const lpcStats: number[] = [];
@@ -492,14 +540,22 @@ export async function extractSpeakerFeaturesDetailed(
   const b1Mu = meanOf(lpc.b1);
   const b2Mu = meanOf(lpc.b2);
   const formantTrajectoryFeatures = [
-    f1Stats.mean, f1Stats.var,
-    f2Stats.mean, f2Stats.var,
-    f3Stats.mean, f3Stats.var,
-    f1DeltaMu, varianceOf(f1Delta, f1DeltaMu),
-    f2DeltaMu, varianceOf(f2Delta, f2DeltaMu),
-    f3DeltaMu, varianceOf(f3Delta, f3DeltaMu),
-    b1Mu, varianceOf(lpc.b1, b1Mu),
-    b2Mu, varianceOf(lpc.b2, b2Mu),
+    f1Stats.mean,
+    f1Stats.var,
+    f2Stats.mean,
+    f2Stats.var,
+    f3Stats.mean,
+    f3Stats.var,
+    f1DeltaMu,
+    varianceOf(f1Delta, f1DeltaMu),
+    f2DeltaMu,
+    varianceOf(f2Delta, f2DeltaMu),
+    f3DeltaMu,
+    varianceOf(f3Delta, f3DeltaMu),
+    b1Mu,
+    varianceOf(lpc.b1, b1Mu),
+    b2Mu,
+    varianceOf(lpc.b2, b2Mu),
   ];
 
   // 14. Voice quality (9 values)
@@ -516,20 +572,20 @@ export async function extractSpeakerFeaturesDetailed(
   const pitchShapeFeatures = pitchContourShape(f0, PITCH_CONTOUR_SHAPE_FEATURE_COUNT);
 
   const features = [
-    ...f0Features,                 // 5
-    ...f0DeltaFeatures,            // 4
-    ...jitterFeatures,             // 4
-    ...shimmerFeatures,            // 4
-    ...hnrFeatures,                // 5
-    ...formantFeatures,            // 8
-    ...ltasFeatures,               // 8
-    ...voicingFeatures,            // 1
-    ...ampFeatures,                // 5
-    ...mfccFeatures,               // 72
-    ...lpcStats,                   // 24
-    ...formantTrajectoryFeatures,  // 16
-    ...voiceQualityFeatures,       // 9
-    ...pitchShapeFeatures,         // 5
+    ...f0Features, // 5
+    ...f0DeltaFeatures, // 4
+    ...jitterFeatures, // 4
+    ...shimmerFeatures, // 4
+    ...hnrFeatures, // 5
+    ...formantFeatures, // 8
+    ...ltasFeatures, // 8
+    ...voicingFeatures, // 1
+    ...ampFeatures, // 5
+    ...mfccFeatures, // 72
+    ...lpcStats, // 24
+    ...formantTrajectoryFeatures, // 16
+    ...voiceQualityFeatures, // 9
+    ...pitchShapeFeatures, // 5
   ];
 
   return { features, f0Contour: f0 };
@@ -538,8 +594,11 @@ export async function extractSpeakerFeaturesDetailed(
 /**
  * Extracts 170 speaker features.
  */
-export async function extractSpeakerFeatures(audio: AudioCapture): Promise<number[]> {
-  const { features } = await extractSpeakerFeaturesDetailed(audio);
+export async function extractSpeakerFeatures(
+  audio: AudioCapture,
+  projectionVersion = 0,
+): Promise<number[]> {
+  const { features } = await extractSpeakerFeaturesDetailed(audio, projectionVersion);
   return features;
 }
 

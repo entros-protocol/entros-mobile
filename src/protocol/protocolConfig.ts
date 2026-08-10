@@ -18,6 +18,9 @@ import { devWarn } from "@/lib/log";
 
 import { entrosRegistryIdl } from "./idl";
 import { findProtocolConfigPda } from "./pdas";
+import { decodeProjectionPolicy, type ProjectionPolicy } from "./projectionPolicy";
+
+export { decodeProjectionPolicy, type ProjectionPolicy } from "./projectionPolicy";
 
 /** Subset of the on-chain `ProtocolConfig` struct we render in mobile.
  *  Other fields (admin, min_stake, max_trust_score, base_trust_increment,
@@ -28,6 +31,21 @@ export interface ProtocolConfigSnapshot {
   verificationFeeLamports: number;
   /** Seconds until a server-issued challenge nonce expires on-chain. */
   challengeExpirySeconds: number;
+}
+
+/** Read and validate the projection policy used for the next capture. */
+export async function fetchProjectionPolicy(connection: Connection): Promise<ProjectionPolicy> {
+  const programId = config.programs.entrosRegistry;
+  if (!programId) throw new Error("The Entros registry program is not configured.");
+
+  const pda = findProtocolConfigPda(programId);
+  const accountInfo = await connection.getAccountInfo(pda, "confirmed");
+  if (!accountInfo) throw new Error("The protocol configuration account is unavailable.");
+  if (!accountInfo.owner.equals(programId)) {
+    throw new Error("The protocol configuration account has an unexpected owner.");
+  }
+
+  return decodeProjectionPolicy(accountInfo.data);
 }
 
 /** Reads the ProtocolConfig PDA from the entros_registry program. Returns
