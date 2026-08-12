@@ -154,6 +154,14 @@ describe("validateFeatures: an abort is not an unreachable host", () => {
 });
 
 describe("validateFeatures: remaining status mapping", () => {
+  it("does not mark a normal validation as a baseline reset", async () => {
+    respondWith(200, { valid: true });
+    await run();
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({ baseline_reset: false });
+  });
+
   it("sends the projection version and reset receipt intent at the top level", async () => {
     respondWith(200, { valid: true });
     await validateFeatures({
@@ -168,6 +176,7 @@ describe("validateFeatures: remaining status mapping", () => {
       projection_version: 1,
       request_receipt: true,
       receipt_purpose: "reset",
+      baseline_reset: true,
     });
   });
 

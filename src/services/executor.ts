@@ -235,6 +235,7 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
     // sent so older validators (which trust it) keep working.
     request_receipt: input.receiptPurpose !== undefined,
     receipt_purpose: input.receiptPurpose,
+    baseline_reset: input.receiptPurpose === "reset",
   });
 
   const controller = new AbortController();
