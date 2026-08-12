@@ -76,10 +76,7 @@ export function dctII(input: number[], numCoefficients: number): number[] {
  * segments produce noisy shape estimates that would hurt
  * discrimination more than help.
  */
-export function pitchContourShape(
-  contour: number[],
-  numCoefficients: number = 5,
-): number[] {
+export function pitchContourShape(contour: number[], numCoefficients: number = 5): number[] {
   if (numCoefficients <= 0) return [];
   const zero = () => new Array(numCoefficients).fill(0);
 

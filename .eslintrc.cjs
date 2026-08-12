@@ -9,6 +9,7 @@ module.exports = {
   },
   ignorePatterns: [
     "node_modules/",
+    "expo-env.d.ts",
     "dist/",
     ".expo/",
     "ios/",

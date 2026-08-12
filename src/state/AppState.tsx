@@ -16,13 +16,6 @@ import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 import * as mwa from "@/wallet/mwa";
 
-/**
- * Width of one Trust Score activity bin, mirroring `BIN_SIZE_SECS` in
- * entros-anchor. The on-chain ring records at most one timestamp per bin, so
- * anything that predicts what the chain will hold has to use the same width.
- */
-const SCORING_BIN_MS = 7 * 24 * 60 * 60 * 1000;
-
 import { presets } from "./presets";
 import {
   ConnectionState,
@@ -33,6 +26,13 @@ import {
   VerifyIntent,
   WalletKind,
 } from "./types";
+
+/**
+ * Width of one Trust Score activity bin, mirroring `BIN_SIZE_SECS` in
+ * entros-anchor. The on-chain ring records at most one timestamp per bin, so
+ * anything that predicts what the chain will hold has to use the same width.
+ */
+const SCORING_BIN_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Random suffix avoids collisions when two events fire within the same
 // millisecond (`Date.now()` alone isn't unique under fast back-to-back
@@ -259,11 +259,8 @@ const reducer = (state: AppState, action: Action): AppState => {
       const prior = state.identity.recentTimestamps ?? [];
       const newestPrior = prior[0]?.getTime();
       const opensNewBin =
-        newestPrior === undefined ||
-        now.getTime() - newestPrior >= SCORING_BIN_MS;
-      const recentTimestamps = opensNewBin
-        ? [now, ...prior].slice(0, 52)
-        : prior;
+        newestPrior === undefined || now.getTime() - newestPrior >= SCORING_BIN_MS;
+      const recentTimestamps = opensNewBin ? [now, ...prior].slice(0, 52) : prior;
       return {
         ...state,
         identity: {

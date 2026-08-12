@@ -53,7 +53,7 @@ export function kurtosis(values: number[]): number {
   const s2 = variance(values, m);
   if (s2 === 0) return 0;
   let sum = 0;
-  for (const v of values) sum += ((v - m) ** 4) / s2 ** 2;
+  for (const v of values) sum += (v - m) ** 4 / s2 ** 2;
   const k =
     ((n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3))) * sum -
     (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
@@ -149,11 +149,7 @@ export function normalizeGroup(features: number[]): number[] {
  * Concatenate raw features without normalization.
  * Used for server-side validation where physical units matter.
  */
-export function fuseRawFeatures(
-  audio: number[],
-  motion: number[],
-  touch: number[]
-): number[] {
+export function fuseRawFeatures(audio: number[], motion: number[], touch: number[]): number[] {
   const sanitize = (v: number) => (Number.isFinite(v) ? v : 0);
   return [...audio.map(sanitize), ...motion.map(sanitize), ...touch.map(sanitize)];
 }
@@ -161,10 +157,6 @@ export function fuseRawFeatures(
 /**
  * Normalize and concatenate features for SimHash computation.
  */
-export function fuseFeatures(
-  audio: number[],
-  motion: number[],
-  touch: number[]
-): number[] {
+export function fuseFeatures(audio: number[], motion: number[], touch: number[]): number[] {
   return [...normalizeGroup(audio), ...normalizeGroup(motion), ...normalizeGroup(touch)];
 }
