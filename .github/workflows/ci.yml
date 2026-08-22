@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, develop]
   pull_request:
@@ -9,19 +10,31 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
-    name: Lint + typecheck + test
-    runs-on: ubuntu-latest
+    name: Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Install
+      - name: Verify Node version
+        run: test "$(node --version)" = "v$(tr -d '[:space:]' < .nvmrc)"
+
+      - name: Install dependencies
         run: npm ci
 
       - name: Lint
@@ -31,4 +44,12 @@ jobs:
         run: npm run typecheck
 
       - name: Test
-        run: npm test --if-present
+        run: npm test
+
+      - name: Check repository state
+        run: |
+          git diff --check
+          if test -n "$(git status --short)"; then
+            git status --short
+            exit 1
+          fi
