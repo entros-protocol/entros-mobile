@@ -4,9 +4,9 @@ Thanks for your interest. This document covers the contribution flow and the non
 
 ## Getting set up
 
-1. Node 20 (`.nvmrc`).
+1. Install Node 24.19.0 from `.nvmrc`.
 2. `cp .env.example .env` and fill in values.
-3. `npm install`.
+3. `npm ci`.
 4. `npm run start`.
 
 Android emulator or device is required to exercise the wallet flow (Mobile Wallet Adapter is Android-only).
@@ -16,7 +16,7 @@ Android emulator or device is required to exercise the wallet flow (Mobile Walle
 - Open a PR against `develop`. `main` is the release branch.
 - Keep one logical change per PR. Smaller PRs get reviewed sooner.
 - The PR description states what changed and how to test it. Use bullet points for the test plan, not checkboxes.
-- Commit style and branch naming are yours to choose.
+- Follow the repository commit and branch conventions.
 
 ## Required checks
 
