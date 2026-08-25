@@ -9,35 +9,35 @@ import type { TouchSample } from "../types";
 const EXPECTED = {
   smooth: {
     30: {
-      touch: "890d3fdb1844fa72aeb574efc7dc9813150669c9586bfba8ca3aafff7dbd1fab",
-      mouse: "f7bb6c918e9797982975d6672764068973596275a537f237fba735d0988180be",
+      touch: "f87b05d5a3154be8e947d52baf1088b43499ad949e080a7377f4fdd65f474bc9",
+      mouse: "98998e891d88be63f376776593d785459cb860bcac30e692c826556c6f630ebf",
       fingerprint: "4b25c20b4ee62e5860d70be2a5cbde78885e6201698ba1a3f41eb977f945df56",
     },
     60: {
-      touch: "540d1deeb3a89121c91c48431193e80a0e7a6a70544231967e457cbf69c3345f",
-      mouse: "87e21bb2ad50a01e17276c0f9084e0c817b49438022b51e2f868d5452d5f8043",
+      touch: "f72ad954fd615f5d49e022f68cb320c2105eea9c94a9e457d6c5d4bbb5657c3b",
+      mouse: "6ae2db25cff833b8cb6a954e25cddc9c87add8ae53897723e4c64b8281951316",
       fingerprint: "4b25c20b2ee42e5b60d70be2a5dfde78885e6209e98ba1a3f41eb977f9c5df56",
     },
     120: {
-      touch: "5fdcccf382cef7eee2a6e8089ba7e3d3d0a456a43b4db61b3ef579091f44137e",
-      mouse: "f8738763b885d4e605664bc9081f83ac25b03551bd3faa2edb6bd18c43d5a9fc",
+      touch: "4bed8390804da03da0a4fd7e148243d5f92373a624379ecf9050ba4301954263",
+      mouse: "52c4162485d9b44103e671c13975c84a3042cb5f44783dd56e6d951432a15a54",
       fingerprint: "4ba5c20b2ee42e5b60d70be225dfde78805e6209e989a1a3f41eb977f9d5df56",
     },
   },
   paused: {
     30: {
-      touch: "5b1fde976a10b0ba652497dfcdd3dc6f466a7d7fc67ac0a13cc2a0a070ee7945",
-      mouse: "78d2e98ea56580441b72e52eba6345e201d9ca694ec3d7475e794c1d8440216c",
+      touch: "e30d32d588f69507db4c38f9ec01731ad3c198c7051c8228e4887d57075b5331",
+      mouse: "018bd0161f059eec76ef6f87203ca48ab0e351f86b6c6af94250f864cd102018",
       fingerprint: "4385c30b2ee62e5be0d78be205cfde7c805e6a09e989a1a3f41e9977f9455b56",
     },
     60: {
-      touch: "417ce404895ef64d6274ad5c3f64cac9c7d67005b250ffc8a241e836827368c1",
-      mouse: "2b93d97f1a0aaecf6274b86a1ab52b3ae64296b0769d4287b92afb698e8fbef5",
+      touch: "291e18a1c32d2bea2628668479ec57d28e8ca6f43004565a2b75f226f6663e0d",
+      mouse: "ebbd002ee1c6c09ae92852d7fcfbe72f26738f01454903740a8c3bebd570fc4a",
       fingerprint: "4385c3092ee62e5be0d78be205cfde7c805e6a09e989a1a3f41e9977f9455b56",
     },
     120: {
-      touch: "5a3a0783a5d603424f8a1978505f43c4a0854dd7b069f7f925de4d788bd10d92",
-      mouse: "ca8d4a3d4a153f7d4556ed36032659297706972dc5954c26631c469f6ae9eab6",
+      touch: "8d479b1784473f390d514e72c12b287fe3fdbdd31f9c3ea0db4e414140f9fa9e",
+      mouse: "63e8e33fdca408ea6bb14603ff0afe899e84613c1a83ef6eb9af976aaa60d02d",
       fingerprint: "4385c3092ee62e5be0d78be205cfde7c805e6a09e989a1a3f41e9977f9455b56",
     },
   },
@@ -72,7 +72,11 @@ function bytesToHex(bytes: Uint8Array): string {
 function digestFloats(values: number[]): string {
   const bytes = new Uint8Array(values.length * 8);
   const view = new DataView(bytes.buffer);
-  values.forEach((value, index) => view.setFloat64(index * 8, value, true));
+  // Quantize fixture snapshots so platform math libraries cannot change their identity.
+  values.forEach((value, index) => {
+    const stableValue = Math.round(value * 1e12) / 1e12;
+    view.setFloat64(index * 8, stableValue === 0 ? 0 : stableValue, true);
+  });
   return bytesToHex(sha256(bytes));
 }
 
