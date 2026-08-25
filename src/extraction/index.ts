@@ -145,6 +145,33 @@ export async function extractFeatures(
   };
 }
 
+/** Derive schema 4 evidence from the same bounded projection 2 capture. */
+export async function extractProjectionOneCompatibilityFeatures(
+  sensorData: MobileSensorData,
+  primaryRawFeatures: number[],
+): Promise<number[]> {
+  const compatibilitySamples = sensorData.touch.compatibilitySamples;
+  if (!compatibilitySamples || compatibilitySamples.length < MIN_TOUCH_SAMPLES) {
+    throw new Error("Projection 2 baseline changes require projection 1 compatibility capture");
+  }
+
+  const motion = adaptMotion(sensorData.motion.samples, sensorData.motion.startedAt);
+  const touch = adaptTouch(compatibilitySamples);
+  const motionFeatures =
+    motion.length >= MIN_MOTION_SAMPLES
+      ? extractMotionFeatures(motion, 1)
+      : extractMouseDynamics(touch, 1);
+  await yieldToMainThread();
+  const touchFeatures = extractTouchFeatures(touch, 1);
+  await yieldToMainThread();
+
+  return fuseRawFeatures(
+    primaryRawFeatures.slice(0, SPEAKER_FEATURE_COUNT),
+    motionFeatures,
+    touchFeatures,
+  );
+}
+
 export {
   SPEAKER_FEATURE_COUNT,
   extractSpeakerFeaturesDetailed,

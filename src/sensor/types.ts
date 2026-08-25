@@ -81,8 +81,26 @@ export interface TouchSample {
   pressure: number;
 }
 
+export interface CurveTracePoint {
+  /** Capture-relative monotonic timestamp. Never transmitted. */
+  t: number;
+  /** Coordinates in the executor's 200 by 200 challenge frame. */
+  x: number;
+  y: number;
+}
+
+export interface CurveTraceOutline {
+  /** Equal-time coarse outline. Raw coordinates and timestamps stay on-device. */
+  points: [number, number][];
+  duration_ms: number;
+}
+
 export interface TouchCapture {
   samples: TouchSample[];
+  /** Bounded source samples retained only for on-device projection 1 extraction. */
+  compatibilitySamples?: TouchSample[];
+  /** Raw on-device source for a coarse 64-point challenge outline. */
+  curveTrace?: CurveTracePoint[];
   durationMs: number;
 }
 

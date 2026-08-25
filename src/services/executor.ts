@@ -12,20 +12,27 @@
 // is the single-failure-UX path (Alert + stay on /verify/intro), so it
 // throws.
 //
-// Timeouts: 5 s for /challenge (small payload, cheap to fail-fast and
-// retry); 15 s for /validate-features (Whisper-tiny inference adds ~1 s on
-// warm path, more on Railway cold-start — matches pulse-sdk's window).
+// Timeouts: 5 s for /challenge and 45 s for /validate-features. The second
+// timeout exceeds the executor's validator request ceiling and response pad.
 //
 // PRIVACY: see src/sensor/types.ts for the audio b64 contract. This module
 // only forwards what the caller assembled; it never logs values or retains
 // references after the fetch resolves.
 
 import { config } from "@/config";
+import { validateLissajousParams, type LissajousParams } from "@/challenge/lissajous";
 import type { SignedReceiptDto } from "@/protocol/receipt";
+import type { CurveTraceOutline } from "@/sensor/types";
 
 import { reasonDisposition, type VerificationReason } from "./reasons";
+import type {
+  ProjectionCompatibilityEvidence,
+  ValidationDigestRequest,
+  WalletAuthorization,
+} from "./validationAuthorization";
 
 const CHALLENGE_TIMEOUT_MS = 5_000;
+const MAX_CHALLENGE_LIFETIME_SEC = 300;
 // Must exceed the executor's own ceiling, not sit inside it. The executor
 // waits up to VALIDATOR_REQUEST_TIMEOUT (20s) on the validation service and
 // pads every timed response to HANDLER_MIN_DURATION (4s), so a legitimate
@@ -50,6 +57,10 @@ export interface ChallengeResponse {
   phrase: string;
   /** Server-side TTL in seconds. Default 60 per executor config. */
   expiresIn: number;
+  /** Conservative monotonic deadline measured from request start. */
+  expiresAtMs: number;
+  /** Server-issued touch challenge. */
+  curve: LissajousParams;
 }
 
 /** Discriminated outcome of a /validate-features call. Which reasons are
@@ -112,6 +123,40 @@ export interface ValidateInput {
    *  returns it on the `ok` outcome for first-verify Ed25519 binding. */
   commitmentNewHex?: string;
   receiptPurpose?: "mint" | "rebaseline" | "reset";
+  compatibilityEvidence?: ProjectionCompatibilityEvidence;
+  walletAuthorization?: WalletAuthorization;
+  curveTrace?: CurveTraceOutline;
+}
+
+export interface ValidateFeaturesRequestBody extends ValidationDigestRequest {
+  wallet_id: string;
+  projection_version: number;
+  wallet_authorization?: WalletAuthorization;
+  commitment_new_hex?: string;
+  request_receipt: boolean;
+  receipt_purpose?: "mint" | "rebaseline" | "reset";
+  curve_trace?: CurveTraceOutline;
+}
+
+export function buildValidateFeaturesRequestBody(
+  input: ValidateInput,
+): ValidateFeaturesRequestBody {
+  return {
+    features: input.features,
+    projection_version: input.projectionVersion,
+    wallet_id: input.walletId,
+    compatibility_evidence: input.compatibilityEvidence,
+    wallet_authorization: input.walletAuthorization,
+    f0_contour: input.f0Contour,
+    accel_magnitude: input.accelMagnitude,
+    audio_samples_b64: input.audioSamplesB64,
+    audio_sample_rate_hz: input.audioSampleRateHz,
+    commitment_new_hex: input.commitmentNewHex,
+    request_receipt: input.receiptPurpose !== undefined,
+    receipt_purpose: input.receiptPurpose,
+    baseline_reset: input.receiptPurpose === "reset",
+    curve_trace: input.curveTrace,
+  };
 }
 
 /** Thrown when EXPO_PUBLIC_RELAYER_URL is not set. The intro screen
@@ -152,6 +197,7 @@ export async function fetchChallenge(walletAddress: string): Promise<ChallengeRe
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CHALLENGE_TIMEOUT_MS);
+  const requestedAtMs = performance.now();
   let response: Response;
   try {
     response = await fetch(url.toString(), {
@@ -174,19 +220,34 @@ export async function fetchChallenge(walletAddress: string): Promise<ChallengeRe
     nonce?: number[];
     expires_in?: number;
     phrase?: string;
+    curve?: unknown;
   };
 
-  if (!Array.isArray(body.nonce) || body.nonce.length !== 32) {
+  if (
+    !Array.isArray(body.nonce) ||
+    body.nonce.length !== 32 ||
+    body.nonce.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+  ) {
     throw new Error("Executor returned a malformed nonce; expected a 32-byte array.");
   }
   if (typeof body.phrase !== "string" || body.phrase.trim().length === 0) {
     throw new Error("Executor returned an empty challenge phrase.");
   }
+  if (
+    !Number.isSafeInteger(body.expires_in) ||
+    body.expires_in! <= 0 ||
+    body.expires_in! > MAX_CHALLENGE_LIFETIME_SEC
+  ) {
+    throw new Error("Executor returned a malformed challenge lifetime.");
+  }
+  const curve = validateLissajousParams(body.curve);
 
   return {
     nonce: Uint8Array.from(body.nonce),
     phrase: body.phrase,
-    expiresIn: typeof body.expires_in === "number" ? body.expires_in : 60,
+    expiresIn: body.expires_in!,
+    expiresAtMs: requestedAtMs + body.expires_in! * 1_000,
+    curve,
   };
 }
 
@@ -208,6 +269,13 @@ interface ValidateBody {
  *  missing (the relayer-down bucket surfaces the right "try again later"
  *  UX without leaking config detail to the user). */
 export async function validateFeatures(input: ValidateInput): Promise<ValidateOutcome> {
+  return validateFeaturesRequest(buildValidateFeaturesRequestBody(input));
+}
+
+/** Send an already-built request so authorization signs the exact verdict inputs on the wire. */
+export async function validateFeaturesRequest(
+  requestBody: ValidateFeaturesRequestBody,
+): Promise<ValidateOutcome> {
   let relayer: RelayerConfig;
   try {
     relayer = requireRelayer();
@@ -221,22 +289,7 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["X-API-Key"] = apiKey;
 
-  const body = JSON.stringify({
-    features: input.features,
-    projection_version: input.projectionVersion,
-    wallet_id: input.walletId,
-    f0_contour: input.f0Contour,
-    accel_magnitude: input.accelMagnitude,
-    audio_samples_b64: input.audioSamplesB64,
-    audio_sample_rate_hz: input.audioSampleRateHz,
-    commitment_new_hex: input.commitmentNewHex,
-    // Explicit mint-intent signal. New validators sign a receipt over a
-    // commitment THEY derive from `features`; `commitment_new_hex` is still
-    // sent so older validators (which trust it) keep working.
-    request_receipt: input.receiptPurpose !== undefined,
-    receipt_purpose: input.receiptPurpose,
-    baseline_reset: input.receiptPurpose === "reset",
-  });
+  const body = JSON.stringify(requestBody);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VALIDATE_TIMEOUT_MS);

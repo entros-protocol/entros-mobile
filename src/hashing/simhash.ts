@@ -11,10 +11,11 @@
 
 import { devWarn } from "@/lib/log";
 
-import { CLIENT_PROJECTION_VERSION, FINGERPRINT_BITS, LEGACY_SIMHASH_SEED } from "./constants";
+import { FINGERPRINT_BITS, LEGACY_SIMHASH_SEED } from "./constants";
 import { publicProjectionCoefficients } from "./hyperplanes";
 import type { TemporalFingerprint } from "./types";
 import { TOTAL_FEATURE_COUNT } from "../extraction/types";
+import { getProjectionDefinition } from "../projection";
 
 const hyperplaneCache = new Map<string, Float64Array>();
 
@@ -48,15 +49,11 @@ function getHyperplanes(dimension: number, projectionVersion: number): Float64Ar
     return cached;
   }
 
+  const definition = getProjectionDefinition(projectionVersion);
   const hyperplanes =
-    projectionVersion === 0
+    definition.hyperplanes.family === "legacy"
       ? legacyProjectionCoefficients(dimension)
-      : projectionVersion === 1
-        ? publicProjectionCoefficients(dimension)
-        : null;
-  if (!hyperplanes || projectionVersion > CLIENT_PROJECTION_VERSION) {
-    throw new Error(`Unsupported projection version ${projectionVersion}`);
-  }
+      : publicProjectionCoefficients(dimension, definition.hyperplanes.transcriptVersion);
   hyperplaneCache.set(cacheKey, hyperplanes);
   return hyperplanes;
 }
@@ -71,8 +68,13 @@ function getHyperplanes(dimension: number, projectionVersion: number): Float64Ar
 const EXPECTED_FEATURE_DIMENSION = TOTAL_FEATURE_COUNT;
 
 export function simhash(features: number[], projectionVersion = 0): TemporalFingerprint {
-  if (projectionVersion === 1 && features.length !== EXPECTED_FEATURE_DIMENSION) {
-    throw new Error(`Projection version 1 requires exactly ${EXPECTED_FEATURE_DIMENSION} features`);
+  if (
+    getProjectionDefinition(projectionVersion).hyperplanes.family === "public" &&
+    features.length !== EXPECTED_FEATURE_DIMENSION
+  ) {
+    throw new Error(
+      `Projection version ${projectionVersion} requires exactly ${EXPECTED_FEATURE_DIMENSION} features`,
+    );
   }
 
   if (features.length === 0) {
