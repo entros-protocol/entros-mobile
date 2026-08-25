@@ -60,7 +60,11 @@ import { PublicKey } from "@solana/web3.js";
 
 import { ProcessingStage } from "@/components/pulse/ProcessingStage";
 import { Screen } from "@/components/primitives/Screen";
-import { extractFeatures, MIN_AUDIO_SAMPLES } from "@/extraction";
+import {
+  extractFeatures,
+  extractProjectionOneCompatibilityFeatures,
+  MIN_AUDIO_SAMPLES,
+} from "@/extraction";
 import { getConnection } from "@/config";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import {
@@ -81,23 +85,37 @@ import { fetchProjectionPolicy } from "@/protocol/protocolConfig";
 import type { SignedReceiptDto } from "@/protocol/receipt";
 import { submitRebaseline, submitReset, submitVerify } from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
-import { validateFeatures, ValidateOutcome } from "@/services/executor";
+import { resampleCurveTrace } from "@/sensor/curve";
+import {
+  buildValidateFeaturesRequestBody,
+  validateFeaturesRequest,
+  ValidateOutcome,
+} from "@/services/executor";
+import { authorizeAndSendValidation } from "@/services/authorizedValidation";
 import type { VerificationReason } from "@/services/reasons";
 import { useAppState } from "@/state/AppState";
 import { clearCapture, takeCapture } from "@/state/captureBuffer";
-import { clearChallenge, takeChallenge } from "@/state/challengeBuffer";
+import { clearChallenge, peekChallenge, takeChallenge } from "@/state/challengeBuffer";
 import { clearCommitment, setCommitment, takeCommitment } from "@/state/commitmentBuffer";
 import { clearProof, setProof, takeProof } from "@/state/proofBuffer";
 import { FailureBucket } from "@/state/types";
-import { SecureKeys, setSecure } from "@/storage/secure";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export default function Processing() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { connection, dev, flow, verify, resetComplete, fail, setForceOutcome, setFlowIntent } =
-    useAppState();
+  const {
+    connection,
+    dev,
+    flow,
+    verify,
+    resetComplete,
+    fail,
+    setForceOutcome,
+    setFlowIntent,
+    updateAuthToken,
+  } = useAppState();
   const [ctx, dispatch] = useReducer(reduce, { ...initialContext, state: "extracting" });
 
   useEffect(() => {
@@ -109,11 +127,19 @@ export default function Processing() {
     // all three (address, kind, authToken) for MWA's signAndSendTransaction.
     const walletId = connection.address;
     const walletKind = connection.wallet;
-    const authToken = connection.authToken;
-    if (!walletId || !walletKind || !authToken) {
+    const initialAuthToken = connection.authToken;
+    if (!walletId || !walletKind || !initialAuthToken) {
       router.replace("/connect");
       return;
     }
+    let currentAuthToken = initialAuthToken;
+    const acceptRotatedAuthToken = async (authToken: string): Promise<void> => {
+      const accepted = await updateAuthToken(authToken, walletId, walletKind);
+      if (!accepted) {
+        throw new Error("The connected wallet changed during signing.");
+      }
+      currentAuthToken = authToken;
+    };
     const flowIntent = flow.intent;
 
     const failOut = (bucket: FailureBucket, message?: string) => {
@@ -256,6 +282,19 @@ export default function Processing() {
           return;
         }
         const projectionVersion = projectionPolicy.current;
+        const challenge = peekChallenge();
+        if (!challenge) {
+          failOut("retry-now", "The server challenge is missing. Start a new capture.");
+          return;
+        }
+        if (challenge.projectionVersion !== projectionVersion) {
+          failOut("retry-now", "The protocol projection changed during capture. Start again.");
+          return;
+        }
+        if (performance.now() >= challenge.expiresAtMs) {
+          failOut("retry-now", "The server challenge expired. Start a new capture.");
+          return;
+        }
         const rebaselineRequired =
           chainIdentity !== null && chainIdentity.projectionVersion < projectionVersion;
         if (
@@ -268,13 +307,37 @@ export default function Processing() {
           return;
         }
 
+        const receiptPurpose =
+          flowIntent === "reset"
+            ? projectionVersion >= 1
+              ? "reset"
+              : undefined
+            : flowIntent === "verify"
+              ? !chainIdentity
+                ? "mint"
+                : rebaselineRequired
+                  ? "rebaseline"
+                  : undefined
+              : undefined;
+
         const result = await extractFeatures(captured, projectionVersion);
+        let compatibilityEvidence =
+          projectionVersion === 2 && receiptPurpose !== undefined
+            ? {
+                projection_version: 1,
+                feature_schema_version: 4,
+                features: await extractProjectionOneCompatibilityFeatures(captured, result.raw),
+              }
+            : undefined;
+        const curveTrace = captured.touch.curveTrace
+          ? resampleCurveTrace(captured.touch.curveTrace)
+          : undefined;
 
         // Encode audio for /validate-features BEFORE dropping the captured
         // ref so the Float32Array doesn't have to outlive its single use.
         // After this line the only retained audio is the b64 string, which
         // crosses the network.
-        const audioSamplesB64 = encodeAudioAsBase64(captured.audio.pcm);
+        let audioSamplesB64: string | undefined = encodeAudioAsBase64(captured.audio.pcm);
         const audioSampleRateHz = captured.audio.sampleRate;
         // Drop the closure ref to the raw sensor buffers — the four largest
         // typed arrays (~768KB audio + motion + touch) become GC-eligible
@@ -294,8 +357,10 @@ export default function Processing() {
         // submitReset takes only the new commitment, no ft_prev needed.
         // First verifies also return null and we skip Stage 6 proof
         // generation; mint_anchor takes no proof either.
-        const storedBaseline = flowIntent === "reset" ? null : await loadBaseline();
-        const previousBaseline = chainIdentity && !rebaselineRequired ? storedBaseline : null;
+        let previousBaseline =
+          flowIntent !== "reset" && chainIdentity && !rebaselineRequired
+            ? await loadBaseline()
+            : null;
         if (
           flowIntent === "verify" &&
           chainIdentity &&
@@ -317,8 +382,7 @@ export default function Processing() {
         // encryption → Groth16 proof, mirroring the Pulse SDK flow. The
         // commitment must be computed before
         // validation so it can be transmitted as `commitment_new_hex` for
-        // the validator to sign. Cost of hashing a payload that ends up
-        // rejected: ~20 ms — invisible on the 2-5 s validate round-trip.
+        // the validator to sign.
         type StagesResult =
           | {
               kind: "ok";
@@ -332,153 +396,171 @@ export default function Processing() {
           | { kind: "fail"; outcome: Exclude<ValidateOutcome, { kind: "ok" }> }
           | { kind: "cancelled" }
           | { kind: "drift"; bucket: FailureBucket };
-        const stagesResult: StagesResult = await (async (): Promise<StagesResult> => {
-          // Stage 3: SimHash + Poseidon TBH.
-          const fingerprint = simhash(result.normalized, projectionVersion);
-          // Local TBH with a client-random salt — the fallback used when the
-          // validator doesn't return a server-derived commitment (older
-          // deploys). When it does, we swap in the server's salt + commitment
-          // below (C2); the fingerprint stays ours either way.
-          let tbh = await generateTBH(fingerprint);
-          const commitmentNewHex = Array.from(tbh.commitmentBytes)
-            .map((b) => b.toString(16).padStart(2, "0"))
-            .join("");
+        let stagesResult: StagesResult;
+        try {
+          stagesResult = await (async (): Promise<StagesResult> => {
+            // Compute the SimHash fingerprint and Poseidon commitment.
+            const fingerprint = simhash(result.normalized, projectionVersion);
+            // Local TBH with a client-random salt is the fallback used when the
+            // validator doesn't return a server-derived commitment (older
+            // deploys). When it does, we swap in the server's salt + commitment
+            // below (C2); the fingerprint stays ours either way.
+            let tbh = await generateTBH(fingerprint);
+            const commitmentNewHex = Array.from(tbh.commitmentBytes)
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
 
-          // Stage 4: server-side validation. Advance to "validating" before
-          // the POST so the UI shows the validating copy while the network
-          // round-trip resolves (typically 2-5 s under Whisper inference,
-          // up to the 15 s executor.ts timeout). Sends commitment_new_hex
-          // so the validator can sign a (wallet, commitment, validated_at)
-          // receipt and return it on the ok outcome for first-verify
-          // Ed25519 binding.
-          if (cancelled) return { kind: "cancelled" };
-          dispatch({ type: "advance" });
+            // Advance before the request so the UI shows the validation state.
+            // The client waits up to the 45-second executor timeout.
+            // The validator binds its receipt to commitment_new_hex.
+            if (cancelled) return { kind: "cancelled" };
+            dispatch({ type: "advance" });
 
-          const outcome = await validateFeatures({
-            features: result.raw,
-            projectionVersion,
-            walletId,
-            f0Contour: result.f0Contour,
-            accelMagnitude: result.accelMagnitude,
-            audioSamplesB64,
-            audioSampleRateHz,
-            commitmentNewHex,
-            receiptPurpose:
-              flowIntent === "reset"
-                ? projectionVersion >= 1
-                  ? "reset"
-                  : undefined
-                : flowIntent === "verify"
-                  ? !chainIdentity
-                    ? "mint"
-                    : rebaselineRequired
-                      ? "rebaseline"
-                      : undefined
-                  : undefined,
-          });
-          if (cancelled) return { kind: "cancelled" };
-          if (outcome.kind !== "ok") return { kind: "fail", outcome };
+            const requestBody = buildValidateFeaturesRequestBody({
+              features: result.raw,
+              projectionVersion,
+              walletId,
+              f0Contour: result.f0Contour,
+              accelMagnitude: result.accelMagnitude,
+              audioSamplesB64,
+              audioSampleRateHz,
+              commitmentNewHex,
+              receiptPurpose,
+              compatibilityEvidence,
+              curveTrace,
+            });
+            audioSamplesB64 = undefined;
+            let outcome: ValidateOutcome;
+            try {
+              if (projectionVersion === 2) {
+                const authorized = await authorizeAndSendValidation({
+                  requestBody,
+                  nonce: challenge.nonce,
+                  expiresAtMs: challenge.expiresAtMs,
+                  walletAddress: walletId,
+                  walletKind,
+                  authToken: currentAuthToken,
+                  onAuthTokenRotated: acceptRotatedAuthToken,
+                  isCancelled: () => cancelled,
+                });
+                if (authorized.kind === "cancelled") return { kind: "cancelled" };
+                if (authorized.kind === "expired") {
+                  return { kind: "drift", bucket: "retry-now" };
+                }
+                currentAuthToken = authorized.authToken;
+                outcome = authorized.outcome;
+              } else {
+                outcome = await validateFeaturesRequest(requestBody);
+              }
+            } finally {
+              requestBody.audio_samples_b64 = undefined;
+            }
+            if (cancelled) return { kind: "cancelled" };
+            if (outcome.kind !== "ok") return { kind: "fail", outcome };
 
-          // C2: adopt the validator-derived commitment + salt (mirrors
-          // pulse-sdk/pulse.ts). The validator signs — and `mint_anchor`
-          // enforces — a commitment it computed from the features we sent, not
-          // one we chose, so we mint exactly that. The fingerprint is unchanged
-          // and stays consistent with the server commitment (parity-tested
-          // across mobile/web/validator/circuit), so the {fingerprint, salt,
-          // commitment} triple still opens for future rotation proofs. Every
-          // downstream consumer (setCommitment, storeBaseline, the re-verify
-          // proof) reads `tbh`, so this single swap covers them all.
-          if (outcome.commitmentHex && outcome.saltHex) {
-            const serverCommitment = BigInt("0x" + outcome.commitmentHex);
-            const serverSalt = BigInt("0x" + outcome.saltHex);
-            tbh = {
-              fingerprint,
-              salt: serverSalt,
-              commitment: serverCommitment,
-              commitmentBytes: bigintToBytes32(serverCommitment),
-            };
-            if (__DEV__) {
-              // Runtime cross-check of the parity contract: a mismatch means
-              // the installed app and the deployed validator have drifted —
-              // future rotation proofs would silently fail to open.
-              const localCheck = await computeCommitment(fingerprint, serverSalt);
-              if (localCheck !== serverCommitment) {
-                devWarn(
-                  "[Entros] Commitment parity check failed: validator-derived commitment != local recomputation. Mobile and validator may be out of sync.",
-                );
+            // Adopt the validator-derived commitment and salt.
+            // `mint_anchor` enforces the commitment computed from these features.
+            // Every later consumer reads this replacement value.
+            if (outcome.commitmentHex && outcome.saltHex) {
+              const serverCommitment = BigInt("0x" + outcome.commitmentHex);
+              const serverSalt = BigInt("0x" + outcome.saltHex);
+              tbh = {
+                fingerprint,
+                salt: serverSalt,
+                commitment: serverCommitment,
+                commitmentBytes: bigintToBytes32(serverCommitment),
+              };
+              if (__DEV__) {
+                // A mismatch means the installed app and validator have drifted.
+                // Future rotation proofs would fail to open.
+                const localCheck = await computeCommitment(fingerprint, serverSalt);
+                if (localCheck !== serverCommitment) {
+                  devWarn(
+                    "[Entros] Commitment parity check failed: validator-derived commitment != local recomputation. Mobile and validator may be out of sync.",
+                  );
+                }
               }
             }
-          }
 
-          // Advance to "computing" before Stage 5 + 6 work fires so the UI
-          // shows the "Generating ZK proof" copy while AES-GCM + arkworks
-          // proof generation run.
-          dispatch({ type: "advance" });
+            // Advance to "computing" before baseline and proof work so the UI
+            // shows the "Generating ZK proof" copy while AES-GCM + arkworks
+            // proof generation run.
+            dispatch({ type: "advance" });
 
-          // Prepare the encrypted baseline. The ciphertext remains
-          // in memory until the on-chain transaction confirms.
-          setCommitment({
-            commitment: tbh.commitment,
-            salt: tbh.salt,
-            commitmentBytes: tbh.commitmentBytes,
-          });
-          let preparedBaseline;
-          try {
-            preparedBaseline = await prepareBaseline({
-              fingerprint: tbh.fingerprint,
-              salt: tbh.salt.toString(),
-              commitment: tbh.commitment.toString(),
-              timestamp: Date.now(),
-              projectionVersion,
+            // Prepare the encrypted baseline. The ciphertext remains
+            // in memory until the on-chain transaction confirms.
+            setCommitment({
+              commitment: tbh.commitment,
+              salt: tbh.salt,
+              commitmentBytes: tbh.commitmentBytes,
             });
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            devWarn(`[Entros] baseline preparation failed: ${message}`);
-            return { kind: "drift", bucket: "report-bug" };
-          }
+            let preparedBaseline;
+            try {
+              preparedBaseline = await prepareBaseline({
+                fingerprint: tbh.fingerprint,
+                salt: tbh.salt.toString(),
+                commitment: tbh.commitment.toString(),
+                timestamp: Date.now(),
+                projectionVersion,
+              });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              devWarn(`[Entros] baseline preparation failed: ${message}`);
+              return { kind: "drift", bucket: "report-bug" };
+            }
 
-          // Stage 6: Groth16 proof on-device. Re-verify only — first-verify
-          // skips because mint_anchor takes no proof.
-          if (previousBaseline) {
-            const previousCommitment = BigInt(previousBaseline.commitment);
-            const previousTbh: TBH = {
-              fingerprint: previousBaseline.fingerprint,
-              salt: BigInt(previousBaseline.salt),
-              commitment: previousCommitment,
-              commitmentBytes: bigintToBytes32(previousCommitment),
+            // Generate the Groth16 proof on-device for re-verification only.
+            // The first verification skips this because mint_anchor takes no proof.
+            if (previousBaseline) {
+              const previousCommitment = BigInt(previousBaseline.commitment);
+              const previousTbh: TBH = {
+                fingerprint: previousBaseline.fingerprint,
+                salt: BigInt(previousBaseline.salt),
+                commitment: previousCommitment,
+                commitmentBytes: bigintToBytes32(previousCommitment),
+              };
+              // Pre-flight: classify the Hamming distance against the same band
+              // the circuit enforces (entros_hamming.circom). A drift past the
+              // ceiling would otherwise throw a raw circom assertion.
+              // Route drift to a clean retry before proving or signing.
+              // Keep captures below the replay floor opaque.
+              const verdict = classifyHammingDistance(
+                hammingDistance(tbh.fingerprint, previousTbh.fingerprint),
+                DEFAULT_THRESHOLD,
+                DEFAULT_MIN_DISTANCE,
+              );
+              if (verdict === "drift_too_high") return { kind: "drift", bucket: "capture-drift" };
+              if (verdict === "below_min_distance") return { kind: "drift", bucket: "generic" };
+              const proofStartedAt = Date.now();
+              const solanaProof = await generateSolanaProof(tbh, previousTbh);
+              const proofMs = Date.now() - proofStartedAt;
+              setProof(solanaProof);
+              devWarn(
+                `[Entros] proof bytes=${solanaProof.proofBytes.length} publicInputs=${solanaProof.publicInputs.length} ms=${proofMs}`,
+              );
+            }
+
+            return {
+              kind: "ok",
+              commitmentHexPrefix: commitmentNewHex.slice(0, 16),
+              remainingQuota: outcome.remainingQuota,
+              signedReceipt: outcome.signedReceipt,
+              firstVerify: chainIdentity === null,
+              rebaseline: rebaselineRequired,
+              preparedBaseline,
             };
-            // Pre-flight: classify the Hamming distance against the same band
-            // the circuit enforces (entros_hamming.circom). A drift past the
-            // ceiling would otherwise throw a raw circom assert inside the
-            // native prover and surface verbatim through the outer catch —
-            // route to a clean retry bucket before proving or signing. Below
-            // the replay floor stays opaque (generic).
-            const verdict = classifyHammingDistance(
-              hammingDistance(tbh.fingerprint, previousTbh.fingerprint),
-              DEFAULT_THRESHOLD,
-              DEFAULT_MIN_DISTANCE,
-            );
-            if (verdict === "drift_too_high") return { kind: "drift", bucket: "capture-drift" };
-            if (verdict === "below_min_distance") return { kind: "drift", bucket: "generic" };
-            const proofStartedAt = Date.now();
-            const solanaProof = await generateSolanaProof(tbh, previousTbh);
-            const proofMs = Date.now() - proofStartedAt;
-            setProof(solanaProof);
-            devWarn(
-              `[Entros] proof bytes=${solanaProof.proofBytes.length} publicInputs=${solanaProof.publicInputs.length} ms=${proofMs}`,
-            );
-          }
-
-          return {
-            kind: "ok",
-            commitmentHexPrefix: commitmentNewHex.slice(0, 16),
-            remainingQuota: outcome.remainingQuota,
-            signedReceipt: outcome.signedReceipt,
-            firstVerify: chainIdentity === null,
-            rebaseline: rebaselineRequired,
-            preparedBaseline,
-          };
-        })();
+          })();
+        } finally {
+          audioSamplesB64 = undefined;
+          previousBaseline?.fingerprint.fill(0);
+          previousBaseline = null;
+          compatibilityEvidence?.features.fill(0);
+          compatibilityEvidence = undefined;
+          result.raw.fill(0);
+          result.normalized.fill(0);
+          result.f0Contour.fill(0);
+          result.accelMagnitude.fill(0);
+        }
         if (stagesResult.kind === "cancelled" || cancelled) return;
 
         if (stagesResult.kind === "fail") {
@@ -537,11 +619,12 @@ export default function Processing() {
             result = await submitReset(
               {
                 walletAddress: walletId,
-                authToken,
+                authToken: currentAuthToken,
                 walletKind,
                 commitment: commitmentBuf.commitmentBytes,
                 projectionVersion,
                 signedReceipt: signedReceipt ?? undefined,
+                onAuthTokenRotated: acceptRotatedAuthToken,
               },
               () => dispatch({ type: "advance" }), // → "submitting" once signed
             );
@@ -552,11 +635,12 @@ export default function Processing() {
             result = await submitRebaseline(
               {
                 walletAddress: walletId,
-                authToken,
+                authToken: currentAuthToken,
                 walletKind,
                 commitment: commitmentBuf.commitmentBytes,
                 projectionVersion,
                 signedReceipt,
+                onAuthTokenRotated: acceptRotatedAuthToken,
               },
               () => dispatch({ type: "advance" }),
             );
@@ -565,7 +649,7 @@ export default function Processing() {
             result = await submitVerify(
               {
                 walletAddress: walletId,
-                authToken,
+                authToken: currentAuthToken,
                 walletKind,
                 commitment: commitmentBuf.commitmentBytes,
                 isFirstVerify: firstVerify,
@@ -577,23 +661,12 @@ export default function Processing() {
                 // The first-verification path requires this receipt.
                 // Re-verification ignores it.
                 signedReceipt: signedReceipt ?? undefined,
+                onAuthTokenRotated: acceptRotatedAuthToken,
               },
               () => dispatch({ type: "advance" }), // → "submitting" once signed
             );
           }
           if (cancelled) return;
-
-          // Persist the rotated MWA auth token so the next session signs
-          // without prompting for re-authorisation. Token-persist failure
-          // must NOT abort the success path — the on-chain tx already
-          // confirmed; the worst case is the next session re-prompts the
-          // wallet for authorisation.
-          try {
-            await setSecure(SecureKeys.WALLET_AUTH_TOKEN, result.authToken);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            devWarn(`[Entros] auth_token persist failed: ${message}`);
-          }
 
           try {
             await persistPreparedBaseline(preparedBaseline);

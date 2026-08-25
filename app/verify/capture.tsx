@@ -31,7 +31,6 @@ import { MotionRecorder, startMotionRecording } from "@/sensor/motion";
 import { startTouchRecording, TouchRecorder } from "@/sensor/touch";
 import { setCapture } from "@/state/captureBuffer";
 import { peekChallenge } from "@/state/challengeBuffer";
-import { pickLissajous } from "@/state/mockChallenge";
 import { fontFamily, fontSize, radii, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -48,7 +47,6 @@ export default function VerifyCapture() {
   // renders. Null here means /verify/intro didn't run (dev nav / deep link);
   // we redirect back instead of fabricating a phrase.
   const [challenge] = useState(() => peekChallenge());
-  const params = useMemo(() => pickLissajous(), []);
 
   const [phase, setPhase] = useState<Phase>("countdown");
   const [countdown, setCountdown] = useState(3);
@@ -122,6 +120,7 @@ export default function VerifyCapture() {
       mountedRef.current = false;
       void audioRef.current?.cancel();
       void motionRef.current?.cancel();
+      touchRef.current?.cancel();
       audioRef.current = null;
       motionRef.current = null;
       touchRef.current = null;
@@ -130,6 +129,9 @@ export default function VerifyCapture() {
 
   const beginCapture = async () => {
     try {
+      if (challenge && performance.now() >= challenge.expiresAtMs) {
+        throw new Error("The server challenge expired before capture started. Please try again.");
+      }
       // JIT permission gate. Onboarding asks once but a returning user
       // navigating straight to /verify won't re-trigger it, and the
       // AudioRecord constructor silently fails if RECORD_AUDIO isn't held —
@@ -172,13 +174,14 @@ export default function VerifyCapture() {
       touchRef.current = startTouchRecording((v) => {
         if (!mountedRef.current) return;
         touchLevel.current = Math.max(0, Math.min(1, v * 1.4));
-      });
+      }, challenge?.projectionVersion ?? 0);
 
       startedAtRef.current = Date.now();
       setPhase("capturing");
     } catch (err) {
       await audioRef.current?.cancel();
       await motionRef.current?.cancel();
+      touchRef.current?.cancel();
       audioRef.current = null;
       motionRef.current = null;
       touchRef.current = null;
@@ -226,6 +229,8 @@ export default function VerifyCapture() {
       if (!mountedRef.current) return;
       router.replace("/verify/processing");
     } catch (err) {
+      touchRef.current?.cancel();
+      touchRef.current = null;
       if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : "Capture failed.";
       router.replace({
@@ -237,7 +242,7 @@ export default function VerifyCapture() {
 
   // Touch points arrive on the JS thread via runOnJS from the gesture worklet.
   const handleTouchPoint = (point: NormalizedTouchPoint) => {
-    touchRef.current?.push(point);
+    touchRef.current?.push(point, { t: point.t, x: point.curveX, y: point.curveY });
   };
 
   // Guard render: while the redirect effect above runs, draw nothing rather
@@ -287,10 +292,14 @@ export default function VerifyCapture() {
           <View style={styles.middle}>
             <ChallengePhrase phrase={phrase} active />
             <LissajousCanvas
-              params={params}
+              params={challenge.curve}
+              projectionVersion={challenge.projectionVersion}
               active
               durationMs={CAPTURE_MS}
               onTouchPoint={handleTouchPoint}
+              onContactStart={() => touchRef.current?.beginContact()}
+              onContactEnd={() => touchRef.current?.endContact()}
+              onTouchFailure={(message) => touchRef.current?.fail(message)}
             />
             <View style={styles.sensorBlock}>
               <SectionLabel>SENSORS</SectionLabel>

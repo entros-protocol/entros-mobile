@@ -105,6 +105,7 @@ type Action =
       wallet: WalletKind | null;
     }
   | { type: "disconnected" }
+  | { type: "authTokenRotated"; authToken: string; address: string; wallet: WalletKind }
   | { type: "verify"; trustDelta: number; txSignature: string }
   | { type: "resetComplete"; txSignature: string }
   | { type: "fail"; bucket: FailureBucket }
@@ -236,6 +237,16 @@ const reducer = (state: AppState, action: Action): AppState => {
         history: [],
         dev: { ...state.dev, activePreset: null, snapshot: null },
       };
+    case "authTokenRotated":
+      return {
+        ...state,
+        connection:
+          state.connection.connected &&
+          state.connection.address === action.address &&
+          state.connection.wallet === action.wallet
+            ? { ...state.connection, authToken: action.authToken }
+            : state.connection,
+      };
     case "verify": {
       const now = new Date();
       const event: VerificationEvent = {
@@ -358,6 +369,11 @@ interface AppStateContextValue extends AppState {
   completeOnboarding: () => void;
   connect: (walletKind?: WalletKind) => Promise<void>;
   disconnect: () => Promise<void>;
+  updateAuthToken: (
+    authToken: string,
+    expectedAddress: string,
+    expectedWallet: WalletKind,
+  ) => Promise<boolean>;
   verify: (trustDelta: number, txSignature: string) => void;
   resetComplete: (txSignature: string) => void;
   fail: (bucket: FailureBucket) => void;
@@ -400,6 +416,17 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   // milliseconds; without de-dup we'd double-fetch the same PDA. Concurrent
   // callers receive the same promise and observe a single dispatch.
   const inflightHydrateRef = useRef<Promise<boolean> | null>(null);
+  const connectionRevisionRef = useRef(0);
+  const walletStorageTailRef = useRef<Promise<void>>(Promise.resolve());
+
+  const enqueueWalletStorage = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const result = walletStorageTailRef.current.then(operation, operation);
+    walletStorageTailRef.current = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }, []);
 
   // Cold-start hydration: load any persisted wallet credentials. We do not
   // re-authorize with MWA here — that would round-trip to the wallet app on
@@ -423,27 +450,35 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
     void hydrate();
   }, []);
 
-  const persist = useCallback(async (account: mwa.AuthorizedAccount) => {
-    await Promise.all([
-      setSecure(SecureKeys.WALLET_ADDRESS, account.address),
-      setSecure(SecureKeys.WALLET_AUTH_TOKEN, account.authToken),
-      account.label
-        ? setSecure(SecureKeys.WALLET_LABEL, account.label)
-        : deleteSecure(SecureKeys.WALLET_LABEL),
-      account.wallet
-        ? setSecure(SecureKeys.WALLET_KIND, account.wallet)
-        : deleteSecure(SecureKeys.WALLET_KIND),
-    ]);
-  }, []);
+  const persist = useCallback(
+    async (account: mwa.AuthorizedAccount) =>
+      enqueueWalletStorage(async () => {
+        await Promise.all([
+          setSecure(SecureKeys.WALLET_ADDRESS, account.address),
+          setSecure(SecureKeys.WALLET_AUTH_TOKEN, account.authToken),
+          account.label
+            ? setSecure(SecureKeys.WALLET_LABEL, account.label)
+            : deleteSecure(SecureKeys.WALLET_LABEL),
+          account.wallet
+            ? setSecure(SecureKeys.WALLET_KIND, account.wallet)
+            : deleteSecure(SecureKeys.WALLET_KIND),
+        ]);
+      }),
+    [enqueueWalletStorage],
+  );
 
-  const clearStored = useCallback(async () => {
-    await Promise.all([
-      deleteSecure(SecureKeys.WALLET_ADDRESS),
-      deleteSecure(SecureKeys.WALLET_AUTH_TOKEN),
-      deleteSecure(SecureKeys.WALLET_LABEL),
-      deleteSecure(SecureKeys.WALLET_KIND),
-    ]);
-  }, []);
+  const clearStored = useCallback(
+    async () =>
+      enqueueWalletStorage(async () => {
+        await Promise.all([
+          deleteSecure(SecureKeys.WALLET_ADDRESS),
+          deleteSecure(SecureKeys.WALLET_AUTH_TOKEN),
+          deleteSecure(SecureKeys.WALLET_LABEL),
+          deleteSecure(SecureKeys.WALLET_KIND),
+        ]);
+      }),
+    [enqueueWalletStorage],
+  );
 
   // hydrateIdentityFor is defined before `connect` so the post-connect
   // refresh can reach it. The explicit address arg lets the caller pass a
@@ -533,6 +568,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   const connect = useCallback(
     async (walletKind?: WalletKind) => {
       const account = await mwa.connect(walletKind);
+      connectionRevisionRef.current += 1;
       await persist(account);
       // The `connected` reducer clears any active preset/snapshot in the
       // same dispatch, so a separate `clearPreset` dispatch first would
@@ -567,12 +603,45 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   );
 
   const disconnect = useCallback(async () => {
+    connectionRevisionRef.current += 1;
     if (state.connection.authToken) {
       await mwa.disconnect(state.connection.authToken, state.connection.wallet);
     }
     await clearStored();
     dispatch({ type: "disconnected" });
   }, [clearStored, state.connection.authToken, state.connection.wallet]);
+
+  const updateAuthToken = useCallback(
+    async (
+      authToken: string,
+      expectedAddress: string,
+      expectedWallet: WalletKind,
+    ): Promise<boolean> => {
+      const revision = connectionRevisionRef.current;
+      return enqueueWalletStorage(async () => {
+        const matchesScope = () => {
+          const current = stateRef.current.connection;
+          return (
+            connectionRevisionRef.current === revision &&
+            current.connected &&
+            current.address === expectedAddress &&
+            current.wallet === expectedWallet
+          );
+        };
+        if (!matchesScope()) return false;
+        await setSecure(SecureKeys.WALLET_AUTH_TOKEN, authToken);
+        if (!matchesScope()) return false;
+        dispatch({
+          type: "authTokenRotated",
+          authToken,
+          address: expectedAddress,
+          wallet: expectedWallet,
+        });
+        return true;
+      });
+    },
+    [enqueueWalletStorage],
+  );
 
   const value = useMemo<AppStateContextValue>(
     () => ({
@@ -582,6 +651,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       completeOnboarding: () => dispatch({ type: "completeOnboarding" }),
       connect,
       disconnect,
+      updateAuthToken,
       verify: (trustDelta, txSignature) => dispatch({ type: "verify", trustDelta, txSignature }),
       resetComplete: (txSignature) => dispatch({ type: "resetComplete", txSignature }),
       fail: (bucket) => dispatch({ type: "fail", bucket }),
@@ -604,7 +674,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       setForceOutcome: (outcome) => dispatch({ type: "setForceOutcome", outcome }),
       hydrateIdentity,
     }),
-    [state, connect, disconnect, hydrateIdentity],
+    [state, connect, disconnect, hydrateIdentity, updateAuthToken],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

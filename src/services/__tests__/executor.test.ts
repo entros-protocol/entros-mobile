@@ -8,7 +8,13 @@
 // is unset, neither of which this file needs. executor.ts's only other import
 // is `import type`, so nothing else is pulled in.
 
-import { validateFeatures, type ValidateOutcome } from "../executor";
+import {
+  buildValidateFeaturesRequestBody,
+  fetchChallenge,
+  validateFeatures,
+  validateFeaturesRequest,
+  type ValidateOutcome,
+} from "../executor";
 
 // Babel hoists jest.mock above the import, so the mock is already in force by
 // the time executor.ts reads `config`. It sits here rather than at the top of
@@ -22,6 +28,10 @@ global.fetch = fetchMock as unknown as typeof fetch;
 
 beforeEach(() => {
   fetchMock.mockReset();
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 /** Stub the next fetch with an executor JSON envelope. */
@@ -48,6 +58,105 @@ const run = (): Promise<ValidateOutcome> =>
     projectionVersion: 0,
     walletId: "So11111111111111111111111111111111111111112",
   });
+
+describe("fetchChallenge", () => {
+  test("preserves the nonce, deadline, phrase, and server curve", async () => {
+    jest.spyOn(performance, "now").mockReturnValue(2_500);
+    respondWith(200, {
+      nonce: Array.from({ length: 32 }, (_, index) => index),
+      expires_in: 60,
+      phrase: "alpha beta gamma delta epsilon",
+      curve: { a: 3, b: 5, delta: 1.25, points: 200, anchor_x: 50, anchor_y: 50 },
+    });
+    await expect(fetchChallenge("11111111111111111111111111111111")).resolves.toEqual({
+      nonce: Uint8Array.from({ length: 32 }, (_, index) => index),
+      expiresIn: 60,
+      expiresAtMs: 62_500,
+      phrase: "alpha beta gamma delta epsilon",
+      curve: { a: 3, b: 5, delta: 1.25, points: 200, anchorX: 50, anchorY: 50 },
+    });
+  });
+
+  test("rejects invalid nonce bytes, lifetimes, and curve fields", async () => {
+    const valid = {
+      nonce: new Array(32).fill(1),
+      expires_in: 60,
+      phrase: "alpha beta gamma delta epsilon",
+      curve: { a: 3, b: 5, delta: 1.25, points: 200, anchor_x: 50, anchor_y: 50 },
+    };
+    respondWith(200, { ...valid, nonce: [...valid.nonce.slice(0, 31), 256] });
+    await expect(fetchChallenge("11111111111111111111111111111111")).rejects.toThrow(
+      "malformed nonce",
+    );
+    respondWith(200, { ...valid, expires_in: 0 });
+    await expect(fetchChallenge("11111111111111111111111111111111")).rejects.toThrow(
+      "malformed challenge lifetime",
+    );
+    respondWith(200, { ...valid, expires_in: 301 });
+    await expect(fetchChallenge("11111111111111111111111111111111")).rejects.toThrow(
+      "malformed challenge lifetime",
+    );
+    respondWith(200, { ...valid, curve: { ...valid.curve, anchor_x: 100 } });
+    await expect(fetchChallenge("11111111111111111111111111111111")).rejects.toThrow(
+      "malformed touch curve",
+    );
+    respondWith(200, { ...valid, curve: { ...valid.curve, a: 1, b: 5 } });
+    await expect(fetchChallenge("11111111111111111111111111111111")).rejects.toThrow(
+      "malformed touch curve",
+    );
+    respondWith(200, { ...valid, curve: { ...valid.curve, points: 199 } });
+    await expect(fetchChallenge("11111111111111111111111111111111")).rejects.toThrow(
+      "malformed touch curve",
+    );
+  });
+});
+
+describe("projection 2 request DTO", () => {
+  test("sends authorization and compatibility evidence without raw touch or motion", async () => {
+    const request = buildValidateFeaturesRequestBody({
+      features: new Array(308).fill(0.25),
+      projectionVersion: 2,
+      walletId: "11111111111111111111111111111111",
+      compatibilityEvidence: {
+        projection_version: 1,
+        feature_schema_version: 4,
+        features: new Array(308).fill(0.5),
+      },
+      walletAuthorization: { nonce: new Array(32).fill(7), signature_hex: "ab".repeat(64) },
+      receiptPurpose: "mint",
+      curveTrace: {
+        points: [
+          [0, 0],
+          [100, 100],
+        ],
+        duration_ms: 12_000,
+      },
+    });
+    expect(request).toMatchObject({
+      projection_version: 2,
+      baseline_reset: false,
+      request_receipt: true,
+      receipt_purpose: "mint",
+      compatibility_evidence: { projection_version: 1, feature_schema_version: 4 },
+      wallet_authorization: { nonce: new Array(32).fill(7), signature_hex: "ab".repeat(64) },
+    });
+    expect(request).not.toHaveProperty("touch_samples");
+    expect(request).not.toHaveProperty("motion_samples");
+
+    respondWith(200, { valid: true });
+    await validateFeaturesRequest(request);
+    const sent = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(sent.curve_trace).toEqual({
+      points: [
+        [0, 0],
+        [100, 100],
+      ],
+      duration_ms: 12_000,
+    });
+    expect(sent).not.toHaveProperty("touch_samples");
+    expect(sent).not.toHaveProperty("motion_samples");
+  });
+});
 
 describe("validateFeatures: soft-reject classification", () => {
   it("routes captcha_required to the retry surface instead of a dead end", async () => {

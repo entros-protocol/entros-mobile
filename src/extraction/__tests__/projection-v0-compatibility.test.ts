@@ -63,10 +63,10 @@ describe("projection version 0 compatibility", () => {
     expect(simhash(defaultFused)).toEqual(simhash(versionedFused, 0));
   });
 
-  it("activates the corrected speaker path only in version 1", async () => {
+  it("keeps projection 2 audio semantics equal to corrected projection 1", async () => {
     const audio = deterministicAudio();
-    expect(await extractSpeakerFeatures(audio, 1)).not.toEqual(
-      await extractSpeakerFeatures(audio, 0),
-    );
-  });
+    const corrected = await extractSpeakerFeatures(audio, 1);
+    expect(corrected).not.toEqual(await extractSpeakerFeatures(audio, 0));
+    expect(await extractSpeakerFeatures(audio, 2)).toEqual(corrected);
+  }, 15_000);
 });

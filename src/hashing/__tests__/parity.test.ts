@@ -105,3 +105,20 @@ describe("hashing parity with projection version 1", () => {
     expect(simhash(FIXTURE_FEATURES)).not.toEqual(simhash(FIXTURE_FEATURES, 1));
   });
 });
+
+describe("hashing parity with projection version 2", () => {
+  test("pins the full transcript without changing projection 1 bytes", async () => {
+    const fp = simhash(FIXTURE_FEATURES, 2);
+    const { lo, hi } = packBits(fp);
+    const commitment = await computeCommitment(fp, FIXED_SALT);
+
+    expect(bytesToHex(packFingerprintBytes(fp))).toBe(
+      "171739965959892d2bfec818b1009923c870b6f105678bc5f0f931f49e6ae582",
+    );
+    expect(lo).toBe(47317415302883274880799270694016325399n);
+    expect(hi).toBe(173990837961685963407535389837236793544n);
+    expect(bytesToHex(bigintToBytes32(commitment))).toBe(
+      "01a4d28e4832e357f7aac96ac793a97fec1cba126ce4720877a320e0c4ad957e",
+    );
+  });
+});

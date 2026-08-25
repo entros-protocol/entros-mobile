@@ -55,6 +55,7 @@ interface SubmitBase {
   walletAddress: string;
   authToken: string;
   walletKind: WalletKind;
+  onAuthTokenRotated?: mwa.AuthTokenRotationHandler;
 }
 
 const buildContext = (walletAddress: string): BuildContext => {
@@ -174,7 +175,13 @@ export async function submitVerify(
   }
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
-  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    tx,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
   onSigned?.();
   await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
@@ -222,7 +229,13 @@ export async function submitReset(
   ];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
-  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    tx,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
   onSigned?.();
   await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
@@ -256,7 +269,13 @@ export async function submitRebaseline(
   const ixs = [buildComputeBudgetIx(COMPUTE_UNITS_REBASELINE), receiptIx, rebaselineIx];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
-  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    tx,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
   onSigned?.();
   await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
