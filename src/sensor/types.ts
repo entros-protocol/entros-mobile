@@ -8,33 +8,23 @@
 // path to /validate-features for Whisper STT (paper §6.8 sanctioned exception).
 
 /**
- * The rate `audio.ts` asks `AudioRecord` for. A request, not a guarantee:
- * Android substitutes a supported rate when the hardware cannot deliver this
- * one.
+ * The rate `audio.ts` asks `AudioRecord` to configure.
+ * Android reads the initialization state and configured rate before capture.
  */
 export const TARGET_AUDIO_SAMPLE_RATE = 16_000;
 
 export interface AudioCapture {
   /**
-   * PCM samples normalised to [-1, 1], at whatever rate the capture actually
-   * ran at.
+   * PCM samples normalised to [-1, 1].
    *
-   * These doc comments used to claim the samples were "resampled to"
-   * {@link TARGET_AUDIO_SAMPLE_RATE} and that {@link sampleRate} was "always"
-   * that value "after resample". No resampler has ever existed on this
-   * platform. `audio.ts` returns the constant it requested without reading
-   * back what `AudioRecord` negotiated, which is why the `sampleRate !== 16000`
-   * guard in `speaker.ts` can never fire.
-   *
-   * The web SDK now band-limits and decimates every capture to a canonical
-   * 16 kHz in `pulse-sdk/src/sensor/resample.ts`. Until that is ported here
-   * and the negotiated rate is read back, mobile captures on hardware that
-   * refuses 16 kHz produce a feature vector that is not comparable with the
-   * web one.
+   * Mobile applies the same final FIR and 16 kHz conversion as Pulse before
+   * extraction or transmission.
    */
   pcm: Float32Array;
-  /** Sample rate in Hz. Currently the requested rate, not a readback. */
+  /** Sample rate of {@link pcm}. */
   sampleRate: number;
+  /** Configured native AudioRecord sample rate before canonicalization. */
+  nativeSampleRate: number;
   /** Capture duration in milliseconds. */
   durationMs: number;
   /**

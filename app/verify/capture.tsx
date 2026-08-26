@@ -1,11 +1,11 @@
 // Verification capture screen.
 //
 // PRIVACY CONTRACT (paper §6.8 + AUDIT.md):
-// - Audio PCM, motion samples, and touch coordinates live in memory only
-//   for the duration of capture + the brief feature-extraction pass that
-//   follows it (Stage 2).
-// - Nothing is logged with values, persisted, or transmitted from this
-//   screen. Only sample counts and rates appear in dev logs.
+// - Audio PCM, motion samples, and touch coordinates stay in memory through
+//   capture and feature extraction.
+// - The processing screen sends transient phrase PCM for phrase matching.
+//   It never sends raw motion or full-resolution touch.
+// - No raw sensor value is logged or persisted.
 // - On suspension or back-navigation, recordings are cancelled and any
 //   buffered samples are dropped before the screen unmounts.
 

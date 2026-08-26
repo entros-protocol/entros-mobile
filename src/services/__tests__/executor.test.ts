@@ -8,6 +8,8 @@
 // is unset, neither of which this file needs. executor.ts's only other import
 // is `import type`, so nothing else is pulled in.
 
+import { encodeAudioAsBase64 } from "@/sensor/encode";
+
 import {
   buildValidateFeaturesRequestBody,
   fetchChallenge,
@@ -155,6 +157,50 @@ describe("projection 2 request DTO", () => {
     });
     expect(sent).not.toHaveProperty("touch_samples");
     expect(sent).not.toHaveProperty("motion_samples");
+  });
+
+  test("preserves the canonical PCM rate in the request body", async () => {
+    const request = buildValidateFeaturesRequestBody({
+      features: new Array(308).fill(0.25),
+      projectionVersion: 2,
+      walletId: "11111111111111111111111111111111",
+      audioSamplesB64: "AEAAQA==",
+      audioSampleRateHz: 16_000,
+    });
+    expect(request.audio_sample_rate_hz).toBe(16_000);
+
+    respondWith(200, { valid: true });
+    await validateFeaturesRequest(request);
+    const sent = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(sent.audio_sample_rate_hz).toBe(16_000);
+  });
+
+  test("keeps a maximum canonical capture below the executor body limit", () => {
+    const request = buildValidateFeaturesRequestBody({
+      features: new Array(308).fill(123.456789),
+      projectionVersion: 2,
+      walletId: "11111111111111111111111111111111",
+      compatibilityEvidence: {
+        projection_version: 1,
+        feature_schema_version: 4,
+        features: new Array(308).fill(123.456789),
+      },
+      walletAuthorization: { nonce: new Array(32).fill(255), signature_hex: "ab".repeat(64) },
+      f0Contour: new Array(1_200).fill(599.999999),
+      accelMagnitude: new Array(1_200).fill(99.999999),
+      audioSamplesB64: encodeAudioAsBase64(new Float32Array(192_000).fill(0.5)),
+      audioSampleRateHz: 16_000,
+      commitmentNewHex: "ff".repeat(32),
+      receiptPurpose: "mint",
+      curveTrace: {
+        points: Array.from({ length: 64 }, (_, index) => [index * 1.587301, index * 1.587301]),
+        duration_ms: 12_000,
+      },
+    });
+    const bodyBytes = new TextEncoder().encode(JSON.stringify(request)).byteLength;
+
+    expect(bodyBytes).toBeGreaterThan(500_000);
+    expect(bodyBytes).toBeLessThan(1_048_576);
   });
 });
 

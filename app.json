@@ -17,7 +17,7 @@
       "bundleIdentifier": "io.entros.mobile",
       "supportsTablet": false,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Entros records a short voice sample on this device. Audio is processed locally and discarded immediately after a 308-feature statistical summary is extracted.",
+        "NSMicrophoneUsageDescription": "Entros extracts voice features on this device and sends transient audio to the validation service for phrase matching. The service discards the audio after validation.",
         "NSMotionUsageDescription": "Entros samples motion sensors to measure how you hold the phone. Raw sensor data stays on this device and is discarded immediately after feature extraction.",
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -48,9 +48,7 @@
           "android": {
             "kotlinVersion": "1.9.25",
             "packagingOptions": {
-              "pickFirst": [
-                "**/libc++_shared.so"
-              ]
+              "pickFirst": ["**/libc++_shared.so"]
             }
           }
         }

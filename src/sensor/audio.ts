@@ -1,23 +1,24 @@
-// Audio capture via react-native-live-audio-stream. Streams raw 16-bit PCM
-// chunks at 16 kHz mono — the exact equivalent of the browser flow's
-// `getUserMedia({ sampleRate: 16000, channelCount: 1, ... })` plus
-// ScriptProcessorNode pattern, so SimHash commitments are bit-reproducible
-// across web and mobile.
+// Audio capture via react-native-live-audio-stream. The Android path requests
+// raw 16-bit mono PCM at 16 kHz and reads the configured rate back before
+// recording. Cross-runtime fixtures, not the request alone, establish parity.
 //
 // PRIVACY:
-// - PCM samples accumulate in a single Float32Array held in this module's
-//   closure. The buffer is handed to the caller in `stop()` and the closure
-//   reference is cleared.
+// - PCM chunks stay in this module's closure. `stop()` hands one Float32Array
+//   to the caller and clears the chunk references.
 // - Nothing touches disk: there's no recording file. The library streams
 //   chunks directly into JS memory.
 // - The level callback receives RMS computed from the chunk; the chunk
 //   itself is never logged.
-// - Caller MUST discard the returned Float32Array after feature extraction.
+// - The caller sends one transient PCM encoding for phrase matching, then
+//   discards both forms after the validation request.
 
 import type { EmitterSubscription } from "react-native";
 import { PermissionsAndroid, Platform } from "react-native";
 
+import { devWarn } from "@/lib/log";
+
 import { AudioCapture, TARGET_AUDIO_SAMPLE_RATE } from "./types";
+import { CANONICAL_SAMPLE_RATE, toCanonicalCapture } from "./resample";
 
 // `react-native-live-audio-stream` ships an .d.ts that marks `wavFile`
 // required (it's optional at runtime — we never write to disk) and types
@@ -31,15 +32,25 @@ interface AudioRecordOptions {
   bufferSize?: number;
 }
 
+interface AndroidAudioRecordConfig {
+  initializationState: number;
+  initialized: boolean;
+  configuredSampleRate: number;
+}
+
+interface AndroidAudioRecordError {
+  code: number;
+  message: string;
+}
+
 interface IAudioRecord {
-  init(options: AudioRecordOptions): void;
-  start(): void;
-  // Resolves once the patched native module has stopped + released its
-  // AudioRecord (see `patches/react-native-live-audio-stream+1.1.1.patch`).
-  // The unpatched upstream never resolves this Promise — we treat it as
-  // fire-and-forget regardless to be safe across both shapes.
-  stop(): Promise<unknown>;
+  init(options: AudioRecordOptions): void | Promise<AndroidAudioRecordConfig>;
+  start(): void | Promise<unknown>;
+  // Android resolves after the patched native module stops and releases its
+  // AudioRecord. The upstream iOS method returns void.
+  stop(): void | Promise<unknown>;
   on(event: "data", callback: (data: string) => void): EmitterSubscription;
+  on(event: "error", callback: (error: AndroidAudioRecordError) => void): EmitterSubscription;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
@@ -72,6 +83,10 @@ const STREAM_OPTIONS = {
 // surface that as a friendly error instead of letting the screen sit with
 // flat sensor bars for 12 seconds.
 const FIRST_CHUNK_TIMEOUT_MS = 1500;
+const MAX_CAPTURE_MS = 12_000;
+const TARGET_CAPTURE_RMS = 0.05;
+const MIN_RMS_FOR_NORMALIZATION = 1e-4;
+const MAX_NORMALIZATION_GAIN = 50;
 
 let recordingActive = false;
 
@@ -86,7 +101,7 @@ export const requestAudioPermission = async (): Promise<boolean> => {
     const result = await PermissionsAndroid.request(RECORD_AUDIO, {
       title: "Microphone access",
       message:
-        "Entros records a short voice sample for behavioural analysis on this device. Audio is processed locally and discarded immediately.",
+        "Entros extracts voice features on this device and sends transient audio to the validation service for phrase matching.",
       buttonPositive: "Allow",
       buttonNegative: "Deny",
     });
@@ -125,6 +140,24 @@ const computeRmsInt16 = (samples: Int16Array): number => {
   return n > 0 ? Math.sqrt(sum / n) : 0;
 };
 
+/** Match Pulse's capture-level normalization before feature extraction. */
+export const normalizeCaptureRMS = (samples: Float32Array): Float32Array => {
+  if (samples.length === 0) return samples;
+  let sumSquares = 0;
+  for (let index = 0; index < samples.length; index++) {
+    sumSquares += samples[index]! * samples[index]!;
+  }
+  const rms = Math.sqrt(sumSquares / samples.length);
+  if (rms < MIN_RMS_FOR_NORMALIZATION) return samples;
+
+  const gain = Math.min(TARGET_CAPTURE_RMS / rms, MAX_NORMALIZATION_GAIN);
+  const normalized = new Float32Array(samples.length);
+  for (let index = 0; index < samples.length; index++) {
+    normalized[index] = Math.max(-1, Math.min(1, samples[index]! * gain));
+  }
+  return normalized;
+};
+
 export const startAudioRecording = async (
   onLevel?: (rms: number) => void,
 ): Promise<AudioRecorder> => {
@@ -137,31 +170,86 @@ export const startAudioRecording = async (
   // realloc + copy. ~9 chunks/sec × 12s × 8KB = ~864KB total — easy to hold.
   const chunks: Int16Array[] = [];
   let totalSamples = 0;
-  const startedAt = Date.now();
   let stopped = false;
+  let configuredSampleRate = TARGET_AUDIO_SAMPLE_RATE;
+  let dataSubscription: EmitterSubscription | null = null;
+  let errorSubscription: EmitterSubscription | null = null;
+  let recordingError: Error | null = null;
+  let teardownPromise: Promise<void> | null = null;
+  let terminalPromise: Promise<AudioCapture | null> | null = null;
 
-  LiveAudioStream.init(STREAM_OPTIONS);
-
-  // Resolution machinery for the first-chunk gate. Holding `resolveFirstChunk`
-  // in the closure lets the data callback itself short-circuit the wait
-  // instead of polling on a setInterval — cleaner and zero idle timer ticks.
+  // The data callback resolves this gate without polling.
   let firstChunkReceived = false;
   let resolveFirstChunk: (() => void) | null = null;
-  const subscription = LiveAudioStream.on("data", (b64: string) => {
-    if (stopped) return;
-    if (!firstChunkReceived) {
-      firstChunkReceived = true;
-      resolveFirstChunk?.();
+  let rejectFirstChunk: ((error: Error) => void) | null = null;
+
+  const teardown = (): Promise<void> => {
+    if (teardownPromise) return teardownPromise;
+    stopped = true;
+    teardownPromise = (async () => {
+      try {
+        await LiveAudioStream.stop();
+      } finally {
+        dataSubscription?.remove();
+        errorSubscription?.remove();
+        recordingActive = false;
+      }
+    })();
+    return teardownPromise;
+  };
+
+  try {
+    const nativeConfig = await LiveAudioStream.init(STREAM_OPTIONS);
+    if (Platform.OS === "android") {
+      if (!nativeConfig) {
+        throw new Error("Microphone initialization returned no AudioRecord state.");
+      }
+      if (!nativeConfig.initialized) {
+        throw new Error(
+          `Microphone failed to initialize (AudioRecord state ${nativeConfig.initializationState}).`,
+        );
+      }
+      if (
+        !Number.isInteger(nativeConfig.configuredSampleRate) ||
+        nativeConfig.configuredSampleRate < CANONICAL_SAMPLE_RATE
+      ) {
+        throw new Error("Microphone returned an unsupported configured sample rate.");
+      }
+      devWarn(
+        `[Entros] AudioRecord initialized state=${nativeConfig.initializationState} sampleRateHz=${nativeConfig.configuredSampleRate}`,
+      );
+      configuredSampleRate = nativeConfig.configuredSampleRate;
     }
-    const int16 = decodeBase64Pcm(b64);
-    chunks.push(int16);
-    totalSamples += int16.length;
-    if (onLevel) {
-      // Boost slightly so quiet voices still register on the bar visualiser.
-      onLevel(Math.min(1, computeRmsInt16(int16) * 4));
+
+    dataSubscription = LiveAudioStream.on("data", (b64: string) => {
+      if (stopped) return;
+      if (!firstChunkReceived) {
+        firstChunkReceived = true;
+        resolveFirstChunk?.();
+      }
+      const int16 = decodeBase64Pcm(b64);
+      chunks.push(int16);
+      totalSamples += int16.length;
+      if (onLevel) {
+        // Boost slightly so quiet voices still register on the bar visualiser.
+        onLevel(Math.min(1, computeRmsInt16(int16) * 4));
+      }
+    });
+    errorSubscription = LiveAudioStream.on("error", (nativeError) => {
+      if (stopped || recordingError) return;
+      recordingError = new Error(`${nativeError.message} (${nativeError.code})`);
+      rejectFirstChunk?.(recordingError);
+      void teardown().catch(() => undefined);
+    });
+    await LiveAudioStream.start();
+  } catch (error) {
+    try {
+      await teardown();
+    } catch {
+      // Preserve the initialization or start error.
     }
-  });
-  LiveAudioStream.start();
+    throw error;
+  }
 
   // Verify the native AudioRecord actually started producing data. If we never
   // see a chunk within the timeout, the constructor likely failed (no mic
@@ -169,66 +257,96 @@ export const startAudioRecording = async (
   // etc.) and we should surface a clear error rather than silently capturing
   // 12 seconds of nothing.
   await new Promise<void>((resolve, reject) => {
+    if (recordingError) {
+      reject(recordingError);
+      return;
+    }
     if (firstChunkReceived) {
       resolve();
       return;
     }
     resolveFirstChunk = () => {
       clearTimeout(timeoutHandle);
+      resolveFirstChunk = null;
+      rejectFirstChunk = null;
       resolve();
+    };
+    rejectFirstChunk = (error) => {
+      clearTimeout(timeoutHandle);
+      resolveFirstChunk = null;
+      rejectFirstChunk = null;
+      reject(error);
     };
     const timeoutHandle = setTimeout(() => {
       if (firstChunkReceived) return;
-      try {
-        void LiveAudioStream.stop();
-      } catch {
-        /* ignore */
-      }
-      subscription.remove();
-      recordingActive = false;
-      reject(
-        new Error(
-          "Microphone produced no audio. On an emulator, enable virtual mic via Extended Controls → Microphone → 'Virtual microphone uses host audio input'.",
-        ),
+      const error = new Error(
+        "Microphone produced no audio. On an emulator, enable virtual mic via Extended Controls → Microphone → 'Virtual microphone uses host audio input'.",
       );
+      rejectFirstChunk?.(error);
+      void teardown().catch(() => undefined);
     }, FIRST_CHUNK_TIMEOUT_MS);
   });
 
-  const teardown = () => {
-    if (stopped) return;
-    stopped = true;
-    try {
-      // Fire-and-forget: stop() drives async native teardown. We don't need
-      // to block the JS side on its completion — the next session's init()
-      // will release any straggling recorder via the patched releaseRecorder().
-      void LiveAudioStream.stop();
-    } catch {
-      // Native side may already be stopped — safe to ignore.
-    }
-    subscription.remove();
-    recordingActive = false;
+  const finish = (returnCapture: boolean): Promise<AudioCapture | null> => {
+    if (terminalPromise) return terminalPromise;
+    const captureEndedAt = Date.now();
+
+    terminalPromise = (async () => {
+      let teardownError: unknown;
+      try {
+        await teardown();
+      } catch (error) {
+        teardownError = error;
+      }
+
+      try {
+        if (recordingError) throw recordingError;
+        if (teardownError) throw teardownError;
+        if (!returnCapture) return null;
+
+        // Use one allocation to flatten chunks and convert Int16 PCM to Float32.
+        const nativePcm = new Float32Array(totalSamples);
+        let offset = 0;
+        for (const chunk of chunks) {
+          for (let i = 0; i < chunk.length; i++) {
+            nativePcm[offset + i] = chunk[i]! / 32768;
+          }
+          offset += chunk.length;
+        }
+
+        const canonical = await toCanonicalCapture(nativePcm, configuredSampleRate);
+        const maxSamples = Math.round((MAX_CAPTURE_MS / 1_000) * canonical.sampleRate);
+        const bounded =
+          canonical.samples.length > maxSamples
+            ? canonical.samples.slice(canonical.samples.length - maxSamples)
+            : canonical.samples;
+        const pcm = normalizeCaptureRMS(bounded);
+        const durationMs = (pcm.length / canonical.sampleRate) * 1_000;
+
+        return {
+          pcm,
+          sampleRate: canonical.sampleRate,
+          nativeSampleRate: configuredSampleRate,
+          durationMs,
+          startedAt: captureEndedAt - durationMs,
+        };
+      } finally {
+        // Drop refs so the chunk array is GC-eligible immediately.
+        chunks.length = 0;
+      }
+    })();
+
+    return terminalPromise;
   };
 
   return {
     stop: async () => {
-      teardown();
-      const durationMs = Date.now() - startedAt;
-      // Single allocation + flatten + Int16→Float32 normalise.
-      const pcm = new Float32Array(totalSamples);
-      let offset = 0;
-      for (const chunk of chunks) {
-        for (let i = 0; i < chunk.length; i++) {
-          pcm[offset + i] = chunk[i]! / 32768;
-        }
-        offset += chunk.length;
-      }
-      // Drop refs so the chunk array is GC-eligible immediately.
-      chunks.length = 0;
-      return { pcm, sampleRate: TARGET_AUDIO_SAMPLE_RATE, durationMs, startedAt };
+      const capture = await finish(true);
+      if (!capture) throw new Error("Audio recording was cancelled.");
+      return capture;
     },
     cancel: async () => {
-      teardown();
-      chunks.length = 0;
+      await finish(false);
     },
   };
 };
