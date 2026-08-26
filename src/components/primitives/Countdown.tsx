@@ -1,16 +1,4 @@
-// Live-tick countdown text for retry-bucket failure screens.
-//
-// Decrements once per second from `seconds` toward 0; fires `onExpire` when
-// it reaches 0 so the parent can flip CTA copy ("OK" → "Try again") and
-// re-enable navigation. The interval is cleared on unmount and on prop
-// change so the component is safe in both the foreground-mounted screen
-// case and the rapid back-nav case.
-//
-// Pure render output: text only — no icons, no layout. Caller wraps it in
-// whatever Text variant matches the surrounding copy (mirrors the existing
-// `formatRetryWindow` static text the failure screen used pre-Phase 5).
-
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Text } from "@/components/primitives/Text";
 
@@ -31,32 +19,31 @@ const formatRemaining = (s: number): string => {
   return `${s} second${s === 1 ? "" : "s"}`;
 };
 
-export function Countdown({ seconds, onExpire }: CountdownProps): JSX.Element {
+export function Countdown({ seconds, onExpire }: CountdownProps) {
   const initial = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
   const [remaining, setRemaining] = useState(initial);
+  const onExpireRef = useRef(onExpire);
+
+  useEffect(() => {
+    onExpireRef.current = onExpire;
+  }, [onExpire]);
 
   useEffect(() => {
     setRemaining(initial);
     if (initial <= 0) {
-      onExpire?.();
+      onExpireRef.current?.();
       return;
     }
+
+    let next = initial;
     const id = setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(id);
-          onExpire?.();
-          return 0;
-        }
-        return prev - 1;
-      });
+      next = Math.max(0, next - 1);
+      setRemaining(next);
+      if (next !== 0) return;
+      clearInterval(id);
+      onExpireRef.current?.();
     }, 1000);
     return () => clearInterval(id);
-    // `onExpire` intentionally excluded from deps — capturing a stable handler
-    // would require the caller to memoise it; firing on every parent re-render
-    // would reset the timer mid-tick. The hook closes over the handler at
-    // mount + each `initial` change, which is the right cadence.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initial]);
 
   return <Text variant="body">{formatRemaining(remaining)}</Text>;

@@ -397,19 +397,16 @@ interface AppStateContextValue extends AppState {
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
+const RESOLVED_VOID_PROMISE: Promise<void> = Promise.resolve();
 
 export const AppStateProvider = ({ children }: { children: React.ReactNode }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
 
-  // Latest-state ref. Refreshed synchronously on every render so callbacks
-  // can read connection.address / connected at call time without subscribing
-  // to those fields in their useCallback deps. The alternative (closing
-  // over state.connection.*) would create a new hydrateIdentity reference
-  // on every reducer dispatch, which in turn would re-fire any useEffect /
-  // useFocusEffect with hydrateIdentity in its deps — a tight loop given
-  // that hydrateIdentity itself dispatches.
+  // Stable callbacks read the last committed state without subscribing to it.
   const stateRef = useRef(state);
-  stateRef.current = state;
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // Single in-flight hydrate guard. Connect → dashboard focus and verify
   // success → dashboard focus both fire hydrateIdentity within a few
@@ -417,7 +414,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   // callers receive the same promise and observe a single dispatch.
   const inflightHydrateRef = useRef<Promise<boolean> | null>(null);
   const connectionRevisionRef = useRef(0);
-  const walletStorageTailRef = useRef<Promise<void>>(Promise.resolve());
+  const walletStorageTailRef = useRef<Promise<void>>(RESOLVED_VOID_PROMISE);
 
   const enqueueWalletStorage = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
     const result = walletStorageTailRef.current.then(operation, operation);
