@@ -45,7 +45,7 @@ The network request implementation lives in `src/services/executor.ts`. Sensor r
 
 ## Stack
 
-- Expo SDK 52 and React Native 0.76.5
+- Expo SDK 52 and React Native 0.76.9
 - Expo Router and TypeScript strict mode
 - `@solana-mobile/mobile-wallet-adapter-protocol-web3js` `^2.2.9`
 - `expo-sensors` for accelerometer and gyroscope input
