@@ -96,4 +96,14 @@ describe("projection 2 validation authorization", () => {
     );
     expect(ed25519.verify(signature, tampered, publicKey)).toBe(false);
   });
+
+  test("binds authorization to the transmitted PCM rate", () => {
+    const canonicalRate = goldenRequest();
+    const alternateRate = goldenRequest();
+    alternateRate.audio_sample_rate_hz = 48_000;
+
+    expect(buildValidationRequestDigest(alternateRate)).not.toEqual(
+      buildValidationRequestDigest(canonicalRate),
+    );
+  });
 });

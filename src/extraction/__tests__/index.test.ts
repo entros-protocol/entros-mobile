@@ -4,6 +4,44 @@ import { fuseRawFeatures } from "../statistics";
 import type { SensorData } from "@/sensor/types";
 
 describe("mobile modality selection", () => {
+  it("does not use the native readback rate for canonical PCM extraction", async () => {
+    const startedAt = 500;
+    const pcm = Float32Array.from({ length: 16_384 }, (_, index) =>
+      Math.sin((2 * Math.PI * 220 * index) / 48_000),
+    );
+    const touchSamples = Array.from({ length: 24 }, (_, index) => ({
+      t: index * 20,
+      x: index / 24,
+      y: 0.5,
+      pressure: 0.5,
+    }));
+    const capture: SensorData = {
+      audio: {
+        pcm,
+        sampleRate: 16_000,
+        nativeSampleRate: 16_000,
+        durationMs: (pcm.length / 16_000) * 1_000,
+        startedAt,
+      },
+      motion: { samples: [], sampleRate: 0, durationMs: 0, startedAt },
+      touch: { samples: touchSamples, durationMs: 460 },
+    };
+    const alternateNativeRateCapture: SensorData = {
+      ...capture,
+      audio: {
+        ...capture.audio,
+        nativeSampleRate: 48_000,
+      },
+    };
+
+    const defaultNativeRateFeatures = await extractFeatures(capture, 2);
+    const alternateNativeRateFeatures = await extractFeatures(alternateNativeRateCapture, 2);
+
+    expect(alternateNativeRateFeatures.raw.slice(0, 170)).toEqual(
+      defaultNativeRateFeatures.raw.slice(0, 170),
+    );
+  });
+
   it("uses accelerometer features when touch is present too", async () => {
     const startedAt = 1_000;
     const motionSamples = Array.from({ length: 24 }, (_, index) => ({
@@ -19,6 +57,7 @@ describe("mobile modality selection", () => {
       audio: {
         pcm: new Float32Array(500),
         sampleRate: 16_000,
+        nativeSampleRate: 16_000,
         durationMs: 31.25,
         startedAt,
       },
@@ -71,7 +110,13 @@ describe("mobile modality selection", () => {
       pressure: 0.5,
     }));
     const capture: SensorData = {
-      audio: { pcm: new Float32Array(500), sampleRate: 16_000, durationMs: 31.25, startedAt },
+      audio: {
+        pcm: new Float32Array(500),
+        sampleRate: 16_000,
+        nativeSampleRate: 16_000,
+        durationMs: 31.25,
+        startedAt,
+      },
       motion: { samples: motionSamples, sampleRate: 50, durationMs: 460, startedAt },
       touch: {
         samples: compatibilitySamples.filter((_, index) => index % 2 === 0),
