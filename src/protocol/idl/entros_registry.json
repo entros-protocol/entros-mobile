@@ -4,7 +4,7 @@
     "name": "entros_registry",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Protocol registry, trust scoring, and validator management for Entros Protocol"
+    "description": "Protocol configuration, Trust Score preview, treasury, and validator registration scaffolding for Entros"
   },
   "instructions": [
     {
@@ -151,6 +151,10 @@
         {
           "name": "verification_fee",
           "type": "u64"
+        },
+        {
+          "name": "validator_pubkey",
+          "type": "pubkey"
         }
       ]
     },
@@ -331,12 +335,78 @@
       ]
     },
     {
+      "name": "set_projection_versions",
+      "docs": [
+        "Set the active projection version and the oldest version accepted by",
+        "normal verification updates. Admin-only."
+      ],
+      "discriminator": [
+        94,
+        72,
+        141,
+        248,
+        223,
+        0,
+        44,
+        228
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "current_projection_version",
+          "type": "u16"
+        },
+        {
+          "name": "minimum_supported_projection_version",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "set_validator_pubkey",
       "docs": [
-        "Set the validator signing pubkey used for mint receipt binding",
-        "(master-list #146 Phase 3). Admin-only. Resizes the account from",
+        "Set the validator signing pubkey used for receipt binding.",
+        "Admin-only. Resizes the account from",
         "any legacy layout (69 bytes pre-migration_fee, 77 bytes",
-        "pre-validator_pubkey) up to the current 109-byte layout in a",
+        "pre-validator_pubkey) up to the current 113-byte layout in a",
         "single call. Subsequent rotation calls realloc is a no-op.",
         "",
         "Uses raw-byte access (mirrors `migrate_admin`) rather than",
@@ -345,9 +415,9 @@
         "account would fail deserialization with `AccountDidNotDeserialize`",
         "before the resize could fix it.",
         "",
-        "Zero pubkey is rejected — entros-anchor treats a zero pubkey as",
-        "\"receipts not yet configured\" and skips the on-chain check, so",
-        "writing zero would silently disable the binding rather than rotate."
+        "Reject a zero pubkey because entros-anchor fails closed on it",
+        "(rejects the mint), so writing zero would brick minting rather than",
+        "rotate the binding."
       ],
       "discriminator": [
         158,
@@ -687,6 +757,19 @@
       ]
     },
     {
+      "name": "ProjectionVersionsSet",
+      "discriminator": [
+        150,
+        48,
+        246,
+        179,
+        164,
+        140,
+        230,
+        232
+      ]
+    },
+    {
       "name": "ProtocolConfigUpdated",
       "discriminator": [
         20,
@@ -815,6 +898,21 @@
       "code": 6009,
       "name": "InvalidValidatorPubkey",
       "msg": "Validator pubkey must be non-zero (zero pubkey would silently disable receipt binding)"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidProjectionVersionRange",
+      "msg": "Minimum supported projection version exceeds the current version"
+    },
+    {
+      "code": 6011,
+      "name": "ProjectionVersionRollback",
+      "msg": "Current projection version cannot decrease"
+    },
+    {
+      "code": 6012,
+      "name": "MinimumProjectionVersionRollback",
+      "msg": "Minimum supported projection version cannot decrease"
     }
   ],
   "types": [
@@ -830,6 +928,26 @@
           {
             "name": "new_admin",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProjectionVersionsSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_projection_version",
+            "type": "u16"
+          },
+          {
+            "name": "minimum_supported_projection_version",
+            "type": "u16"
           }
         ]
       }
@@ -895,14 +1013,29 @@
           {
             "name": "validator_pubkey",
             "docs": [
-              "Public key the off-chain validator service uses to sign mint receipts",
-              "(master-list #146). entros-anchor::mint_anchor verifies an",
+              "Public key the off-chain validator service uses to sign receipts.",
+              "entros-anchor verifies an",
               "Ed25519Program::verify instruction in the same transaction was signed",
-              "against this key. Set via `set_validator_pubkey` (admin-only); zero",
-              "pubkey means \"receipts not yet configured\" — entros-anchor treats",
-              "that as pre-migration and skips the check."
+              "against this key. Set atomically at `initialize_protocol` and rotated",
+              "via `set_validator_pubkey` (admin-only); both reject a zero pubkey. A",
+              "zero pubkey (only possible on a pre-migration account) makes",
+              "entros-anchor reject the mint (fail closed), not skip the check."
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "current_projection_version",
+            "docs": [
+              "Projection version assigned to new and recovered identities."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "minimum_supported_projection_version",
+            "docs": [
+              "Oldest projection version accepted by normal verification updates."
+            ],
+            "type": "u16"
           }
         ]
       }

@@ -20,12 +20,13 @@ import { AnchorProvider, Idl, Program } from "@coral-xyz/anchor";
 import { Connection, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 import { config, getConnection } from "@/config";
-import type { SolanaProof } from "@/proof";
+import type { SolanaProof } from "@/proof/types";
 import type { WalletKind } from "@/state/types";
 import * as mwa from "@/wallet/mwa";
 
 import { makeAnchorAdapter } from "./anchorAdapter";
-import { entrosAnchorIdl, entrosVerifierIdl } from "./idl";
+import entrosAnchorIdl from "./idl/entros_anchor.json";
+import entrosVerifierIdl from "./idl/entros_verifier.json";
 import {
   buildComputeBudgetIx,
   buildCreateChallengeIx,
