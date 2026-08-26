@@ -24,6 +24,9 @@ const config = getDefaultConfig(__dirname);
 
 config.resolver.assetExts.push("zkey");
 
+// Mobile Wallet Adapter exposes its native encoding helper through package exports.
+config.resolver.unstable_enablePackageExports = true;
+
 config.watchFolders = [
   ...(config.watchFolders ?? []),
   path.resolve(__dirname, "MoproReactNativeBindings"),
@@ -34,7 +37,11 @@ const moproNestedNodeModules = new RegExp(
 );
 
 config.resolver.blockList = [
-  ...(Array.isArray(config.resolver.blockList) ? config.resolver.blockList : config.resolver.blockList ? [config.resolver.blockList] : []),
+  ...(Array.isArray(config.resolver.blockList)
+    ? config.resolver.blockList
+    : config.resolver.blockList
+      ? [config.resolver.blockList]
+      : []),
   moproNestedNodeModules,
 ];
 
