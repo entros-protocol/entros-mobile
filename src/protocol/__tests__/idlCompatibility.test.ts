@@ -1,4 +1,5 @@
 import { entrosAnchorIdl, entrosRegistryIdl, entrosVerifierIdl } from "../idl";
+import { DEFAULT_MIN_DISTANCE, DEFAULT_THRESHOLD } from "../../proof/constants";
 
 interface NamedInstruction {
   name: string;
@@ -7,6 +8,12 @@ interface NamedInstruction {
 interface NamedType {
   name: string;
   type: { fields?: NamedInstruction[] };
+}
+
+interface IdlConstant {
+  name: string;
+  type: string;
+  value: string;
 }
 
 const instructionNames = (idl: unknown): string[] =>
@@ -30,5 +37,26 @@ describe("bundled protocol IDLs", () => {
         "minimum_supported_projection_version",
       ]),
     );
+  });
+
+  test("keeps mobile defaults equal to the verifier ceiling and floor", () => {
+    const constants = new Map(
+      (
+        entrosVerifierIdl as unknown as {
+          constants?: IdlConstant[];
+        }
+      ).constants?.map((entry) => [entry.name, entry]),
+    );
+    const readU16 = (name: string): number => {
+      const entry = constants.get(name);
+      expect(entry).toBeDefined();
+      expect(entry?.type).toBe("u16");
+      const value = Number(entry?.value);
+      expect(Number.isSafeInteger(value)).toBe(true);
+      return value;
+    };
+
+    expect(DEFAULT_THRESHOLD).toBe(readU16("MAX_THRESHOLD"));
+    expect(DEFAULT_MIN_DISTANCE).toBe(readU16("MIN_DISTANCE_FLOOR"));
   });
 });
