@@ -12,8 +12,8 @@
 // is the single-failure-UX path (Alert + stay on /verify/intro), so it
 // throws.
 //
-// Timeouts: 5 s for /challenge and 45 s for /validate-features. The second
-// timeout exceeds the executor's validator request ceiling and response pad.
+// The challenge GET has a fixed timeout. Validation uses upload progress and
+// the server challenge deadline.
 //
 // PRIVACY: see src/sensor/types.ts for the audio b64 contract. This module
 // only forwards what the caller assembled; it never logs values or retains
@@ -22,29 +22,22 @@
 import { config } from "@/config";
 import { validateLissajousParams, type LissajousParams } from "@/challenge/lissajous";
 import type { SignedReceiptDto } from "@/protocol/receipt";
-import type { CurveTraceOutline } from "@/sensor/types";
 
 import { reasonDisposition, type VerificationReason } from "./reasons";
-import type {
-  ProjectionCompatibilityEvidence,
-  ValidationDigestRequest,
-  WalletAuthorization,
-} from "./validationAuthorization";
+import {
+  postValidationJson,
+  ValidationTransportError,
+  type ValidationJsonResponse,
+  type ValidationUploadProgress,
+} from "./validationJsonTransport";
+import {
+  buildValidateFeaturesRequestBody,
+  type ValidateFeaturesRequestBody,
+  type ValidateInput,
+} from "./validationRequest";
 
 const CHALLENGE_TIMEOUT_MS = 5_000;
 const MAX_CHALLENGE_LIFETIME_SEC = 300;
-// Must exceed the executor's own ceiling, not sit inside it. The executor
-// waits up to VALIDATOR_REQUEST_TIMEOUT (20s) on the validation service and
-// pads every timed response to HANDLER_MIN_DURATION (4s), so a legitimate
-// two-pass validation can legitimately take past 24s.
-//
-// Aborting earlier does not cancel any of that. The executor has already
-// recorded the wallet attempt and deducted quota by the time it calls the
-// validator, and the refund only runs if the handler completes. A client that
-// walks away at 15s therefore burns an attempt with no refund, and five of
-// those lock the wallet out for an hour. The previous 15s was safe only while
-// the executor's own ceiling was 8s.
-const VALIDATE_TIMEOUT_MS = 45_000;
 
 export interface ChallengeResponse {
   /** 32-byte server-issued nonce. Bound to the wallet in the executor's
@@ -86,9 +79,7 @@ export interface ChallengeResponse {
  *    so `hard-reject` keeps meaning what its line above says.
  *  - `quota-exhausted`: integrator API key out of quota (402)
  *  - `unauthorized`: API key missing/wrong (401) — config bug, surfaces generic
- *  - `timeout`: the request outlived VALIDATE_TIMEOUT_MS and we aborted it.
- *    Separate from `service-down` because the executor may be healthy and the
- *    upload merely slow, which makes "can't reach the service" a lie.
+ *  - `timeout`: upload progress stalled or the challenge deadline elapsed.
  *  - `service-down`: 5xx, or a transport failure that never became a response
  *  - `unknown`: anything else; logged status for triage */
 export type ValidateOutcome =
@@ -110,54 +101,14 @@ export type ValidateOutcome =
   | { kind: "service-down"; message: string }
   | { kind: "unknown"; status: number; message: string };
 
-export interface ValidateInput {
-  features: number[];
-  projectionVersion: number;
-  walletId: string;
-  f0Contour?: number[];
-  accelMagnitude?: number[];
-  audioSamplesB64?: string;
-  audioSampleRateHz?: number;
-  /** Lowercase 64-char hex of the 32-byte Poseidon commitment. When present,
-   *  the validator signs a (wallet, commitment, validated_at) receipt and
-   *  returns it on the `ok` outcome for first-verify Ed25519 binding. */
-  commitmentNewHex?: string;
-  receiptPurpose?: "mint" | "rebaseline" | "reset";
-  compatibilityEvidence?: ProjectionCompatibilityEvidence;
-  walletAuthorization?: WalletAuthorization;
-  curveTrace?: CurveTraceOutline;
+export interface ValidateFeaturesRequestOptions {
+  deadlineAtMs?: number;
+  signal?: AbortSignal;
+  onUploadProgress?: (progress: ValidationUploadProgress) => void;
 }
 
-export interface ValidateFeaturesRequestBody extends ValidationDigestRequest {
-  wallet_id: string;
-  projection_version: number;
-  wallet_authorization?: WalletAuthorization;
-  commitment_new_hex?: string;
-  request_receipt: boolean;
-  receipt_purpose?: "mint" | "rebaseline" | "reset";
-  curve_trace?: CurveTraceOutline;
-}
-
-export function buildValidateFeaturesRequestBody(
-  input: ValidateInput,
-): ValidateFeaturesRequestBody {
-  return {
-    features: input.features,
-    projection_version: input.projectionVersion,
-    wallet_id: input.walletId,
-    compatibility_evidence: input.compatibilityEvidence,
-    wallet_authorization: input.walletAuthorization,
-    f0_contour: input.f0Contour,
-    accel_magnitude: input.accelMagnitude,
-    audio_samples_b64: input.audioSamplesB64,
-    audio_sample_rate_hz: input.audioSampleRateHz,
-    commitment_new_hex: input.commitmentNewHex,
-    request_receipt: input.receiptPurpose !== undefined,
-    receipt_purpose: input.receiptPurpose,
-    baseline_reset: input.receiptPurpose === "reset",
-    curve_trace: input.curveTrace,
-  };
-}
+export { buildValidateFeaturesRequestBody } from "./validationRequest";
+export type { ValidateFeaturesRequestBody, ValidateInput } from "./validationRequest";
 
 /** Thrown when EXPO_PUBLIC_RELAYER_URL is not set. The intro screen
  *  surfaces this as a friendly Alert; reaching this in production is a
@@ -268,13 +219,17 @@ interface ValidateBody {
  *  `service-down` so the contract holds even when the executor URL is
  *  missing (the relayer-down bucket surfaces the right "try again later"
  *  UX without leaking config detail to the user). */
-export async function validateFeatures(input: ValidateInput): Promise<ValidateOutcome> {
-  return validateFeaturesRequest(buildValidateFeaturesRequestBody(input));
+export async function validateFeatures(
+  input: ValidateInput,
+  options?: ValidateFeaturesRequestOptions,
+): Promise<ValidateOutcome> {
+  return validateFeaturesRequest(buildValidateFeaturesRequestBody(input), options);
 }
 
 /** Send an already-built request so authorization signs the exact verdict inputs on the wire. */
 export async function validateFeaturesRequest(
   requestBody: ValidateFeaturesRequestBody,
+  options: ValidateFeaturesRequestOptions = {},
 ): Promise<ValidateOutcome> {
   let relayer: RelayerConfig;
   try {
@@ -289,39 +244,33 @@ export async function validateFeaturesRequest(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["X-API-Key"] = apiKey;
 
-  const body = JSON.stringify(requestBody);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), VALIDATE_TIMEOUT_MS);
-  let response: Response;
+  let response: ValidationJsonResponse;
   try {
-    response = await fetch(url.toString(), {
-      method: "POST",
+    response = await postValidationJson({
+      url: url.toString(),
       headers,
-      body,
-      signal: controller.signal,
+      body: JSON.stringify(requestBody),
+      deadlineAtMs: options.deadlineAtMs,
+      signal: options.signal,
+      onUploadProgress: options.onUploadProgress,
     });
   } catch (err) {
-    // The only thing that aborts this request is our own timer, so an
-    // AbortError means the upload outran VALIDATE_TIMEOUT_MS. Folding it into
-    // `service-down` told the user the executor was unreachable when it may
-    // have been healthy the whole time and the connection merely slow.
-    if (err instanceof Error && err.name === "AbortError") {
-      return { kind: "timeout" };
+    if (err instanceof ValidationTransportError) {
+      if (err.kind === "stalled" || err.kind === "deadline") return { kind: "timeout" };
+      return { kind: "service-down", message: err.message };
     }
     const message = err instanceof Error ? err.message : String(err);
     return { kind: "service-down", message };
-  } finally {
-    clearTimeout(timer);
   }
 
-  // Parse once. Executor's IntoResponse always emits JSON for both success and
-  // error paths; a body parse failure means the response wasn't from the
-  // executor at all (proxy / gateway error page). Default to {} so the status
-  // path below still gets to choose the right kind.
-  const parsed: ValidateBody = await response.json().catch(() => ({}) as ValidateBody);
+  let parsed: ValidateBody = {};
+  try {
+    parsed = JSON.parse(response.body) as ValidateBody;
+  } catch {
+    // Status mapping remains authoritative when a gateway returns non-JSON.
+  }
 
-  if (response.ok && parsed.valid === true) {
+  if (response.status >= 200 && response.status < 300 && parsed.valid === true) {
     return {
       kind: "ok",
       remainingQuota: typeof parsed.remaining_quota === "number" ? parsed.remaining_quota : null,

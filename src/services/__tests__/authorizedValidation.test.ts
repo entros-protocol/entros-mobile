@@ -4,7 +4,11 @@ import { PublicKey } from "@solana/web3.js";
 import type { WalletKind } from "@/state/types";
 import type { AuthTokenRotationHandler } from "@/wallet/mwa";
 
-import type { ValidateFeaturesRequestBody, ValidateOutcome } from "../executor";
+import type {
+  ValidateFeaturesRequestBody,
+  ValidateFeaturesRequestOptions,
+  ValidateOutcome,
+} from "../executor";
 import { authorizeAndSendValidation } from "../authorizedValidation";
 import {
   buildValidationAuthorizationMessage,
@@ -50,6 +54,7 @@ function requestBody(): ValidateFeaturesRequestBody {
 describe("authorized projection 2 validation", () => {
   test("signs the exact serialized verdict inputs before transport", async () => {
     const body = requestBody();
+    const controller = new AbortController();
     const events: string[] = [];
     let wireBody = "";
     const signMessage = jest.fn(
@@ -66,11 +71,13 @@ describe("authorized projection 2 validation", () => {
         return { signature: ed25519.sign(message, privateKey), authToken: "rotated-token" };
       },
     );
-    const sendValidation = jest.fn(async (request: ValidateFeaturesRequestBody) => {
-      events.push("sent");
-      wireBody = JSON.stringify(request);
-      return okOutcome;
-    });
+    const sendValidation = jest.fn(
+      async (request: ValidateFeaturesRequestBody, _options: ValidateFeaturesRequestOptions) => {
+        events.push("sent");
+        wireBody = JSON.stringify(request);
+        return okOutcome;
+      },
+    );
 
     await expect(
       authorizeAndSendValidation({
@@ -85,6 +92,7 @@ describe("authorized projection 2 validation", () => {
           events.push("persisted");
         },
         isCancelled: () => false,
+        signal: controller.signal,
         now: () => 1_000,
         signMessage,
         sendValidation,
@@ -92,6 +100,10 @@ describe("authorized projection 2 validation", () => {
     ).resolves.toEqual({ kind: "sent", outcome: okOutcome, authToken: "rotated-token" });
 
     expect(events).toEqual(["persisted", "signed", "sent"]);
+    expect(sendValidation.mock.calls[0]?.[1]).toEqual({
+      deadlineAtMs: 10_000,
+      signal: controller.signal,
+    });
     const transmitted = JSON.parse(wireBody) as ValidateFeaturesRequestBody;
     const authorization = transmitted.wallet_authorization;
     expect(authorization?.nonce).toEqual(Array.from(nonce));

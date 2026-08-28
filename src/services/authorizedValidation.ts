@@ -3,6 +3,7 @@ import * as mwa from "@/wallet/mwa";
 
 import {
   type ValidateFeaturesRequestBody,
+  type ValidateFeaturesRequestOptions,
   type ValidateOutcome,
   validateFeaturesRequest,
 } from "./executor";
@@ -15,7 +16,10 @@ import {
 const SIGNING_RESERVE_MS = 1_000;
 
 type SignMessage = typeof mwa.signMessage;
-type SendValidation = (request: ValidateFeaturesRequestBody) => Promise<ValidateOutcome>;
+type SendValidation = (
+  request: ValidateFeaturesRequestBody,
+  options: ValidateFeaturesRequestOptions,
+) => Promise<ValidateOutcome>;
 
 export type AuthorizedValidationResult =
   | { kind: "sent"; outcome: ValidateOutcome; authToken: string }
@@ -31,6 +35,7 @@ interface AuthorizedValidationArgs {
   authToken: string;
   onAuthTokenRotated: mwa.AuthTokenRotationHandler;
   isCancelled: () => boolean;
+  signal?: AbortSignal;
   now?: () => number;
   signMessage?: SignMessage;
   sendValidation?: SendValidation;
@@ -45,6 +50,7 @@ export async function authorizeAndSendValidation({
   authToken,
   onAuthTokenRotated,
   isCancelled,
+  signal,
   now = () => performance.now(),
   signMessage = mwa.signMessage,
   sendValidation = validateFeaturesRequest,
@@ -82,7 +88,7 @@ export async function authorizeAndSendValidation({
 
   return {
     kind: "sent",
-    outcome: await sendValidation(requestBody),
+    outcome: await sendValidation(requestBody, { deadlineAtMs: expiresAtMs, signal }),
     authToken: authorization.authToken,
   };
 }

@@ -17,6 +17,11 @@ import {
   validateFeaturesRequest,
   type ValidateOutcome,
 } from "../executor";
+import {
+  postValidationJson,
+  ValidationTransportError,
+  type ValidationTransportFailureKind,
+} from "../validationJsonTransport";
 
 // Babel hoists jest.mock above the import, so the mock is already in force by
 // the time executor.ts reads `config`. It sits here rather than at the top of
@@ -24,12 +29,18 @@ import {
 jest.mock("@/config", () => ({
   config: { relayerUrl: "https://executor.test", relayerApiKey: null },
 }));
+jest.mock("../validationJsonTransport", () => {
+  const actual = jest.requireActual("../validationJsonTransport");
+  return { ...actual, postValidationJson: jest.fn() };
+});
 
 const fetchMock = jest.fn();
+const postValidationJsonMock = jest.mocked(postValidationJson);
 global.fetch = fetchMock as unknown as typeof fetch;
 
 beforeEach(() => {
   fetchMock.mockReset();
+  postValidationJsonMock.mockReset();
 });
 
 afterEach(() => {
@@ -43,15 +54,11 @@ const respondWith = (status: number, body: Record<string, unknown> = {}) => {
     status,
     json: async () => body,
   });
+  postValidationJsonMock.mockResolvedValueOnce({ status, body: JSON.stringify(body) });
 };
 
-/** Stub the next fetch with a rejection, matched by `name` the way the runtime
- *  surfaces one: AbortController.abort() throws an "AbortError", a dead host
- *  throws a plain TypeError. */
-const rejectWith = (name: string, message: string) => {
-  const err = new Error(message);
-  err.name = name;
-  fetchMock.mockRejectedValueOnce(err);
+const rejectWith = (kind: ValidationTransportFailureKind, message: string) => {
+  postValidationJsonMock.mockRejectedValueOnce(new ValidationTransportError(kind, message));
 };
 
 const run = (): Promise<ValidateOutcome> =>
@@ -147,7 +154,7 @@ describe("projection 2 request DTO", () => {
 
     respondWith(200, { valid: true });
     await validateFeaturesRequest(request);
-    const sent = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    const sent = JSON.parse(postValidationJsonMock.mock.calls[0]?.[0].body ?? "");
     expect(sent.curve_trace).toEqual({
       points: [
         [0, 0],
@@ -171,7 +178,7 @@ describe("projection 2 request DTO", () => {
 
     respondWith(200, { valid: true });
     await validateFeaturesRequest(request);
-    const sent = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    const sent = JSON.parse(postValidationJsonMock.mock.calls[0]?.[0].body ?? "");
     expect(sent.audio_sample_rate_hz).toBe(16_000);
   });
 
@@ -201,6 +208,25 @@ describe("projection 2 request DTO", () => {
 
     expect(bodyBytes).toBeGreaterThan(500_000);
     expect(bodyBytes).toBeLessThan(1_048_576);
+  });
+
+  test("forwards the challenge deadline and progress observer outside the JSON body", async () => {
+    const request = buildValidateFeaturesRequestBody({
+      features: [1, 2, 3],
+      projectionVersion: 1,
+      walletId: "11111111111111111111111111111111",
+    });
+    const onUploadProgress = jest.fn();
+    respondWith(200, { valid: true });
+
+    await validateFeaturesRequest(request, { deadlineAtMs: 60_000, onUploadProgress });
+
+    expect(postValidationJsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ deadlineAtMs: 60_000, onUploadProgress }),
+    );
+    const sent = JSON.parse(postValidationJsonMock.mock.calls[0]?.[0].body ?? "");
+    expect(sent).not.toHaveProperty("deadlineAtMs");
+    expect(sent).not.toHaveProperty("onUploadProgress");
   });
 });
 
@@ -288,23 +314,25 @@ describe("validateFeatures: cooldowns are distinct from hard failures", () => {
   });
 });
 
-describe("validateFeatures: an abort is not an unreachable host", () => {
-  it("classifies our own timeout abort as timeout", async () => {
-    rejectWith("AbortError", "Aborted");
+describe("validateFeatures: transport failure mapping", () => {
+  it("maps upload stalls and challenge deadlines to timeout", async () => {
+    rejectWith("stalled", "Validation upload stopped making progress");
+    expect(await run()).toEqual({ kind: "timeout" });
+
+    rejectWith("deadline", "Validation request deadline expired");
     expect(await run()).toEqual({ kind: "timeout" });
   });
 
-  it("classifies a transport failure as service-down", async () => {
-    rejectWith("TypeError", "Network request failed");
-    expect(await run()).toEqual({ kind: "service-down", message: "Network request failed" });
-  });
-
-  it("keeps the two distinguishable", async () => {
-    rejectWith("AbortError", "Aborted");
+  it("keeps caller aborts and network failures outside timeout", async () => {
+    rejectWith("aborted", "Validation request was aborted");
     const aborted = await run();
-    rejectWith("TypeError", "Network request failed");
-    const unreachable = await run();
-    expect(aborted.kind).not.toBe(unreachable.kind);
+    rejectWith("network", "Network request failed");
+    const failed = await run();
+    expect(aborted).toEqual({
+      kind: "service-down",
+      message: "Validation request was aborted",
+    });
+    expect(failed).toEqual({ kind: "service-down", message: "Network request failed" });
   });
 });
 
@@ -313,8 +341,8 @@ describe("validateFeatures: remaining status mapping", () => {
     respondWith(200, { valid: true });
     await run();
 
-    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(request.body))).toMatchObject({ baseline_reset: false });
+    const body = postValidationJsonMock.mock.calls[0]?.[0].body ?? "";
+    expect(JSON.parse(body)).toMatchObject({ baseline_reset: false });
   });
 
   it("sends the projection version and reset receipt intent at the top level", async () => {
@@ -326,8 +354,8 @@ describe("validateFeatures: remaining status mapping", () => {
       receiptPurpose: "reset",
     });
 
-    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(request.body))).toMatchObject({
+    const body = postValidationJsonMock.mock.calls[0]?.[0].body ?? "";
+    expect(JSON.parse(body)).toMatchObject({
       projection_version: 1,
       request_receipt: true,
       receipt_purpose: "reset",
@@ -378,6 +406,14 @@ describe("validateFeatures: remaining status mapping", () => {
 
     respondWith(503, {});
     expect(await run()).toEqual({ kind: "service-down", message: "Executor returned HTTP 503." });
+  });
+
+  it("keeps status mapping when a gateway returns non-JSON", async () => {
+    postValidationJsonMock.mockResolvedValueOnce({ status: 503, body: "<html>unavailable</html>" });
+    expect(await run()).toEqual({
+      kind: "service-down",
+      message: "Executor returned HTTP 503.",
+    });
   });
 
   it("leaves anything else as unknown with the status kept for triage", async () => {

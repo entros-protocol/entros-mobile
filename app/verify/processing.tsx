@@ -120,6 +120,7 @@ export default function Processing() {
 
   useEffect(() => {
     let cancelled = false;
+    const validationController = new AbortController();
 
     // Snapshot wallet credentials at mount-time. /verify/intro already
     // gates on this, but a parallel disconnect (wallet menu) would
@@ -411,7 +412,6 @@ export default function Processing() {
               .join("");
 
             // Advance before the request so the UI shows the validation state.
-            // The client waits up to the 45-second executor timeout.
             // The validator binds its receipt to commitment_new_hex.
             if (cancelled) return { kind: "cancelled" };
             dispatch({ type: "advance" });
@@ -442,6 +442,7 @@ export default function Processing() {
                   authToken: currentAuthToken,
                   onAuthTokenRotated: acceptRotatedAuthToken,
                   isCancelled: () => cancelled,
+                  signal: validationController.signal,
                 });
                 if (authorized.kind === "cancelled") return { kind: "cancelled" };
                 if (authorized.kind === "expired") {
@@ -450,7 +451,10 @@ export default function Processing() {
                 currentAuthToken = authorized.authToken;
                 outcome = authorized.outcome;
               } else {
-                outcome = await validateFeaturesRequest(requestBody);
+                outcome = await validateFeaturesRequest(requestBody, {
+                  deadlineAtMs: challenge.expiresAtMs,
+                  signal: validationController.signal,
+                });
               }
             } finally {
               requestBody.audio_samples_b64 = undefined;
@@ -756,6 +760,7 @@ export default function Processing() {
     void runVerify();
     return () => {
       cancelled = true;
+      validationController.abort();
       // Defence-in-depth: clear all four handoff slots if the screen
       // unmounts mid-flow (back nav, app suspend, etc.). The next verify
       // cycle starts from a known-empty state.
