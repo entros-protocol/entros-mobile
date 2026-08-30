@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { canonicalizeTouchSamples } from "@/sensor/touch";
 import type { TouchSample } from "@/sensor/types";
+import { extractTouchFeatures } from "../kinematic";
 
 import {
   EXPECTED_FINGERPRINT_ARCHITECTURE_FIXTURE_SHA256,
@@ -94,6 +95,32 @@ describe("mobile Node source-path fingerprint architecture measurement", () => {
     expect(canonicalizeTouchSamples(source, 1)).toBe(source);
     expect(canonicalizeTouchSamples(source, 2)).toHaveLength(361);
   });
+
+  test.each([0, 1, 2])(
+    "keeps coordinate jitter when contact channels are constant in projection %i",
+    (projectionVersion) => {
+      const source = sourceTouchSamples().map((sample) => ({
+        ...sample,
+        pressure: 1,
+      }));
+      const canonical = canonicalizeTouchSamples(source, projectionVersion);
+      const adapted = canonical.map((sample) => ({
+        timestamp: sample.t,
+        x: sample.x,
+        y: sample.y,
+        pressure: sample.pressure,
+        width: 1,
+        height: 1,
+      }));
+      const features = extractTouchFeatures(adapted, projectionVersion);
+
+      expect(features[32]).toBeGreaterThan(0);
+      expect(features[33]).toBeGreaterThan(0);
+      expect(features[34]).toBe(0);
+      expect(features[35]).toBe(0);
+      expect(features[37]).toBe(0);
+    },
+  );
 
   test(
     "is byte-value deterministic within one Node runtime",
