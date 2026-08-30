@@ -18,7 +18,10 @@ import { PermissionsAndroid, Platform } from "react-native";
 import { devWarn } from "@/lib/log";
 
 import { AudioCapture, TARGET_AUDIO_SAMPLE_RATE } from "./types";
+import { normalizeCaptureRMS } from "./audioNormalization";
 import { CANONICAL_SAMPLE_RATE, toCanonicalCapture } from "./resample";
+
+export { normalizeCaptureRMS } from "./audioNormalization";
 
 // `react-native-live-audio-stream` ships an .d.ts that marks `wavFile`
 // required (it's optional at runtime — we never write to disk) and types
@@ -84,9 +87,6 @@ const STREAM_OPTIONS = {
 // flat sensor bars for 12 seconds.
 const FIRST_CHUNK_TIMEOUT_MS = 1500;
 const MAX_CAPTURE_MS = 12_000;
-const TARGET_CAPTURE_RMS = 0.05;
-const MIN_RMS_FOR_NORMALIZATION = 1e-4;
-const MAX_NORMALIZATION_GAIN = 50;
 
 let recordingActive = false;
 
@@ -138,24 +138,6 @@ const computeRmsInt16 = (samples: Int16Array): number => {
     sum += s * s;
   }
   return n > 0 ? Math.sqrt(sum / n) : 0;
-};
-
-/** Match Pulse's capture-level normalization before feature extraction. */
-export const normalizeCaptureRMS = (samples: Float32Array): Float32Array => {
-  if (samples.length === 0) return samples;
-  let sumSquares = 0;
-  for (let index = 0; index < samples.length; index++) {
-    sumSquares += samples[index]! * samples[index]!;
-  }
-  const rms = Math.sqrt(sumSquares / samples.length);
-  if (rms < MIN_RMS_FOR_NORMALIZATION) return samples;
-
-  const gain = Math.min(TARGET_CAPTURE_RMS / rms, MAX_NORMALIZATION_GAIN);
-  const normalized = new Float32Array(samples.length);
-  for (let index = 0; index < samples.length; index++) {
-    normalized[index] = Math.max(-1, Math.min(1, samples[index]! * gain));
-  }
-  return normalized;
 };
 
 export const startAudioRecording = async (
