@@ -42,7 +42,7 @@ const MAX_CHALLENGE_LIFETIME_SEC = 300;
 export interface ChallengeResponse {
   /** 32-byte server-issued nonce. Bound to the wallet in the executor's
    *  ChallengeNonceRegistry; consumed by the on-chain create_challenge
-   *  instruction in Stage 7. */
+   *  instruction during on-chain submission. */
   nonce: Uint8Array;
   /** 5-word phrase drawn from the executor's curated dictionary. The
    *  validation service looks this up by wallet+ttl during phrase binding;

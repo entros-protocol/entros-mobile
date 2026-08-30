@@ -1,53 +1,18 @@
-// Verification processing screen.
-//
-// Stages 1–7 are all real:
-// - Stage 1 (sensor capture) runs in /verify/capture and lands in the buffer.
-// - Stage 2 (feature extraction) runs in the `extracting` step here.
-// - Stage 3 (SimHash + Poseidon TBH) runs FIRST inside the stages IIFE,
-//   producing a local 32-byte commitment. Mirrors pulse-sdk pulse.ts: a
-//   legacy `commitment_new_hex` is still sent so older validators keep working,
-//   but new validators derive the commitment themselves from the features and
-//   return it (C2). Stage 4 then swaps the validator's commitment + salt into
-//   the TBH so the client mints exactly what the validator signed.
-// - Stage 4 (server-side validation) POSTs the feature vector + cross-modal
-//   time-series + audio b64 + commitment_new_hex + request_receipt to the
-//   executor's /validate-features endpoint, surfacing soft-rejects with a
-//   friendly retry UX and routing service / rate-limit errors to the
-//   appropriate failure bucket. The signed receipt plus the server-derived
-//   commitment + salt come back on the ok outcome.
-// - Stage 5 (encrypted baseline persistence) encrypts the
-//   {fingerprint, salt, commitment, timestamp} bundle with AES-256-GCM
-//   inside the same IIFE as Stage 3 so the fingerprint never escapes its
-//   tight scope. Ciphertext lives in expo-secure-store under
-//   `entros.v1.baseline.envelope`; the AES key under `entros.v1.baseline.key`.
-// - Stage 6 (Groth16 ZK proof) runs ONLY on re-verify (when a previous
-//   baseline exists AND flow.intent === "verify"). The mopro native
-//   module proves HammingDistance(ft_new, ft_prev) ∈ [3, 96) without
-//   revealing either fingerprint, then we serialise to the 256-byte
-//   groth16-solana format. First-verify and reset cycles skip proof
-//   generation. The proof byte payload is held in `proofBuffer`.
-// - Stage 7 (on-chain submit via MWA) is the terminal step. Branches on
-//   flow.intent + previousBaseline:
-//   - intent="verify" + no prior baseline → Ed25519 receipt +
-//                                            mint_anchor
-//   - intent="verify" + prior baseline → ComputeBudget + create_challenge
-//                                        + verify_proof + update_anchor batch
-//   - intent="reset"                    → ComputeBudget + reset_identity_state
+// Verification processing screen. It extracts features, validates the capture,
+// encrypts the baseline, generates any required proof, and submits through MWA.
+// New validators return the commitment and salt they signed. Older validators
+// can accept the client commitment sent for protocol compatibility.
 //
 // PRIVACY:
 // - Captured SensorData is taken once from the buffer and dropped the moment
-//   extractFeatures() returns + the audio is base64-encoded for /validate-
-//   features. After that the typed arrays are GC-eligible immediately
-//   instead of living until the simulated stages finish.
+//   extractFeatures() returns and the audio is encoded for validation.
+//   The typed arrays are then eligible for garbage collection.
 // - The 256-bit fingerprint AND the previously-stored baseline fingerprint
-//   are held only inside the Stages 3+5+6 IIFE (simhash → generateTBH →
-//   storeBaseline → optional generateSolanaProof). After the IIFE closes,
+//   are held only inside the hashing and proof scope. After the scope closes,
 //   only the AES ciphertext envelope on disk, the commitment + salt in the
-//   handoff buffer, and the 256-byte ZK proof bytes (zero-knowledge by
-//   construction) survive — no plaintext fingerprint anywhere.
-// - Audio b64 is the single sanctioned exception (paper §6.8 +
-//   src/sensor/types.ts:7-8). The validation service runs Whisper-tiny on
-//   it ephemerally and the bytes do not outlive the request.
+//   handoff buffer, and the proof bytes survive. No plaintext fingerprint
+//   leaves this scope.
+// - Phrase audio is transient. The validation service must not persist it.
 // - Logs include only per-modality non-zero counts, the leading 16 hex
 //   chars of the commitment, validate-features outcome category, and proof
 //   generation diagnostics (path/proof byte length). Never feature values,
@@ -246,9 +211,7 @@ export default function Processing() {
       return false;
     };
 
-    // Real extraction → real Stage 3 (SimHash + Poseidon) → real Stage 4
-    // (validate-features) → real Stage 5 (encrypted baseline) → real Stage 6
-    // (Groth16 proof, re-verify only) → real Stage 7 (on-chain submit via MWA).
+    // Process one captured sample through validation and on-chain submission.
     const runVerify = async () => {
       let captured: ReturnType<typeof takeCapture> = takeCapture();
       if (!captured) {
@@ -342,7 +305,7 @@ export default function Processing() {
         const audioSampleRateHz = captured.audio.sampleRate;
         // Drop the closure ref to the raw sensor buffers — the four largest
         // typed arrays (~768KB audio + motion + touch) become GC-eligible
-        // immediately instead of living until the simulated stages finish.
+        // immediately instead of living until submission finishes.
         captured = null;
 
         const audioNZ = result.raw.slice(0, 170).filter((v) => v !== 0).length;
@@ -353,10 +316,9 @@ export default function Processing() {
           `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,
         );
 
-        // Load the previous baseline BEFORE the IIFE so the disk I/O
-        // happens before Stage 3 hashing. Skipped for reset cycles —
+        // Load the previous baseline before hashing. Skip this for reset cycles.
         // submitReset takes only the new commitment, no ft_prev needed.
-        // First verifies also return null and we skip Stage 6 proof
+        // First verifications also return null and skip proof
         // generation; mint_anchor takes no proof either.
         let previousBaseline =
           flowIntent !== "reset" && chainIdentity && !rebaselineRequired
@@ -373,7 +335,7 @@ export default function Processing() {
         }
         if (cancelled) return;
 
-        // Stages 3 + 4 + 5 + 6 IIFE. The 256-bit fingerprint AND the
+        // The 256-bit fingerprint and the
         // previously-stored baseline fingerprint live only inside this
         // scope; they fall out of scope as soon as the IIFE returns. Only
         // the 16-char commitment hex prefix and the validate outcome
@@ -384,7 +346,7 @@ export default function Processing() {
         // commitment must be computed before
         // validation so it can be transmitted as `commitment_new_hex` for
         // the validator to sign.
-        type StagesResult =
+        type PipelineResult =
           | {
               kind: "ok";
               commitmentHexPrefix: string;
@@ -397,9 +359,9 @@ export default function Processing() {
           | { kind: "fail"; outcome: Exclude<ValidateOutcome, { kind: "ok" }> }
           | { kind: "cancelled" }
           | { kind: "drift"; bucket: FailureBucket };
-        let stagesResult: StagesResult;
+        let pipelineResult: PipelineResult;
         try {
-          stagesResult = await (async (): Promise<StagesResult> => {
+          pipelineResult = await (async (): Promise<PipelineResult> => {
             // Compute the SimHash fingerprint and Poseidon commitment.
             const fingerprint = simhash(result.normalized, projectionVersion);
             // Local TBH with a client-random salt is the fallback used when the
@@ -565,20 +527,20 @@ export default function Processing() {
           result.f0Contour.fill(0);
           result.accelMagnitude.fill(0);
         }
-        if (stagesResult.kind === "cancelled" || cancelled) return;
+        if (pipelineResult.kind === "cancelled" || cancelled) return;
 
-        if (stagesResult.kind === "fail") {
-          routeFromValidateOutcome(stagesResult.outcome);
+        if (pipelineResult.kind === "fail") {
+          routeFromValidateOutcome(pipelineResult.outcome);
           return;
         }
 
-        if (stagesResult.kind === "drift") {
+        if (pipelineResult.kind === "drift") {
           // Pre-flight Hamming bounds rejection — drift past the consistency
           // ceiling (capture-drift) or below the replay floor (generic/opaque).
           // Route to a friendly retry surface without proving or signing, and
           // without logging it as a failed verification (it never reached the
           // chain).
-          failOutNoLog(stagesResult.bucket);
+          failOutNoLog(pipelineResult.bucket);
           return;
         }
 
@@ -589,7 +551,7 @@ export default function Processing() {
           firstVerify,
           rebaseline,
           preparedBaseline,
-        } = stagesResult;
+        } = pipelineResult;
         devWarn(`[Entros] /validate-features ok q=${remainingQuota ?? "?"}`);
         // Diagnostic — first 8 bytes (16 hex chars) only. Never the full
         // 32-byte commitment, never the fingerprint bits, never the salt.
@@ -604,13 +566,12 @@ export default function Processing() {
         // testers skip the wallet round-trip. Real path falls through.
         if (handleDevOverride()) return;
 
-        // Stage 7: on-chain submission via MWA. Take the buffered slots
-        // — none survives past this point.
+        // Take the buffered values for on-chain submission. None survives.
         const commitmentBuf = takeCommitment();
         const proofBuf = takeProof();
         const challengeBuf = takeChallenge();
         if (!commitmentBuf) {
-          // Programming error — Stage 3 IIFE always populates this slot.
+          // Hashing always populates this slot.
           failOut("generic", "Internal error: commitment slot was empty.");
           return;
         }

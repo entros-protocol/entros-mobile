@@ -1,5 +1,5 @@
-import type { ReactElement } from "react";
-import React from "react";
+import { act } from "react";
+import { createRoot } from "test-renderer";
 
 import { AppStateProvider, useAppState } from "../AppState";
 
@@ -31,11 +31,6 @@ jest.mock("@/storage/secure", () => ({
   setSecure: (...args: unknown[]) => mockSetSecure(...args),
   deleteSecure: (...args: unknown[]) => mockDeleteSecure(...args),
 }));
-
-const renderer = require("react-test-renderer") as {
-  act: (operation: () => void | Promise<void>) => Promise<void>;
-  create: (element: ReactElement) => { unmount: () => void };
-};
 
 type Context = ReturnType<typeof useAppState>;
 
@@ -84,15 +79,15 @@ describe("wallet-scoped auth token persistence", () => {
       context = useAppState();
       return null;
     };
-    let tree: { unmount: () => void } | undefined;
-    await renderer.act(async () => {
-      tree = renderer.create(
+    const tree = createRoot();
+    await act(async () => {
+      tree.render(
         <AppStateProvider>
           <Consumer />
         </AppStateProvider>,
       );
     });
-    await renderer.act(async () => {
+    await act(async () => {
       await context!.connect("phantom");
     });
 
@@ -104,7 +99,7 @@ describe("wallet-scoped auth token persistence", () => {
       });
     const disconnect = context!.disconnect();
     releaseRotation?.();
-    await renderer.act(async () => {
+    await act(async () => {
       await Promise.all([lateRotation, disconnect]);
       await context!.connect("solflare");
     });
@@ -118,6 +113,6 @@ describe("wallet-scoped auth token persistence", () => {
     });
     expect(stored.get("wallet_address")).toBe(walletB);
     expect(stored.get("wallet_auth_token")).toBe("token-b");
-    tree?.unmount();
+    await act(async () => tree.unmount());
   });
 });

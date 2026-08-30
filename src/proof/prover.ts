@@ -1,4 +1,4 @@
-// Stage 6 prover wrapper. Bridges between our pure-TS proof types
+// Bridges the TypeScript proof types
 // (matching pulse-sdk's contract) and the mopro UniFFI-generated native
 // module that runs the actual arkworks Groth16 prover on-device.
 //

@@ -5,7 +5,7 @@
 // and the stale figure was read back as fact when deciding whether a defect
 // in this file could reach the validator.
 //
-// Cross-platform reproducibility (Stage 3): identical inputs on web and
+// Cross-platform reproducibility requires identical inputs on web and
 // mobile must produce identical raw feature vectors. The adapter sets
 // touch width/height = 1 by default (mobile gesture handler does not
 // expose contact area), so the area block in extractTouchFeatures

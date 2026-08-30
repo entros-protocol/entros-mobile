@@ -6,9 +6,7 @@
  * mel-frequency scale. Two adult humans speaking the same word produce
  * different MFCC trajectories the same way two violins produce different
  * timbres of the same note. The original 44-feature audio block omitted
- * MFCCs entirely — this is the largest single discriminative-power gap
- * the v2 feature pipeline closes (see
- * `docs/master/BLUEPRINT-feature-pipeline-v2.md` §1.1).
+ * MFCCs entirely. This extractor closes that discriminative gap.
  *
  * Output of `extractMfccFeatures` is 72 statistical aggregates over the
  * per-frame MFCC time-series captured during a 12-second session

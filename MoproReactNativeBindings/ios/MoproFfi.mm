@@ -36,14 +36,6 @@ RCT_EXPORT_MODULE()
 // Don't compile this code when we build for the old architecture.
 #ifdef RCT_NEW_ARCH_ENABLED
 
-// Automated testing checks moproffi
-// by comparing the whole line here.
-/*
-- (NSNumber *)multiply:(double)a b:(double)b {
-    NSNumber *result = @(moproffi::multiply(a, b));
-}
-*/
-
 - (NSNumber *)installRustCrate {
     @throw [NSException exceptionWithName:@"UnreachableException"
                         reason:@"This method should never be called."

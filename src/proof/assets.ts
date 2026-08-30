@@ -15,7 +15,7 @@
 // output, no secrets. Bundling + materializing it carries no privacy risk.
 
 import { Asset } from "expo-asset";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 
 export const ZKEY_FILENAME = "entros_hamming_final.zkey";
 

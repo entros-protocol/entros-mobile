@@ -1,5 +1,4 @@
-// Stage 7 high-level submission orchestration. Wraps Anchor instruction
-// builders + MWA's signAndSendTransaction into two coherent flows:
+// Wraps Anchor instruction builders and MWA signing into two flows:
 //
 //   - submitVerify({ commitment, isFirstVerify, proof?, nonce? })
 //       First verify  → mintAnchor (single ix)
@@ -35,11 +34,13 @@ import {
   buildResetIdentityStateIx,
   buildUpdateAnchorIx,
   buildVerifyProofIx,
-  BuildContext,
-  AnchorProgram,
   COMPUTE_UNITS_RESET,
   COMPUTE_UNITS_REBASELINE,
   COMPUTE_UNITS_REVERIFY,
+  type AnchorProgram,
+  type BuildContext,
+  type RuntimeProgram,
+  type VerifierProgram,
 } from "./instructions";
 import { receiptMatchesBinding, requireEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
 
@@ -59,6 +60,19 @@ interface SubmitBase {
   onAuthTokenRotated?: mwa.AuthTokenRotationHandler;
 }
 
+const requireProgramMethods = <MethodName extends string>(
+  program: Program<Idl>,
+  methodNames: readonly MethodName[],
+): RuntimeProgram<MethodName> => {
+  const methods = (program as unknown as { methods: Record<string, unknown> }).methods;
+  for (const methodName of methodNames) {
+    if (typeof methods[methodName] !== "function") {
+      throw new Error(`The bundled IDL does not define ${methodName}.`);
+    }
+  }
+  return program as unknown as RuntimeProgram<MethodName>;
+};
+
 const buildContext = (walletAddress: string): BuildContext => {
   const anchorProgramId = config.programs.entrosAnchor;
   const verifierProgramId = config.programs.entrosVerifier;
@@ -74,12 +88,17 @@ const buildContext = (walletAddress: string): BuildContext => {
     commitment: "confirmed",
   });
 
-  const anchorProgram = new Program(entrosAnchorIdl as Idl, provider) as AnchorProgram;
-  const verifierProgram = new Program(entrosVerifierIdl as Idl, provider) as AnchorProgram;
+  const anchorProgram: AnchorProgram = requireProgramMethods(
+    new Program(entrosAnchorIdl as Idl, provider),
+    ["mintAnchor", "rebaselineAnchor", "resetIdentityState", "updateAnchor"] as const,
+  );
+  const verifierProgram: VerifierProgram = requireProgramMethods(
+    new Program(entrosVerifierIdl as Idl, provider),
+    ["createChallenge", "verifyProof"] as const,
+  );
 
-  // entros_registry exposes only protocol_config + treasury PDAs — derived
+  // entros_registry exposes only protocol_config and treasury PDAs, derived
   // from the program ID alone, no IDL needed for instruction building.
-  // Stage 8 will import the registry IDL for BorshAccountsCoder reads.
   return {
     anchorProgram,
     verifierProgram,
@@ -157,10 +176,7 @@ export async function submitVerify(
     ixs = [...firstReceiptIxs, mintIx];
   } else {
     if (!args.proof || !args.nonce) {
-      throw new Error(
-        "submitVerify: re-verification requires both `proof` and `nonce`. " +
-          "Stage 6's proofBuffer and Stage 4's challengeBuffer must both be populated.",
-      );
+      throw new Error("submitVerify: re-verification requires both `proof` and `nonce`.");
     }
     const [createChallengeIx, verifyProofIx, updateAnchorIx] = await Promise.all([
       buildCreateChallengeIx(ctx, args.nonce),

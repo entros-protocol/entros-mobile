@@ -1,4 +1,4 @@
-// Stage 6 proof shapes. Verbatim port of pulse-sdk/src/proof/types.ts so
+// Proof shapes match pulse-sdk/src/proof/types.ts so
 // the JSON shape mopro emits and the byte layout we serialise for
 // groth16-solana stay aligned with the web SDK's existing contract.
 

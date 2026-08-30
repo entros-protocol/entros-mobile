@@ -3,11 +3,11 @@ import { LayoutChangeEvent, StyleSheet, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   Easing,
-  runOnJS,
   useAnimatedProps,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 import Svg, { Circle, Path } from "react-native-svg";
 
 import { generateLissajousPoints, type LissajousParams } from "@/challenge/lissajous";
@@ -19,6 +19,11 @@ import { SectionLabel } from "../primitives/SectionLabel";
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
+const timestampNow = (monotonic: boolean): number => {
+  "worklet";
+  return monotonic ? performance.now() : Date.now();
+};
 
 export interface NormalizedTouchPoint {
   /** Timestamp in milliseconds since canvas mount. */
@@ -93,20 +98,22 @@ export const LissajousCanvas = ({
   const dashTotal = useMemo(() => traceLength * 6, [traceLength]);
 
   useEffect(() => {
-    traceProgress.value = 0;
+    traceProgress.set(0);
     if (!active || isInteractive) return;
-    traceProgress.value = withTiming(1, {
-      duration: durationMs,
-      easing: Easing.linear,
-    });
+    traceProgress.set(
+      withTiming(1, {
+        duration: durationMs,
+        easing: Easing.linear,
+      }),
+    );
   }, [active, durationMs, traceProgress, isInteractive]);
 
   const tracedPathProps = useAnimatedProps(() => ({
-    strokeDasharray: [dashTotal * traceProgress.value, dashTotal],
+    strokeDasharray: [dashTotal * traceProgress.get(), dashTotal],
   }));
 
   const replayCursorProps = useAnimatedProps(() => {
-    const t = traceProgress.value * Math.PI * 2;
+    const t = traceProgress.get() * Math.PI * 2;
     const x = Math.sin(a * t + delta);
     const y = Math.sin(b * t);
     return {
@@ -124,8 +131,8 @@ export const LissajousCanvas = ({
   const contactStarted = useSharedValue(false);
 
   const liveCursorProps = useAnimatedProps(() => ({
-    cx: liveCursorX.value,
-    cy: liveCursorY.value,
+    cx: liveCursorX.get(),
+    cy: liveCursorY.get(),
   }));
 
   // The gesture callback is a worklet running on the UI thread. It updates
@@ -144,69 +151,76 @@ export const LissajousCanvas = ({
       "worklet";
       const touch = event.allTouches[0];
       if (!touch) return;
-      if (normalizedTouch && (event.allTouches.length !== 1 || contactStarted.value)) {
-        runOnJS(dispatchFailure)("Normalized touch capture requires one continuous contact");
+      if (normalizedTouch && (event.allTouches.length !== 1 || contactStarted.get())) {
+        scheduleOnRN(dispatchFailure, "Normalized touch capture requires one continuous contact");
         return;
       }
-      const now = normalizedTouch ? performance.now() : Date.now();
+      const now = timestampNow(normalizedTouch);
       if (normalizedTouch) {
-        contactStarted.value = true;
-        startedAtMs.value = now;
-        runOnJS(dispatchContactStart)();
+        contactStarted.set(true);
+        startedAtMs.set(now);
+        scheduleOnRN(dispatchContactStart);
       }
       const rawX = touch.x / width;
       const rawY = touch.y / height;
       if (normalizedTouch && (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1)) {
-        runOnJS(dispatchFailure)("Normalized touch coordinates must stay inside the unit surface");
+        scheduleOnRN(
+          dispatchFailure,
+          "Normalized touch coordinates must stay inside the unit surface",
+        );
         return;
       }
       const nx = normalizedTouch ? rawX : Math.max(0, Math.min(1, rawX));
       const ny = normalizedTouch ? rawY : Math.max(0, Math.min(1, rawY));
-      liveCursorX.value = normalizedTouch ? touch.x : cxBase + (nx * 2 - 1) * (width / 2 - 14);
-      liveCursorY.value = normalizedTouch ? touch.y : cyBase + (ny * 2 - 1) * (height / 2 - 14);
-      const tMs = now - startedAtMs.value;
-      lastBridgeAtMs.value = now;
-      runOnJS(dispatchTouch)(tMs, nx, ny);
+      liveCursorX.set(normalizedTouch ? touch.x : cxBase + (nx * 2 - 1) * (width / 2 - 14));
+      liveCursorY.set(normalizedTouch ? touch.y : cyBase + (ny * 2 - 1) * (height / 2 - 14));
+      const tMs = now - startedAtMs.get();
+      lastBridgeAtMs.set(now);
+      scheduleOnRN(dispatchTouch, tMs, nx, ny);
     })
     .onTouchesMove((event) => {
       "worklet";
       const touch = event.allTouches[0];
       if (!touch) return;
       if (normalizedTouch && event.allTouches.length !== 1) {
-        runOnJS(dispatchFailure)("Normalized touch capture requires one continuous contact");
+        scheduleOnRN(dispatchFailure, "Normalized touch capture requires one continuous contact");
         return;
       }
-      const now = normalizedTouch ? performance.now() : Date.now();
-      if (normalizedTouch && now - lastBridgeAtMs.value < 1_000 / 240) return;
+      const now = timestampNow(normalizedTouch);
+      if (normalizedTouch && now - lastBridgeAtMs.get() < 1_000 / 240) return;
       const rawX = touch.x / width;
       const rawY = touch.y / height;
       if (normalizedTouch && (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1)) {
-        runOnJS(dispatchFailure)("Normalized touch coordinates must stay inside the unit surface");
+        scheduleOnRN(
+          dispatchFailure,
+          "Normalized touch coordinates must stay inside the unit surface",
+        );
         return;
       }
       const nx = normalizedTouch ? rawX : Math.max(0, Math.min(1, rawX));
       const ny = normalizedTouch ? rawY : Math.max(0, Math.min(1, rawY));
-      liveCursorX.value = normalizedTouch ? touch.x : cxBase + (nx * 2 - 1) * (width / 2 - 14);
-      liveCursorY.value = normalizedTouch ? touch.y : cyBase + (ny * 2 - 1) * (height / 2 - 14);
-      const tMs = startedAtMs.value > 0 ? now - startedAtMs.value : 0;
-      lastBridgeAtMs.value = now;
-      runOnJS(dispatchTouch)(tMs, nx, ny);
+      liveCursorX.set(normalizedTouch ? touch.x : cxBase + (nx * 2 - 1) * (width / 2 - 14));
+      liveCursorY.set(normalizedTouch ? touch.y : cyBase + (ny * 2 - 1) * (height / 2 - 14));
+      const startedAt = startedAtMs.get();
+      const tMs = startedAt > 0 ? now - startedAt : 0;
+      lastBridgeAtMs.set(now);
+      scheduleOnRN(dispatchTouch, tMs, nx, ny);
     })
     .onTouchesUp((event) => {
       "worklet";
-      if (event.allTouches.length === 0 && contactStarted.value) {
-        runOnJS(dispatchContactEnd)();
+      if (event.allTouches.length === 0 && contactStarted.get()) {
+        scheduleOnRN(dispatchContactEnd);
       }
     })
     .onTouchesCancelled(() => {
       "worklet";
       if (normalizedTouch) {
-        runOnJS(dispatchFailure)("Normalized touch capture was interrupted");
+        scheduleOnRN(dispatchFailure, "Normalized touch capture was interrupted");
       }
     });
 
   const onLayout = (_: LayoutChangeEvent) => {
-    if (!normalizedTouch && startedAtMs.value === 0) startedAtMs.value = Date.now();
+    if (!normalizedTouch && startedAtMs.get() === 0) startedAtMs.set(Date.now());
   };
 
   const Canvas = (

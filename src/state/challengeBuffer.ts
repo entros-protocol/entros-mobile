@@ -3,8 +3,7 @@
 //
 // Mirrors captureBuffer.ts / commitmentBuffer.ts semantics: module-level,
 // never persisted, never serialised. peek leaves the slot intact so capture
-// and the later create_challenge can both see the same nonce; take clears
-// for the eventual single-consumer Stage 7 wiring.
+// and create_challenge can both see the same nonce. take clears the slot.
 //
 // PRIVACY:
 // - The phrase is drawn from the executor's curated neutral-vocabulary

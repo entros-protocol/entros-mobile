@@ -1,4 +1,4 @@
-// Stage 8 — on-chain IdentityState reads.
+// On-chain IdentityState reads.
 //
 // Hand-rolled DataView decoder rather than Anchor's BorshAccountsCoder.
 // The latter is strict about total account size: existing devnet accounts

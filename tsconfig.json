@@ -16,7 +16,7 @@
     "resolveJsonModule": true,
     "module": "esnext",
     "moduleResolution": "bundler",
-    "baseUrl": ".",
+    "types": ["jest", "node"],
     "paths": {
       "@/*": ["./src/*"]
     }

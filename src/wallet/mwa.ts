@@ -16,10 +16,8 @@ import { extractVerifiedMessageSignature } from "./signedMessage";
 // non-data-URL form we tried (`code=-32602, "identity.icon must be a relative
 // URI"`): `/logos/Entros.png`, `logos/Entros.png`, and `https://...` all fire.
 // Inline base64 data URIs over a few KB crash Phantom outright. Without `icon`,
-// the wallet falls back to a default avatar — connect succeeds. Re-introducing
-// a custom icon is Stage 9 polish work; it requires testing each wallet's
-// parser separately and will likely need a tiny inlined data URL once we know
-// the size cap.
+// the wallet uses its default avatar and connection succeeds. A custom icon
+// requires separate parser and size-limit tests for each wallet.
 const APP_IDENTITY = {
   name: "Entros",
   uri: "https://entros.io",

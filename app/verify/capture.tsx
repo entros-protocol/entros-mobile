@@ -70,64 +70,7 @@ export default function VerifyCapture() {
   const mountedRef = useRef(true);
   const completionFiredRef = useRef(false);
 
-  // Empty-buffer guard. Reaching this screen without a fetched challenge
-  // is a routing bug, not a runtime case — redirect back to /verify/intro.
-  useEffect(() => {
-    if (!challenge) {
-      router.replace("/verify/intro");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Countdown loop. Guarded on `challenge` so the redirect above completes
-  // before sensors start spinning up.
-  useEffect(() => {
-    if (!challenge) return;
-    if (phase !== "countdown") return;
-    if (countdown <= 0) {
-      void beginCapture();
-      return;
-    }
-    const id = setTimeout(() => setCountdown((c) => c - 1), COUNTDOWN_MS / 3);
-    return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, countdown]);
-
-  // Capture progress + auto-finish.
-  useEffect(() => {
-    if (phase !== "capturing") return;
-    const tick = () => {
-      const elapsed = startedAtRef.current ? Date.now() - startedAtRef.current : 0;
-      setProgress(Math.min(1, elapsed / CAPTURE_MS));
-    };
-    const interval = setInterval(tick, 50);
-    const finish = setTimeout(() => {
-      void completeCapture();
-    }, CAPTURE_MS);
-    return () => {
-      clearInterval(interval);
-      clearTimeout(finish);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
-
-  // Cleanup on unmount: cancel any in-flight recordings + drop buffered data.
-  // Async cancels fire and forget — acceptable because the recorders' own
-  // teardown is synchronous-enough (one native call) and any leftover memory
-  // is collected once refs are nulled.
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      void audioRef.current?.cancel();
-      void motionRef.current?.cancel();
-      touchRef.current?.cancel();
-      audioRef.current = null;
-      motionRef.current = null;
-      touchRef.current = null;
-    };
-  }, []);
-
-  const beginCapture = async () => {
+  async function beginCapture() {
     try {
       if (challenge && performance.now() >= challenge.expiresAtMs) {
         throw new Error("The server challenge expired before capture started. Please try again.");
@@ -192,9 +135,9 @@ export default function VerifyCapture() {
         params: { bucket: "generic", message },
       });
     }
-  };
+  }
 
-  const completeCapture = async () => {
+  async function completeCapture() {
     if (completionFiredRef.current) return;
     completionFiredRef.current = true;
     try {
@@ -238,7 +181,69 @@ export default function VerifyCapture() {
         params: { bucket: "generic", message },
       });
     }
-  };
+  }
+
+  // Empty-buffer guard. Reaching this screen without a fetched challenge
+  // is a routing bug, not a runtime case — redirect back to /verify/intro.
+  useEffect(() => {
+    if (!challenge) {
+      router.replace("/verify/intro");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Countdown loop. Guarded on `challenge` so the redirect above completes
+  // before sensors start spinning up.
+  useEffect(() => {
+    if (!challenge) return;
+    if (phase !== "countdown") return;
+    const id = setTimeout(
+      () => {
+        if (countdown <= 0) {
+          void beginCapture();
+          return;
+        }
+        setCountdown((c) => c - 1);
+      },
+      countdown <= 0 ? 0 : COUNTDOWN_MS / 3,
+    );
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, countdown]);
+
+  // Capture progress + auto-finish.
+  useEffect(() => {
+    if (phase !== "capturing") return;
+    const tick = () => {
+      const elapsed = startedAtRef.current ? Date.now() - startedAtRef.current : 0;
+      setProgress(Math.min(1, elapsed / CAPTURE_MS));
+    };
+    const interval = setInterval(tick, 50);
+    const finish = setTimeout(() => {
+      void completeCapture();
+    }, CAPTURE_MS);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(finish);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // Cleanup on unmount: cancel any in-flight recordings + drop buffered data.
+  // Async cancels fire and forget — acceptable because the recorders' own
+  // teardown is synchronous-enough (one native call) and any leftover memory
+  // is collected once refs are nulled.
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      void audioRef.current?.cancel();
+      void motionRef.current?.cancel();
+      touchRef.current?.cancel();
+      audioRef.current = null;
+      motionRef.current = null;
+      touchRef.current = null;
+    };
+  }, []);
 
   // Touch points arrive on the JS thread via runOnJS from the gesture worklet.
   const handleTouchPoint = (point: NormalizedTouchPoint) => {

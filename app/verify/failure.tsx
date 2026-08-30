@@ -380,8 +380,8 @@ export default function VerifyFailure() {
       // Set the verify-flow intent so /verify/processing routes the next
       // cycle through reset_identity_state instead of mint_anchor /
       // update_anchor. processing.tsx flips it back to "verify" on
-      // successful reset. We do NOT call resetBaseline() here — Stage 5's
-      // storeBaseline overwrites the local envelope during the reset
+      // successful reset. We do NOT call resetBaseline() here. storeBaseline
+      // overwrites the local envelope during the reset
       // cycle's own IIFE, so pre-wiping would only race that write.
       setFlowIntent("reset");
       router.replace("/verify/intro");

@@ -19,8 +19,12 @@ const formatRemaining = (s: number): string => {
   return `${s} second${s === 1 ? "" : "s"}`;
 };
 
-export function Countdown({ seconds, onExpire }: CountdownProps) {
-  const initial = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+interface CountdownRunProps {
+  initial: number;
+  onExpire?: () => void;
+}
+
+function CountdownRun({ initial, onExpire }: CountdownRunProps) {
   const [remaining, setRemaining] = useState(initial);
   const onExpireRef = useRef(onExpire);
 
@@ -29,7 +33,6 @@ export function Countdown({ seconds, onExpire }: CountdownProps) {
   }, [onExpire]);
 
   useEffect(() => {
-    setRemaining(initial);
     if (initial <= 0) {
       onExpireRef.current?.();
       return;
@@ -47,4 +50,9 @@ export function Countdown({ seconds, onExpire }: CountdownProps) {
   }, [initial]);
 
   return <Text variant="body">{formatRemaining(remaining)}</Text>;
+}
+
+export function Countdown({ seconds, onExpire }: CountdownProps) {
+  const initial = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  return <CountdownRun key={initial} initial={initial} onExpire={onExpire} />;
 }

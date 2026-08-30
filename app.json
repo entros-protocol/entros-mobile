@@ -6,13 +6,7 @@
     "orientation": "portrait",
     "scheme": "entros",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "icon": "./assets/entros.png",
-    "splash": {
-      "image": "./assets/entros.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#000000"
-    },
     "ios": {
       "bundleIdentifier": "io.entros.mobile",
       "supportsTablet": false,
@@ -46,14 +40,26 @@
         "expo-build-properties",
         {
           "android": {
-            "kotlinVersion": "1.9.25",
             "packagingOptions": {
-              "pickFirst": ["**/libc++_shared.so"]
+              "pickFirst": [
+                "**/libc++_shared.so"
+              ]
             }
           }
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/entros.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#000000"
+        }
+      ],
+      "expo-status-bar"
     ],
     "experiments": {
       "typedRoutes": true,

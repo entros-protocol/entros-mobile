@@ -1,10 +1,11 @@
 // Hand-rolled SVG icons. We avoid icon-pack deps for the scaffold so the bundle
 // stays minimal and the visual language stays under our control.
+import type { ColorValue } from "react-native";
 import Svg, { Path, Polyline, Rect, Circle, Line } from "react-native-svg";
 
 interface IconProps {
   size?: number;
-  color?: string;
+  color?: ColorValue;
   strokeWidth?: number;
 }
 

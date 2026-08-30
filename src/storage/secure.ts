@@ -27,10 +27,8 @@ export const SecureKeys = {
   WALLET_ADDRESS: "wallet.address",
   WALLET_LABEL: "wallet.label",
   WALLET_KIND: "wallet.kind",
-  // Stage 5 baseline persistence. Envelope holds {v, iv, ct} JSON of the
-  // AES-256-GCM-encrypted StoredBaseline. The AES key bytes live separately
-  // under their own secure-store entry — both must be present to decrypt.
-  // See src/identity/baseline.ts.
+  // The encrypted baseline and its key use separate secure-store entries.
+  // Both entries must be present to decrypt the baseline.
   BASELINE_ENVELOPE: "baseline.envelope",
   BASELINE_KEY: "baseline.key",
 } as const;

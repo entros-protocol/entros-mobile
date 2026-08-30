@@ -13,11 +13,8 @@
 // When the on-chain programs change, re-copy the JSON files from
 // protocol-core/target/idl/ and bump the entros-mobile minor version.
 
-// Stage 7 ships the two IDLs the on-chain submission path consumes
-// (entros_anchor for mint / update_anchor / reset, entros_verifier for
-// create_challenge / verify_proof). Stage 8 added entros_registry for
-// the on-chain ProtocolConfig PDA read so /verify/intro can render the
-// live verification_fee instead of the hardcoded approximation.
+// The submission path consumes entros_anchor and entros_verifier. The
+// configuration reader consumes entros_registry.
 
 import entrosAnchorIdl from "./entros_anchor.json";
 import entrosRegistryIdl from "./entros_registry.json";

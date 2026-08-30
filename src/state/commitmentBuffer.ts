@@ -1,16 +1,16 @@
 // In-memory handoff slot for the post-Poseidon commitment that flows from
-// /verify/processing to forward stages (validation in Stage 4, encrypted
-// baseline in Stage 5, on-chain mint_anchor in Stage 7).
+// /verify/processing to validation, encrypted baseline persistence, and
+// on-chain submission.
 //
 // Mirrors `captureBuffer.ts` semantics: take-and-clear, never persisted,
 // never serialised.
 //
 // PRIVACY:
-// - The 256-bit fingerprint is NEVER stored here. By Stage 3 contract,
-//   only the post-Poseidon commitment + salt move forward; the fingerprint
+// - The 256-bit fingerprint is NEVER stored here.
+//   Only the post-Poseidon commitment and salt move forward. The fingerprint
 //   reference is dropped immediately after `generateTBH` returns.
 // - The salt is single-use within a session. It becomes long-lived only
-//   when Stage 5 lands and persists the AES-256-GCM-encrypted baseline.
+//   inside the AES-256-GCM-encrypted baseline.
 
 export interface PendingCommitment {
   commitment: bigint;

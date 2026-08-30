@@ -21,16 +21,17 @@ class MoproFfiModule(reactContext: ReactApplicationContext) :
 
   override fun installRustCrate(): Boolean {
     val context = this.reactApplicationContext
+    val runtimePointer = context.javaScriptContextHolder?.get() ?: return false
+    val callInvoker = context.jsCallInvokerHolder ?: return false
     return nativeInstallRustCrate(
-      context.javaScriptContextHolder!!.get(),
-      context.jsCallInvokerHolder!!
+      runtimePointer,
+      callInvoker
     )
   }
 
   override fun cleanupRustCrate(): Boolean {
-    return nativeCleanupRustCrate(
-      this.reactApplicationContext.javaScriptContextHolder!!.get()
-    )
+    val runtimePointer = reactApplicationContext.javaScriptContextHolder?.get() ?: return false
+    return nativeCleanupRustCrate(runtimePointer)
   }
 
   companion object {
