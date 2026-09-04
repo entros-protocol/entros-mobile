@@ -6,7 +6,8 @@ Entros is designed to prove live human control of a returning protocol identity.
 
 ## Current status
 
-The package version is `0.1.0`. The current pipeline uses real sensor capture, private validation, native proving, Mobile Wallet Adapter, and on-chain identity reads.
+The package version is `0.1.0`. The source implements native sensor capture,
+private validation, native proving, Mobile Wallet Adapter, and on-chain identity reads.
 
 The feature extractor produces 308 values:
 
@@ -14,7 +15,7 @@ The feature extractor produces 308 values:
 - 81 motion features
 - 57 touch features
 
-The project still requires representative-device testing, release hardening, and Solana Mobile distribution work.
+The project still requires physical Seeker testing, release hardening, and Solana Mobile distribution work.
 
 ## Verification flow
 
@@ -45,7 +46,7 @@ The network request implementation lives in `src/services/executor.ts`. Sensor r
 
 ## Stack
 
-- Expo SDK 52 and React Native 0.76.9
+- Expo SDK 57 and React Native 0.86.3
 - Expo Router and TypeScript strict mode
 - `@solana-mobile/mobile-wallet-adapter-protocol-web3js` `^2.2.9`
 - `expo-sensors` for accelerometer and gyroscope input
