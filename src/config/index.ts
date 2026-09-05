@@ -1,4 +1,5 @@
 import { Cluster, Connection, PublicKey } from "@solana/web3.js";
+import { parseNativeProofManifest } from "@/proof/request";
 
 const required = (name: string, value: string | undefined): string => {
   if (!value || value.length === 0) {
@@ -39,6 +40,7 @@ export const config = {
   },
   relayerUrl: optional(process.env.EXPO_PUBLIC_RELAYER_URL),
   relayerApiKey: optional(process.env.EXPO_PUBLIC_RELAYER_API_KEY),
+  proofManifest: parseNativeProofManifest(process.env.EXPO_PUBLIC_PROOF_MANIFEST),
 } as const;
 
 let cachedConnection: Connection | null = null;
