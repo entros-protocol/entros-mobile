@@ -96,6 +96,56 @@ describe("canonical proof serialization", () => {
     });
   }
 
+  it("rejects a projective proof before dropping its z coordinate", () => {
+    const input = proof();
+    input.pi_a[2] = "2";
+    expect(() => serializeProof(input, signals, "request-bound-v1")).toThrow();
+  });
+
+  it("preserves the two-coordinate affine representation", () => {
+    const input = proof();
+    input.pi_a = input.pi_a.slice(0, 2);
+    input.pi_b = input.pi_b.slice(0, 2);
+    input.pi_c = input.pi_c.slice(0, 2);
+    expect(Array.from(serializeProof(input, signals, "request-bound-v1").proofBytes)).toEqual(
+      fixture.proofBytes,
+    );
+  });
+
+  it("rejects incompatible metadata and coordinate shapes", () => {
+    const mutations: ((input: RawProof) => void)[] = [
+      (input) => {
+        input.protocol = "plonk";
+      },
+      (input) => {
+        input.curve = "bls12381";
+      },
+      (input) => {
+        input.pi_a.push("1");
+      },
+      (input) => {
+        input.pi_c[2] = "0";
+      },
+      (input) => {
+        input.pi_b[2] = ["0", "0"];
+      },
+      (input) => {
+        input.pi_b[2] = ["1", "1"];
+      },
+      (input) => {
+        input.pi_b[0] = ["1"];
+      },
+      (input) => {
+        input.pi_b[1]?.push("1");
+      },
+    ];
+    for (const mutate of mutations) {
+      const input = proof();
+      mutate(input);
+      expect(() => serializeProof(input, signals, "request-bound-v1")).toThrow();
+    }
+  });
+
   it("preserves zero coordinates for infinity encoding", () => {
     const input = proof();
     for (const [, mutate] of coordinates) mutate(input, "0");

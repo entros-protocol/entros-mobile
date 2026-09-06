@@ -98,6 +98,14 @@ describe("native artifact identity", () => {
     expect(FileSystem.readAsStringAsync).toHaveBeenCalledTimes(1);
   });
 
+  it("coalesces a burst of 128 requests into one verified artifact load", async () => {
+    const results = await Promise.all(Array.from({ length: 128 }, () => getBoundZkeyPath(remote)));
+    expect(new Set(results).size).toBe(1);
+    expect(FileSystem.downloadAsync).toHaveBeenCalledTimes(1);
+    expect(FileSystem.readAsStringAsync).toHaveBeenCalledTimes(1);
+    expect(files.get(`file://${results[0]}`)).toEqual(keyBytes);
+  });
+
   it("preserves mismatched existing bytes and materializes a healthy source elsewhere", async () => {
     directories.add(directory);
     const oldDestination = `${directory}${filename}`;

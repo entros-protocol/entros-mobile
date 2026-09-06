@@ -56,6 +56,26 @@ export function serializeProof(
   publicSignals: string[],
   generation: "legacy" | "request-bound-v1" = "legacy",
 ): SolanaProof {
+  if (proof.protocol !== "groth16" || proof.curve !== "bn128") {
+    throw new Error("Expected a BN254 Groth16 proof.");
+  }
+  for (const point of [proof.pi_a, proof.pi_c]) {
+    if (
+      !Array.isArray(point) ||
+      ![2, 3].includes(point.length) ||
+      (point.length === 3 && point[2] !== "1")
+    ) {
+      throw new Error("Expected an affine G1 proof point.");
+    }
+  }
+  if (
+    !Array.isArray(proof.pi_b) ||
+    ![2, 3].includes(proof.pi_b.length) ||
+    proof.pi_b.some((row) => !Array.isArray(row) || row.length !== 2) ||
+    (proof.pi_b.length === 3 && (proof.pi_b[2]?.[0] !== "1" || proof.pi_b[2]?.[1] !== "0"))
+  ) {
+    throw new Error("Expected an affine G2 proof point.");
+  }
   const expected = generation === "request-bound-v1" ? 6 : NUM_PUBLIC_INPUTS;
   if (publicSignals.length !== expected) {
     throw new Error(`Expected ${expected} public signals, got ${publicSignals.length}`);
