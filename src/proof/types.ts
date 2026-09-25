@@ -6,10 +6,10 @@
 export interface SolanaProof {
   proofBytes: Uint8Array;
   publicInputs: Uint8Array[];
+  preparedRequest?: import("./request").PreparedNativeProofRequest;
 }
 
-/** Raw snarkjs / arkworks proof output. mopro's `generateCircomProof`
- *  returns the same shape (decimal strings) so this type is shared. */
+/** Decimal proof coordinates after adapting the native or browser output. */
 export interface RawProof {
   pi_a: string[];
   pi_b: string[][];
@@ -29,6 +29,8 @@ export interface CircuitInput {
   commitment_prev: string;
   threshold: string;
   min_distance: string;
+  request_digest_hi?: string;
+  request_digest_lo?: string;
 }
 
 /** Proof generation result before serialisation. */

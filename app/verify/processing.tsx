@@ -30,7 +30,7 @@ import {
   extractProjectionOneCompatibilityFeatures,
   MIN_AUDIO_SAMPLES,
 } from "@/extraction";
-import { getConnection } from "@/config";
+import { config, getConnection } from "@/config";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import {
   bigintToBytes32,
@@ -46,9 +46,19 @@ import { classifyHammingDistance, DEFAULT_MIN_DISTANCE, DEFAULT_THRESHOLD } from
 import { generateSolanaProof } from "@/proof/prover";
 import { parseSubmitError, type ParsedSubmitError } from "@/protocol/errors";
 import { fetchIdentityState } from "@/protocol/identity";
+import {
+  NativeIdentityLayoutUpgradeRequired,
+  readNativeProofRequest,
+} from "@/protocol/proofRequest";
+import type { PreparedNativeProofRequest } from "@/proof/request";
 import { fetchProjectionPolicy } from "@/protocol/protocolConfig";
 import type { SignedReceiptDto } from "@/protocol/receipt";
-import { submitRebaseline, submitReset, submitVerify } from "@/protocol/submit";
+import {
+  submitProofIdentityUpgrade,
+  submitRebaseline,
+  submitReset,
+  submitVerify,
+} from "@/protocol/submit";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import { resampleCurveTrace } from "@/sensor/curve";
 import {
@@ -498,7 +508,38 @@ export default function Processing() {
               if (verdict === "drift_too_high") return { kind: "drift", bucket: "capture-drift" };
               if (verdict === "below_min_distance") return { kind: "drift", bucket: "generic" };
               const proofStartedAt = Date.now();
-              const solanaProof = await generateSolanaProof(tbh, previousTbh);
+              let preparedRequest: PreparedNativeProofRequest | undefined;
+              const proofManifest = config.proofManifest;
+              if (proofManifest) {
+                const readRequest = () =>
+                  readNativeProofRequest(
+                    getConnection(),
+                    proofManifest,
+                    walletId,
+                    challenge.nonce,
+                    {
+                      commitmentNew: commitmentNewHex,
+                      commitmentPrevious: previousCommitment.toString(16).padStart(64, "0"),
+                      threshold: DEFAULT_THRESHOLD,
+                      minDistance: DEFAULT_MIN_DISTANCE,
+                    },
+                  );
+                try {
+                  preparedRequest = await readRequest();
+                } catch (error) {
+                  if (!(error instanceof NativeIdentityLayoutUpgradeRequired)) throw error;
+                  if (handleDevOverride()) return { kind: "cancelled" };
+                  const upgraded = await submitProofIdentityUpgrade({
+                    walletAddress: walletId,
+                    authToken: currentAuthToken,
+                    walletKind,
+                    onAuthTokenRotated: acceptRotatedAuthToken,
+                  });
+                  currentAuthToken = upgraded.authToken;
+                  preparedRequest = await readRequest();
+                }
+              }
+              const solanaProof = await generateSolanaProof(tbh, previousTbh, preparedRequest);
               const proofMs = Date.now() - proofStartedAt;
               setProof(solanaProof);
               devWarn(

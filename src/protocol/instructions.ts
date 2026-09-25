@@ -33,6 +33,7 @@ import {
   findTreasuryPda,
   findVerificationPda,
 } from "./pdas";
+import { proofRequestStateAddress } from "./proofRequest";
 
 interface AnchorInstructionBuilder {
   accounts(accounts: Record<string, PublicKey>): AnchorInstructionBuilder;
@@ -63,7 +64,14 @@ export interface BuildContext {
   registryProgramId: PublicKey;
   /** Verifying user's wallet pubkey. */
   walletPubkey: PublicKey;
+  requestBound?: boolean;
 }
+
+const requestStateMeta = (ctx: BuildContext): AccountMeta => ({
+  pubkey: proofRequestStateAddress(ctx.walletPubkey, ctx.anchorProgram.programId),
+  isSigner: false,
+  isWritable: true,
+});
 
 export async function buildMintAnchorIx(
   ctx: BuildContext,
@@ -79,22 +87,21 @@ export async function buildMintAnchorIx(
 
   // The Instructions sysvar lets `verify_mint_receipt` inspect the preceding
   // Ed25519 verification. The program requires that receipt for every mint.
-  return ctx.anchorProgram.methods
-    .mintAnchor(Array.from(initialCommitment))
-    .accounts({
-      user: ctx.walletPubkey,
-      identityState: identityPda,
-      mint: mintPda,
-      mintAuthority: mintAuthorityPda,
-      tokenAccount: ata,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-      protocolConfig: protocolConfigPda,
-      treasury: treasuryPda,
-      instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
-    })
-    .instruction();
+  let builder = ctx.anchorProgram.methods.mintAnchor(Array.from(initialCommitment)).accounts({
+    user: ctx.walletPubkey,
+    identityState: identityPda,
+    mint: mintPda,
+    mintAuthority: mintAuthorityPda,
+    tokenAccount: ata,
+    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+    protocolConfig: protocolConfigPda,
+    treasury: treasuryPda,
+    instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+  });
+  if (ctx.requestBound) builder = builder.remainingAccounts([requestStateMeta(ctx)]);
+  return builder.instruction();
 }
 
 export async function buildCreateChallengeIx(
@@ -196,15 +203,18 @@ export async function buildResetIdentityStateIx(
       treasury: treasuryPda,
       systemProgram: SystemProgram.programId,
     });
-  if (projectionVersion >= 1) {
-    resetBuilder = resetBuilder.remainingAccounts([
-      {
-        pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
-        isSigner: false,
-        isWritable: false,
-      },
-    ]);
-  }
+  const remaining: AccountMeta[] =
+    projectionVersion >= 1
+      ? [
+          {
+            pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+            isSigner: false,
+            isWritable: false,
+          },
+        ]
+      : [];
+  if (ctx.requestBound) remaining.push(requestStateMeta(ctx));
+  if (remaining.length > 0) resetBuilder = resetBuilder.remainingAccounts(remaining);
   return resetBuilder.instruction();
 }
 
@@ -218,7 +228,7 @@ export async function buildRebaselineAnchorIx(
   const protocolConfigPda = findProtocolConfigPda(ctx.registryProgramId);
   const treasuryPda = findTreasuryPda(ctx.registryProgramId);
 
-  return ctx.anchorProgram.methods
+  let builder = ctx.anchorProgram.methods
     .rebaselineAnchor(Array.from(newCommitment), projectionVersion)
     .accounts({
       authority: ctx.walletPubkey,
@@ -227,8 +237,9 @@ export async function buildRebaselineAnchorIx(
       treasury: treasuryPda,
       instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
       systemProgram: SystemProgram.programId,
-    })
-    .instruction();
+    });
+  if (ctx.requestBound) builder = builder.remainingAccounts([requestStateMeta(ctx)]);
+  return builder.instruction();
 }
 
 /** Per-instruction CU usage measured against devnet (entros-verifier

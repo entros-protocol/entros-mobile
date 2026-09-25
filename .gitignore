@@ -9,6 +9,7 @@ web-build/
 expo-env.d.ts
 
 # Native
+.build/
 ios/Pods/
 ios/build/
 ios/.xcode.env.local
