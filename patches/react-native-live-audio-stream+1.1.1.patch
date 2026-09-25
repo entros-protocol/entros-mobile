@@ -1,73 +1,408 @@
 diff --git a/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java b/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
-index 20f454f..886eedc 100644
+index 20f454f..5aaa2d8 100644
 --- a/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
 +++ b/node_modules/react-native-live-audio-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
-@@ -28,6 +28,7 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
-     private AudioRecord recorder;
+@@ -11,6 +11,8 @@ import com.facebook.react.bridge.ReactApplicationContext;
+ import com.facebook.react.bridge.ReactContextBaseJavaModule;
+ import com.facebook.react.bridge.ReactMethod;
+ import com.facebook.react.bridge.ReadableMap;
++import com.facebook.react.bridge.WritableMap;
++import com.facebook.react.bridge.Arguments;
+ import com.facebook.react.modules.core.DeviceEventManagerModule;
+
+ import java.lang.Math;
+@@ -25,9 +27,24 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+     private int audioFormat;
+     private int audioSource;
+
+-    private AudioRecord recorder;
++    private volatile AudioRecord recorder;
      private int bufferSize;
-     private boolean isRecording;
-+    private Promise stopPromise;
- 
+-    private boolean isRecording;
++    private volatile RecordingSession activeSession;
++    private Integer terminalReadErrorCode;
++
++    private static final class RecordingSession {
++        private final AudioRecord recorder;
++        private final int bufferSize;
++        private volatile boolean recording;
++        private boolean released;
++        private Promise stopPromise;
++        private Integer readErrorCode;
++
++        private RecordingSession(AudioRecord recorder, int bufferSize) {
++            this.recorder = recorder;
++            this.bufferSize = bufferSize;
++        }
++    }
+
      public RNLiveAudioStreamModule(ReactApplicationContext reactContext) {
          super(reactContext);
-@@ -39,8 +40,25 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
-         return "RNLiveAudioStream";
+@@ -40,7 +57,70 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
      }
- 
-+    private void releaseRecorder() {
-+        if (recorder != null) {
+
+     @ReactMethod
+-    public void init(ReadableMap options) {
++    public void addListener(String eventName) {
++        // Required by NativeEventEmitter.
++    }
++
++    @ReactMethod
++    public void removeListeners(double count) {
++        // Required by NativeEventEmitter.
++    }
++
++    private static void stopAndReleaseRecorder(AudioRecord target) {
++        if (target != null) {
 +            try {
-+                recorder.stop();
++                target.stop();
 +            } catch (IllegalStateException ignored) {
 +                // recorder may already be stopped
 +            }
-+            recorder.release();
-+            recorder = null;
++            target.release();
 +        }
 +    }
 +
-     @ReactMethod
-     public void init(ReadableMap options) {
-+        // Release any previous recorder before allocating a new one. Without
-+        // this, every init() leaks an AudioRecord — kernel audio handles run
-+        // out after a few capture cycles.
-+        releaseRecorder();
++    private void releasePendingRecorder() {
++        AudioRecord pending;
++        synchronized (this) {
++            pending = recorder;
++            recorder = null;
++        }
++        stopAndReleaseRecorder(pending);
++    }
++
++    private static void releaseSessionRecorder(RecordingSession session) {
++        synchronized (session) {
++            if (session.released) {
++                return;
++            }
++            session.released = true;
++            stopAndReleaseRecorder(session.recorder);
++        }
++    }
++
++    private void emitReadError(int errorCode) {
++        WritableMap error = Arguments.createMap();
++        error.putInt("code", errorCode);
++        error.putString("message", "AudioRecord read failed");
++        eventEmitter.emit("error", error);
++    }
++
++    private static void rejectReadError(Promise promise, int errorCode) {
++        promise.reject(
++            "E_AUDIO_RECORD_READ",
++            "AudioRecord read failed with code " + errorCode
++        );
++    }
++
++    @ReactMethod
++    public void init(ReadableMap options, Promise promise) {
++        synchronized (this) {
++            if (activeSession != null) {
++                promise.reject("E_AUDIO_RECORD_ACTIVE", "AudioRecord is already recording");
++                return;
++            }
++            terminalReadErrorCode = null;
++        }
++        releasePendingRecorder();
 +
          sampleRateInHz = 44100;
          if (options.hasKey("sampleRate")) {
              sampleRateInHz = options.getInt("sampleRate");
-@@ -100,9 +118,16 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
-                             eventEmitter.emit("data", base64Data);
+@@ -65,7 +145,6 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+             audioSource = options.getInt("audioSource");
+         }
+
+-        isRecording = false;
+         eventEmitter = reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class);
+
+         bufferSize = AudioRecord.getMinBufferSize(sampleRateInHz, channelConfig, audioFormat);
+@@ -75,43 +154,217 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+         }
+
+         int recordingBufferSize = bufferSize * 3;
+-        recorder = new AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, recordingBufferSize);
++        AudioRecord initializedRecorder = null;
++        try {
++            initializedRecorder = new AudioRecord(
++                audioSource,
++                sampleRateInHz,
++                channelConfig,
++                audioFormat,
++                recordingBufferSize
++            );
++            int initializationState = initializedRecorder.getState();
++            int configuredSampleRate = initializedRecorder.getSampleRate();
++            boolean initialized = initializationState == AudioRecord.STATE_INITIALIZED;
++
++            WritableMap result = Arguments.createMap();
++            result.putInt("initializationState", initializationState);
++            result.putBoolean("initialized", initialized);
++            result.putInt("configuredSampleRate", configuredSampleRate);
++
++            if (initialized) {
++                synchronized (this) {
++                    recorder = initializedRecorder;
++                }
++            } else {
++                stopAndReleaseRecorder(initializedRecorder);
++            }
++            initializedRecorder = null;
++            promise.resolve(result);
++        } catch (RuntimeException error) {
++            stopAndReleaseRecorder(initializedRecorder);
++            releasePendingRecorder();
++            promise.reject("E_AUDIO_RECORD_INIT", "AudioRecord initialization failed", error);
++        }
+     }
+
+     @ReactMethod
+-    public void start() {
+-        isRecording = true;
+-        recorder.startRecording();
+-
+-        Thread recordingThread = new Thread(new Runnable() {
+-            public void run() {
+-                try {
+-                    int bytesRead;
+-                    int count = 0;
+-                    String base64Data;
+-                    byte[] buffer = new byte[bufferSize];
+-
+-                    while (isRecording) {
+-                        bytesRead = recorder.read(buffer, 0, buffer.length);
+-
+-                        // skip first 2 buffers to eliminate "click sound"
+-                        if (bytesRead > 0 && ++count > 2) {
+-                            base64Data = Base64.encodeToString(buffer, Base64.NO_WRAP);
+-                            eventEmitter.emit("data", base64Data);
++    public void start(Promise promise) {
++        final RecordingSession session;
++        try {
++            synchronized (this) {
++                if (activeSession != null) {
++                    promise.reject("E_AUDIO_RECORD_ACTIVE", "AudioRecord is already recording");
++                    return;
++                }
++                if (recorder == null || recorder.getState() != AudioRecord.STATE_INITIALIZED) {
++                    releasePendingRecorder();
++                    promise.reject("E_AUDIO_RECORD_STATE", "AudioRecord is not initialized");
++                    return;
++                }
++
++                recorder.startRecording();
++                if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
++                    throw new IllegalStateException("AudioRecord did not enter the recording state");
++                }
++                session = new RecordingSession(recorder, bufferSize);
++                session.recording = true;
++                recorder = null;
++                activeSession = session;
++            }
++
++            Thread recordingThread = new Thread(new Runnable() {
++                public void run() {
++                    try {
++                        int bytesRead;
++                        int count = 0;
++                        String base64Data;
++                        byte[] buffer = new byte[session.bufferSize];
++
++                        while (session.recording) {
++                            bytesRead = session.recorder.read(buffer, 0, buffer.length);
++                            synchronized (session) {
++                                if (!session.recording) {
++                                    break;
++                                }
++
++                                if (bytesRead < 0) {
++                                    session.readErrorCode = bytesRead;
++                                    session.recording = false;
++                                    emitReadError(bytesRead);
++                                    break;
++                                }
++
++                                if (bytesRead == 0) {
++                                    Thread.yield();
++                                    continue;
++                                }
++
++                                // skip first 2 buffers to eliminate "click sound"
++                                if (++count > 2) {
++                                    base64Data = Base64.encodeToString(
++                                        buffer,
++                                        0,
++                                        bytesRead,
++                                        Base64.NO_WRAP
++                                    );
++                                    eventEmitter.emit("data", base64Data);
++                                }
++                            }
++                        }
++                    } catch (Exception e) {
++                        if (session.recording) {
++                            session.readErrorCode = AudioRecord.ERROR_INVALID_OPERATION;
++                            emitReadError(session.readErrorCode);
++                            Log.e("RNLiveAudioStream", "recording thread error", e);
++                        }
++                    } finally {
++                        session.recording = false;
++                        releaseSessionRecorder(session);
++                        Promise pending;
++                        synchronized (RNLiveAudioStreamModule.this) {
++                            if (activeSession == session) {
++                                activeSession = null;
++                            }
++                            pending = session.stopPromise;
++                            session.stopPromise = null;
++                            if (pending == null && session.readErrorCode != null) {
++                                terminalReadErrorCode = session.readErrorCode;
++                            }
++                        }
++                        if (pending != null) {
++                            if (session.readErrorCode != null) {
++                                rejectReadError(pending, session.readErrorCode);
++                            } else {
++                                pending.resolve(null);
++                            }
                          }
                      }
 -                    recorder.stop();
-+                    releaseRecorder();
-                 } catch (Exception e) {
+-                } catch (Exception e) {
 -                    e.printStackTrace();
-+                    Log.e("RNLiveAudioStream", "recording thread error", e);
-+                } finally {
-+                    // Resolve any pending stop() Promise so JS callers can await.
-+                    Promise pending = stopPromise;
-+                    stopPromise = null;
-+                    if (pending != null) {
-+                        pending.resolve(null);
-+                    }
                  }
-             }
-         });
-@@ -112,6 +137,15 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
- 
+-            }
+-        });
++            });
+
+-        recordingThread.start();
++            recordingThread.start();
++            promise.resolve(null);
++        } catch (RuntimeException error) {
++            RecordingSession failedSession;
++            synchronized (this) {
++                failedSession = activeSession;
++                activeSession = null;
++            }
++            if (failedSession != null) {
++                synchronized (failedSession) {
++                    failedSession.recording = false;
++                }
++                releaseSessionRecorder(failedSession);
++            } else {
++                releasePendingRecorder();
++            }
++            promise.reject("E_AUDIO_RECORD_START", "AudioRecord failed to start", error);
++        }
+     }
+
      @ReactMethod
      public void stop(Promise promise) {
-+        // Capture the promise so the recording thread can resolve it once
-+        // the AudioRecord has actually stopped + released.
-+        stopPromise = promise;
-         isRecording = false;
-+        // If the thread isn't running (start() never called), resolve immediately
-+        // so the JS caller doesn't hang forever.
-+        if (recorder == null) {
-+            stopPromise = null;
-+            promise.resolve(null);
+-        isRecording = false;
++        RecordingSession session;
++        synchronized (this) {
++            session = activeSession;
++            if (session == null) {
++                Integer readErrorCode = terminalReadErrorCode;
++                terminalReadErrorCode = null;
++                releasePendingRecorder();
++                if (readErrorCode != null) {
++                    rejectReadError(promise, readErrorCode);
++                } else {
++                    promise.resolve(null);
++                }
++                return;
++            }
++            if (session.stopPromise != null) {
++                promise.reject("E_AUDIO_RECORD_STOP_PENDING", "AudioRecord is already stopping");
++                return;
++            }
++            session.stopPromise = promise;
++        }
++
++        try {
++            synchronized (session) {
++                session.recording = false;
++                if (!session.released) {
++                    session.recorder.stop();
++                }
++            }
++        } catch (IllegalStateException error) {
++            releaseSessionRecorder(session);
++        }
++    }
++
++    @Override
++    public void invalidate() {
++        RecordingSession session;
++        synchronized (this) {
++            session = activeSession;
++            terminalReadErrorCode = null;
++        }
++        if (session != null) {
++            synchronized (session) {
++                session.recording = false;
++            }
++        }
++
++        Promise pending = null;
++        if (session != null) {
++            releaseSessionRecorder(session);
++            synchronized (this) {
++                if (activeSession == session) {
++                    activeSession = null;
++                }
++                pending = session.stopPromise;
++                session.stopPromise = null;
++            }
++        }
++        releasePendingRecorder();
++        if (pending != null) {
++            pending.resolve(null);
 +        }
      }
  }
+diff --git a/node_modules/react-native-live-audio-stream/index.d.ts b/node_modules/react-native-live-audio-stream/index.d.ts
+index b846438..fe80f62 100644
+--- a/node_modules/react-native-live-audio-stream/index.d.ts
++++ b/node_modules/react-native-live-audio-stream/index.d.ts
+@@ -1,9 +1,21 @@
+ declare module "react-native-live-audio-stream" {
++  export interface AndroidAudioRecordConfig {
++    initializationState: number
++    initialized: boolean
++    configuredSampleRate: number
++  }
++
++  export interface AndroidAudioRecordError {
++    code: number
++    message: string
++  }
++
+   export interface IAudioRecord {
+-    init: (options: Options) => void
+-    start: () => void
++    init: (options: Options) => void | Promise<AndroidAudioRecordConfig>
++    start: () => void | Promise<unknown>
+     stop: () => Promise<string>
+-    on: (event: "data", callback: (data: string) => void) => void
++    on(event: "data", callback: (data: string) => void): void
++    on(event: "error", callback: (error: AndroidAudioRecordError) => void): void
+   }
+
+   export interface Options {
+diff --git a/node_modules/react-native-live-audio-stream/index.js b/node_modules/react-native-live-audio-stream/index.js
+index c5968b2..63ce7f6 100644
+--- a/node_modules/react-native-live-audio-stream/index.js
++++ b/node_modules/react-native-live-audio-stream/index.js
+@@ -9,7 +9,8 @@ AudioRecord.start = () => RNLiveAudioStream.start();
+ AudioRecord.stop = () => RNLiveAudioStream.stop();
+
+ const eventsMap = {
+-  data: 'data'
++  data: 'data',
++  error: 'error'
+ };
+
+ AudioRecord.on = (event, callback) => {

@@ -32,9 +32,12 @@ CI runs the same set. Reviewers will not merge a red PR.
 
 ## Privacy invariants, non-negotiable
 
-- Raw audio, motion, and touch samples must never be written to disk, transmitted, or logged.
-- The 308-feature baseline lives only in `expo-secure-store` (Keychain / Keystore) and is bound to the device. No iCloud / Google Drive sync.
-- Wallet auth tokens are stored in `expo-secure-store` only. They never appear in JS bridges, logs, or analytics events.
+- Raw motion and full-resolution touch samples must never be written, transmitted, or logged.
+- Phrase audio may leave the device only for transient transcription and acoustic validation. Never persist or log it.
+- The 308-feature summary may reach validation. Keep it transient and never write it to local storage.
+- The continuity baseline contains the fingerprint, salt, commitment, timestamp, and projection version.
+- Encrypt the continuity baseline before storing it in `expo-secure-store`. Keep this native client device-bound.
+- Wallet auth tokens use `expo-secure-store` at rest. Never log them or send them to analytics.
 
 PRs that violate these will be closed without merge.
 

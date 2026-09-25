@@ -25,7 +25,7 @@ const rows: Row[] = [
   {
     Icon: MicIcon,
     title: "Microphone",
-    body: "12-second voice sample. Processed on-device, then discarded.",
+    body: "Entros processes it on-device and sends it for phrase matching.",
   },
   {
     Icon: MotionIcon,

@@ -1,5 +1,4 @@
-// Stage 7 high-level submission orchestration. Wraps Anchor instruction
-// builders + MWA's signAndSendTransaction into two coherent flows:
+// Wraps Anchor instruction builders and MWA signing into two flows:
 //
 //   - submitVerify({ commitment, isFirstVerify, proof?, nonce? })
 //       First verify  → mintAnchor (single ix)
@@ -17,15 +16,23 @@
 //   back to secure storage immediately after success.
 
 import { AnchorProvider, Idl, Program } from "@coral-xyz/anchor";
-import { Connection, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import {
+  Connection,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
 
 import { config, getConnection } from "@/config";
-import type { SolanaProof } from "@/proof";
+import type { SolanaProof } from "@/proof/types";
 import type { WalletKind } from "@/state/types";
 import * as mwa from "@/wallet/mwa";
 
 import { makeAnchorAdapter } from "./anchorAdapter";
-import { entrosAnchorIdl, entrosVerifierIdl } from "./idl";
+import { buildBoundProofInstructions, type BoundPrograms } from "./boundInstructions";
+import entrosAnchorIdl from "./idl/entros_anchor.json";
+import entrosVerifierIdl from "./idl/entros_verifier.json";
 import {
   buildComputeBudgetIx,
   buildCreateChallengeIx,
@@ -34,11 +41,13 @@ import {
   buildResetIdentityStateIx,
   buildUpdateAnchorIx,
   buildVerifyProofIx,
-  BuildContext,
-  AnchorProgram,
   COMPUTE_UNITS_RESET,
   COMPUTE_UNITS_REBASELINE,
   COMPUTE_UNITS_REVERIFY,
+  type AnchorProgram,
+  type BuildContext,
+  type RuntimeProgram,
+  type VerifierProgram,
 } from "./instructions";
 import { receiptMatchesBinding, requireEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
 
@@ -55,9 +64,31 @@ interface SubmitBase {
   walletAddress: string;
   authToken: string;
   walletKind: WalletKind;
+  onAuthTokenRotated?: mwa.AuthTokenRotationHandler;
 }
 
-const buildContext = (walletAddress: string): BuildContext => {
+const requireProgramMethods = <MethodName extends string>(
+  program: Program<Idl>,
+  methodNames: readonly MethodName[],
+): RuntimeProgram<MethodName> => {
+  const methods = (program as unknown as { methods: Record<string, unknown> }).methods;
+  for (const methodName of methodNames) {
+    if (typeof methods[methodName] !== "function") {
+      throw new Error(`The bundled IDL does not define ${methodName}.`);
+    }
+  }
+  return program as unknown as RuntimeProgram<MethodName>;
+};
+
+const buildContext = async (
+  walletAddress: string,
+): Promise<BuildContext & { boundPrograms?: BoundPrograms }> => {
+  if (
+    config.proofManifest &&
+    (await getConnection().getGenesisHash()) !== config.proofManifest.genesisHash
+  ) {
+    throw new Error("The proof deployment does not match this network.");
+  }
   const anchorProgramId = config.programs.entrosAnchor;
   const verifierProgramId = config.programs.entrosVerifier;
   const registryProgramId = config.programs.entrosRegistry;
@@ -72,17 +103,45 @@ const buildContext = (walletAddress: string): BuildContext => {
     commitment: "confirmed",
   });
 
-  const anchorProgram = new Program(entrosAnchorIdl as Idl, provider) as AnchorProgram;
-  const verifierProgram = new Program(entrosVerifierIdl as Idl, provider) as AnchorProgram;
+  const anchorRuntime = new Program(entrosAnchorIdl as Idl, provider);
+  const verifierRuntime = new Program(entrosVerifierIdl as Idl, provider);
+  const anchorProgram: AnchorProgram = requireProgramMethods(anchorRuntime, [
+    "mintAnchor",
+    "rebaselineAnchor",
+    "resetIdentityState",
+    "updateAnchor",
+  ] as const);
+  const verifierProgram: VerifierProgram = requireProgramMethods(verifierRuntime, [
+    "createChallenge",
+    "verifyProof",
+  ] as const);
 
-  // entros_registry exposes only protocol_config + treasury PDAs — derived
+  if (
+    config.proofManifest &&
+    (config.proofManifest.consumerProgram !== anchorProgramId.toBase58() ||
+      config.proofManifest.verifierProgram !== verifierProgramId.toBase58())
+  )
+    throw new Error("The proof manifest does not match the configured programs.");
+  const boundPrograms: BoundPrograms | undefined = config.proofManifest
+    ? {
+        anchor: requireProgramMethods(anchorRuntime, [
+          "prepareProofRequest",
+          "updateAnchorBound",
+          "upgradeIdentityLayout",
+        ] as const),
+        verifier: requireProgramMethods(verifierRuntime, ["verifyProofBound"] as const),
+      }
+    : undefined;
+
+  // entros_registry exposes only protocol_config and treasury PDAs, derived
   // from the program ID alone, no IDL needed for instruction building.
-  // Stage 8 will import the registry IDL for BorshAccountsCoder reads.
   return {
     anchorProgram,
     verifierProgram,
     registryProgramId,
     walletPubkey: adapter.publicKey,
+    requestBound: config.proofManifest !== undefined,
+    boundPrograms,
   };
 };
 
@@ -116,6 +175,34 @@ const confirmAndCheck = async (connection: Connection, signature: string): Promi
   }
 };
 
+export async function submitProofIdentityUpgrade(args: SubmitBase): Promise<SubmitResult> {
+  const ctx = await buildContext(args.walletAddress);
+  if (!ctx.boundPrograms) throw new Error("The bound proof deployment is not configured.");
+  const identity = PublicKey.findProgramAddressSync(
+    [Buffer.from("identity"), ctx.walletPubkey.toBytes()],
+    ctx.anchorProgram.programId,
+  )[0];
+  const instruction = await ctx.boundPrograms.anchor.methods
+    .upgradeIdentityLayout()
+    .accounts({
+      authority: ctx.walletPubkey,
+      identityState: identity,
+      systemProgram: SystemProgram.programId,
+    })
+    .instruction();
+  const connection = getConnection();
+  const transaction = await sealTransaction(connection, ctx.walletPubkey, [instruction]);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    transaction,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
+  await confirmAndCheck(connection, result.signature);
+  return { txSignature: result.signature, authToken: result.authToken };
+}
+
 /** First-verify or re-verify on-chain submission. Discriminator is
  *  `isFirstVerify`: when true, only `commitment` is required and we mint
  *  a fresh anchor; when false, all four (commitment, proof, nonce) are
@@ -142,8 +229,8 @@ export async function submitVerify(
   args: SubmitVerifyArgs,
   onSigned?: () => void,
 ): Promise<SubmitResult> {
+  const ctx = await buildContext(args.walletAddress);
   const firstReceiptIxs = args.isFirstVerify ? [requireEd25519ReceiptIx(args.signedReceipt)] : [];
-  const ctx = buildContext(args.walletAddress);
   const connection = getConnection();
 
   let ixs: TransactionInstruction[];
@@ -155,26 +242,46 @@ export async function submitVerify(
     ixs = [...firstReceiptIxs, mintIx];
   } else {
     if (!args.proof || !args.nonce) {
-      throw new Error(
-        "submitVerify: re-verification requires both `proof` and `nonce`. " +
-          "Stage 6's proofBuffer and Stage 4's challengeBuffer must both be populated.",
-      );
+      throw new Error("submitVerify: re-verification requires both `proof` and `nonce`.");
     }
-    const [createChallengeIx, verifyProofIx, updateAnchorIx] = await Promise.all([
-      buildCreateChallengeIx(ctx, args.nonce),
-      buildVerifyProofIx(ctx, args.proof.proofBytes, args.proof.publicInputs, args.nonce),
-      buildUpdateAnchorIx(ctx, args.commitment, args.nonce),
-    ]);
-    ixs = [
-      buildComputeBudgetIx(COMPUTE_UNITS_REVERIFY),
-      createChallengeIx,
-      verifyProofIx,
-      updateAnchorIx,
-    ];
+    if (config.proofManifest) {
+      if (!ctx.boundPrograms) throw new Error("The bound proof programs are unavailable.");
+      ixs = [
+        buildComputeBudgetIx(COMPUTE_UNITS_REVERIFY),
+        ...(await buildBoundProofInstructions(
+          ctx,
+          ctx.boundPrograms,
+          config.proofManifest,
+          args.proof,
+          args.commitment,
+          args.nonce,
+        )),
+      ];
+    } else {
+      if (args.proof.preparedRequest)
+        throw new Error("A bound proof requires its configured deployment.");
+      const [createChallengeIx, verifyProofIx, updateAnchorIx] = await Promise.all([
+        buildCreateChallengeIx(ctx, args.nonce),
+        buildVerifyProofIx(ctx, args.proof.proofBytes, args.proof.publicInputs, args.nonce),
+        buildUpdateAnchorIx(ctx, args.commitment, args.nonce),
+      ]);
+      ixs = [
+        buildComputeBudgetIx(COMPUTE_UNITS_REVERIFY),
+        createChallengeIx,
+        verifyProofIx,
+        updateAnchorIx,
+      ];
+    }
   }
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
-  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    tx,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
   onSigned?.();
   await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
@@ -195,7 +302,7 @@ export async function submitReset(
   args: SubmitResetArgs,
   onSigned?: () => void,
 ): Promise<SubmitResult> {
-  const ctx = buildContext(args.walletAddress);
+  const ctx = await buildContext(args.walletAddress);
   const connection = getConnection();
 
   const receiptIxs: TransactionInstruction[] = [];
@@ -222,7 +329,13 @@ export async function submitReset(
   ];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
-  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    tx,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
   onSigned?.();
   await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };
@@ -239,7 +352,7 @@ export async function submitRebaseline(
   args: SubmitRebaselineArgs,
   onSigned?: () => void,
 ): Promise<SubmitResult> {
-  const ctx = buildContext(args.walletAddress);
+  const ctx = await buildContext(args.walletAddress);
   const connection = getConnection();
   if (
     !receiptMatchesBinding(args.signedReceipt, {
@@ -256,7 +369,13 @@ export async function submitRebaseline(
   const ixs = [buildComputeBudgetIx(COMPUTE_UNITS_REBASELINE), receiptIx, rebaselineIx];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
-  const result = await mwa.signAndSendTransaction(args.authToken, tx, args.walletKind);
+  const result = await mwa.signAndSendTransaction(
+    args.authToken,
+    tx,
+    args.walletAddress,
+    args.walletKind,
+    args.onAuthTokenRotated,
+  );
   onSigned?.();
   await confirmAndCheck(connection, result.signature);
   return { txSignature: result.signature, authToken: result.authToken };

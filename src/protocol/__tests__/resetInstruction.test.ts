@@ -1,6 +1,11 @@
 import { Keypair, SYSVAR_INSTRUCTIONS_PUBKEY, TransactionInstruction } from "@solana/web3.js";
 
-import { type AnchorProgram, type BuildContext, buildResetIdentityStateIx } from "../instructions";
+import {
+  type AnchorProgram,
+  type BuildContext,
+  buildResetIdentityStateIx,
+  type VerifierProgram,
+} from "../instructions";
 
 function context() {
   const walletPubkey = Keypair.generate().publicKey;
@@ -29,11 +34,18 @@ function context() {
       resetIdentityState: () => builder,
     },
   } as unknown as AnchorProgram;
+  const verifierProgram = {
+    programId,
+    methods: {
+      createChallenge: () => builder,
+      verifyProof: () => builder,
+    },
+  } as unknown as VerifierProgram;
 
   return {
     ctx: {
       anchorProgram,
-      verifierProgram: anchorProgram,
+      verifierProgram,
       registryProgramId: Keypair.generate().publicKey,
       walletPubkey,
     } satisfies BuildContext,

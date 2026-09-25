@@ -10,14 +10,14 @@ import { Linking, Platform } from "react-native";
 import { config } from "@/config";
 import type { WalletKind } from "@/state/types";
 
+import { extractVerifiedMessageSignature } from "./signedMessage";
+
 // `icon` is omitted intentionally. Phantom's current build rejects every
 // non-data-URL form we tried (`code=-32602, "identity.icon must be a relative
 // URI"`): `/logos/Entros.png`, `logos/Entros.png`, and `https://...` all fire.
 // Inline base64 data URIs over a few KB crash Phantom outright. Without `icon`,
-// the wallet falls back to a default avatar — connect succeeds. Re-introducing
-// a custom icon is Stage 9 polish work; it requires testing each wallet's
-// parser separately and will likely need a tiny inlined data URL once we know
-// the size cap.
+// the wallet uses its default avatar and connection succeeds. A custom icon
+// requires separate parser and size-limit tests for each wallet.
 const APP_IDENTITY = {
   name: "Entros",
   uri: "https://entros.io",
@@ -48,7 +48,7 @@ const WALLET_PACKAGE: Record<WalletKind, string> = {
 // goes straight to that APK. Without setPackage, an unverified wallet domain
 // (e.g. `phantom.app` not auto-verified on the device) would route the URL
 // through the default browser instead. The patch lives at
-// `patches/@solana-mobile+mobile-wallet-adapter-protocol+2.2.8.patch`.
+// `patches/@solana-mobile+mobile-wallet-adapter-protocol+2.2.9.patch`.
 const transactConfig = (
   walletKind: WalletKind | null | undefined,
 ): WalletAssociationConfig | undefined => {
@@ -280,14 +280,66 @@ export interface SignAndSendResult {
   authToken: string;
 }
 
+export interface SignMessageResult {
+  signature: Uint8Array;
+  authToken: string;
+}
+
+export type AuthTokenRotationHandler = (authToken: string) => void | Promise<void>;
+
+export const signMessage = async (
+  authToken: string,
+  message: Uint8Array,
+  expectedWalletAddress: string,
+  walletKind?: WalletKind | null,
+  timeoutMs = MWA_TIMEOUT_MS,
+  onAuthTokenRotated?: AuthTokenRotationHandler,
+): Promise<SignMessageResult> => {
+  ensureAndroid();
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Validation challenge expired before wallet authorization.");
+  }
+  return withTimeout(
+    transact(async (wallet: Web3MobileWallet) => {
+      const auth = await wallet.reauthorize({ auth_token: authToken, identity: APP_IDENTITY });
+      const account = accountFromAuth(auth, walletKind ?? null);
+      if (account.address !== expectedWalletAddress) {
+        throw new Error("Validation wallet does not match the connected wallet.");
+      }
+      await onAuthTokenRotated?.(auth.auth_token);
+      const protocolAccount = auth.accounts[0];
+      if (!protocolAccount) throw new Error("Wallet returned an empty accounts list.");
+      const [signedPayload] = await wallet.signMessages({
+        addresses: [protocolAccount.address],
+        payloads: [message],
+      });
+      if (!signedPayload) throw new Error("Wallet returned no signed validation message.");
+      const publicKey = new PublicKey(expectedWalletAddress).toBytes();
+      return {
+        signature: extractVerifiedMessageSignature(message, signedPayload, publicKey),
+        authToken: auth.auth_token,
+      };
+    }, transactConfig(walletKind)),
+    Math.min(MWA_TIMEOUT_MS, timeoutMs),
+    walletKind ?? null,
+  );
+};
+
 export const signAndSendTransaction = async (
   authToken: string,
   tx: Transaction | VersionedTransaction,
+  expectedWalletAddress: string,
   walletKind?: WalletKind | null,
+  onAuthTokenRotated?: AuthTokenRotationHandler,
 ): Promise<SignAndSendResult> => {
   ensureAndroid();
   return transact(async (wallet: Web3MobileWallet) => {
     const auth = await wallet.reauthorize({ auth_token: authToken, identity: APP_IDENTITY });
+    const account = accountFromAuth(auth, walletKind ?? null);
+    if (account.address !== expectedWalletAddress) {
+      throw new Error("Transaction wallet does not match the connected wallet.");
+    }
+    await onAuthTokenRotated?.(auth.auth_token);
     const [signature] = await wallet.signAndSendTransactions({ transactions: [tx] });
     if (!signature) {
       throw new Error("Wallet returned no transaction signature.");

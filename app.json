@@ -6,18 +6,12 @@
     "orientation": "portrait",
     "scheme": "entros",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "icon": "./assets/entros.png",
-    "splash": {
-      "image": "./assets/entros.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#000000"
-    },
     "ios": {
       "bundleIdentifier": "io.entros.mobile",
       "supportsTablet": false,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Entros records a short voice sample on this device. Audio is processed locally and discarded immediately after a 308-feature statistical summary is extracted.",
+        "NSMicrophoneUsageDescription": "Entros extracts voice features on this device and sends transient audio to the validation service for phrase matching. The service discards the audio after validation.",
         "NSMotionUsageDescription": "Entros samples motion sensors to measure how you hold the phone. Raw sensor data stays on this device and is discarded immediately after feature extraction.",
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -46,7 +40,6 @@
         "expo-build-properties",
         {
           "android": {
-            "kotlinVersion": "1.9.25",
             "packagingOptions": {
               "pickFirst": [
                 "**/libc++_shared.so"
@@ -55,7 +48,18 @@
           }
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/entros.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#000000"
+        }
+      ],
+      "expo-status-bar"
     ],
     "experiments": {
       "typedRoutes": true,

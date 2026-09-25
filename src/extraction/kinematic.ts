@@ -1,6 +1,9 @@
 import type { MotionSample, TouchSample } from "./types";
 import { condense, mean, variance, entropy, autocorrelation } from "./statistics";
 import { realFFT, bandEnergy, peakInBand, nextPow2 } from "./fft";
+import { getProjectionDefinition } from "../projection";
+
+const NORMALIZED_TOUCH_MOVEMENT_PER_SECOND = 0.15;
 
 // v2 motion block widens 54 → 81: 54 legacy (jerk + jounce stats × 6 axes,
 // jitter variance × 6) followed by 27 new features. Order is fixed by
@@ -280,6 +283,8 @@ export function extractTouchFeatures(samples: TouchSample[], projectionVersion =
   if (samples.length < 5) return new Array(TOUCH_FEATURE_COUNT).fill(0);
 
   const corrected = usesCorrectedExtraction(projectionVersion);
+  const normalizedTouch =
+    getProjectionDefinition(projectionVersion).featurePipeline === "normalized-touch";
   const timestamps = samples.map((sample) => sample.timestamp);
   const x = samples.map((s) => s.x);
   const y = samples.map((s) => s.y);
@@ -323,7 +328,7 @@ export function extractTouchFeatures(samples: TouchSample[], projectionVersion =
   }
 
   // ---- v2 additions ----
-  features.push(...computeTouchV2(samples, vx.values, vy.values, corrected));
+  features.push(...computeTouchV2(samples, vx.values, vy.values, corrected, normalizedTouch));
 
   return features;
 }
@@ -337,6 +342,7 @@ function computeTouchV2(
   vx: number[],
   vy: number[],
   corrected: boolean,
+  normalizedTouch: boolean,
 ): number[] {
   const out: number[] = [];
   const timestamps = samples.map((sample) => sample.timestamp);
@@ -366,7 +372,10 @@ function computeTouchV2(
     const v1y = vy[i - 1] ?? 0;
     const v2x = vx[i] ?? 0;
     const v2y = vy[i] ?? 0;
-    if (Math.hypot(v1x, v1y) < CURVATURE_REST_EPS || Math.hypot(v2x, v2y) < CURVATURE_REST_EPS) {
+    const restThreshold = normalizedTouch
+      ? NORMALIZED_TOUCH_MOVEMENT_PER_SECOND
+      : CURVATURE_REST_EPS;
+    if (Math.hypot(v1x, v1y) < restThreshold || Math.hypot(v2x, v2y) < restThreshold) {
       continue;
     }
     const a1 = Math.atan2(v1y, v1x);
@@ -405,20 +414,23 @@ function computeTouchV2(
   out.push(totalPath > 0 ? straight / totalPath : 0);
 
   // 8. Per-stroke total path length
-  const strokeLengths = perStrokePathLengths(pathSeries);
+  const movementMask = normalizedTouch ? normalizedTouchMovementMask(samples) : undefined;
+  const strokeLengths = perStrokePathLengths(pathSeries, movementMask);
   out.push(mean(strokeLengths), variance(strokeLengths));
 
   return out;
 }
 
 /** Split step distances at rest points and return each stroke's path length. */
-function perStrokePathLengths(stepDistances: number[]): number[] {
+function perStrokePathLengths(stepDistances: number[], movementMask?: boolean[]): number[] {
   const PAUSE_THRESHOLD = 0.5;
   const lengths: number[] = [];
   let acc = 0;
   let inStroke = false;
-  for (const distance of stepDistances) {
-    if (distance >= PAUSE_THRESHOLD) {
+  for (let index = 0; index < stepDistances.length; index++) {
+    const distance = stepDistances[index] ?? 0;
+    const moving = movementMask?.[index] ?? distance >= PAUSE_THRESHOLD;
+    if (moving) {
       acc += distance;
       inStroke = true;
     } else if (inStroke) {
@@ -437,10 +449,45 @@ interface SampledSeries {
 }
 
 function usesCorrectedExtraction(projectionVersion: number): boolean {
-  if (projectionVersion !== 0 && projectionVersion !== 1) {
+  if (projectionVersion !== 0 && projectionVersion !== 1 && projectionVersion !== 2) {
     throw new Error(`Unsupported projection version ${projectionVersion}`);
   }
-  return projectionVersion === 1;
+  return projectionVersion >= 1;
+}
+
+function normalizedTouchMovementMask(samples: TouchSample[]): boolean[] {
+  const movement: boolean[] = [];
+  for (let index = 1; index < samples.length; index++) {
+    const previous = samples[index - 1]!;
+    const current = samples[index]!;
+    const durationSeconds = (current.timestamp - previous.timestamp) / 1_000;
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+      movement.push(false);
+      continue;
+    }
+    const speed = Math.hypot(current.x - previous.x, current.y - previous.y) / durationSeconds;
+    const comparisonTolerance =
+      Number.EPSILON * Math.max(1, Math.abs(speed), NORMALIZED_TOUCH_MOVEMENT_PER_SECOND) * 16;
+    movement.push(
+      speed >= NORMALIZED_TOUCH_MOVEMENT_PER_SECOND ||
+        Math.abs(speed - NORMALIZED_TOUCH_MOVEMENT_PER_SECOND) <= comparisonTolerance,
+    );
+  }
+  return movement;
+}
+
+function durationWeightedPauseRatio(samples: TouchSample[], movementMask: boolean[]): number {
+  let pausedSeconds = 0;
+  let totalSeconds = 0;
+  for (let index = 0; index < movementMask.length; index++) {
+    const durationSeconds = Math.max(
+      0,
+      ((samples[index + 1]?.timestamp ?? 0) - (samples[index]?.timestamp ?? 0)) / 1_000,
+    );
+    totalSeconds += durationSeconds;
+    if (!movementMask[index]) pausedSeconds += durationSeconds;
+  }
+  return totalSeconds > 0 ? pausedSeconds / totalSeconds : 0;
 }
 
 function legacyDerivative(values: number[]): number[] {
@@ -559,11 +606,14 @@ export function extractMouseDynamics(samples: TouchSample[], projectionVersion =
   if (samples.length < 10) return new Array(MOUSE_DYNAMICS_FEATURE_COUNT).fill(0);
 
   const corrected = usesCorrectedExtraction(projectionVersion);
+  const normalizedTouch =
+    getProjectionDefinition(projectionVersion).featurePipeline === "normalized-touch";
   const x = samples.map((s) => s.x);
   const y = samples.map((s) => s.y);
   const pressure = samples.map((s) => s.pressure);
   const timestamps = samples.map((sample) => sample.timestamp);
   const stepDistances = coordinateStepDistances(samples);
+  const movementMask = normalizedTouch ? normalizedTouchMovementMask(samples) : undefined;
 
   // Velocity
   const vxSeries = derivativeForProjection(x, timestamps, corrected);
@@ -589,6 +639,7 @@ export function extractMouseDynamics(samples: TouchSample[], projectionVersion =
   // Path curvature
   const curvatures: number[] = [];
   for (let i = 1; i < vx.length; i++) {
+    if (movementMask && (!movementMask[i - 1] || !movementMask[i])) continue;
     const angle1 = Math.atan2(vy[i - 1] ?? 0, vx[i - 1] ?? 0);
     const angle2 = Math.atan2(vy[i] ?? 0, vx[i] ?? 0);
     let diff = angle2 - angle1;
@@ -598,7 +649,12 @@ export function extractMouseDynamics(samples: TouchSample[], projectionVersion =
   }
 
   // Movement directions
-  const directions = vx.map((dx, i) => Math.atan2(vy[i] ?? 0, dx));
+  let previousDirection = 0;
+  const directions = vx.map((dx, index) => {
+    if (movementMask && !movementMask[index]) return previousDirection;
+    previousDirection = Math.atan2(vy[index] ?? 0, dx);
+    return previousDirection;
+  });
 
   // Micro-corrections
   let reversals = 0;
@@ -614,8 +670,15 @@ export function extractMouseDynamics(samples: TouchSample[], projectionVersion =
   // Pause detection
   const speedThreshold = 0.5;
   const pathSeries = corrected ? stepDistances : speed;
-  const pauseFrames = pathSeries.filter((distance) => distance < speedThreshold).length;
-  const pauseRatio = pathSeries.length > 0 ? pauseFrames / pathSeries.length : 0;
+  const pauseFrames = pathSeries.filter(
+    (distance, index) => !(movementMask?.[index] ?? distance >= speedThreshold),
+  ).length;
+  const pauseRatio =
+    normalizedTouch && movementMask
+      ? durationWeightedPauseRatio(samples, movementMask)
+      : pathSeries.length > 0
+        ? pauseFrames / pathSeries.length
+        : 0;
 
   // Path efficiency
   const totalPathLength = pathSeries.reduce((a, b) => a + b, 0);
@@ -625,9 +688,16 @@ export function extractMouseDynamics(samples: TouchSample[], projectionVersion =
   // Movement durations
   const movementDurations: number[] = [];
   let currentDuration = 0;
-  for (const distance of pathSeries) {
-    if (distance >= speedThreshold) {
-      currentDuration++;
+  for (let index = 0; index < pathSeries.length; index++) {
+    const distance = pathSeries[index] ?? 0;
+    const moving = movementMask?.[index] ?? distance >= speedThreshold;
+    if (moving) {
+      currentDuration += normalizedTouch
+        ? Math.max(
+            0,
+            ((samples[index + 1]?.timestamp ?? 0) - (samples[index]?.timestamp ?? 0)) / 1_000,
+          )
+        : 1;
     } else if (currentDuration > 0) {
       movementDurations.push(currentDuration);
       currentDuration = 0;

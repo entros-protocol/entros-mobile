@@ -14,8 +14,7 @@
 // z-scored into the fused vector, which becomes the SimHash, which becomes the
 // on-chain commitment. If mobile and web compute different numbers, a wallet
 // enrolled in one client cannot re-verify in the other. The user meets that as
-// `drift-too-high` with a reset as the only exit, which is the failure mode
-// master-list #215 exists to prevent.
+// `drift-too-high` with a reset as the only exit.
 //
 // This mirrors the intent of `src/hashing/__tests__/parity.test.ts`, which
 // covers the hashing layer. Until this file existed, extraction had no

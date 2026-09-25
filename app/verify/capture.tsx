@@ -1,11 +1,11 @@
 // Verification capture screen.
 //
 // PRIVACY CONTRACT (paper §6.8 + AUDIT.md):
-// - Audio PCM, motion samples, and touch coordinates live in memory only
-//   for the duration of capture + the brief feature-extraction pass that
-//   follows it (Stage 2).
-// - Nothing is logged with values, persisted, or transmitted from this
-//   screen. Only sample counts and rates appear in dev logs.
+// - Audio PCM, motion samples, and touch coordinates stay in memory through
+//   capture and feature extraction.
+// - The processing screen sends transient phrase PCM for phrase matching.
+//   It never sends raw motion or full-resolution touch.
+// - No raw sensor value is logged or persisted.
 // - On suspension or back-navigation, recordings are cancelled and any
 //   buffered samples are dropped before the screen unmounts.
 
@@ -31,7 +31,6 @@ import { MotionRecorder, startMotionRecording } from "@/sensor/motion";
 import { startTouchRecording, TouchRecorder } from "@/sensor/touch";
 import { setCapture } from "@/state/captureBuffer";
 import { peekChallenge } from "@/state/challengeBuffer";
-import { pickLissajous } from "@/state/mockChallenge";
 import { fontFamily, fontSize, radii, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -48,7 +47,6 @@ export default function VerifyCapture() {
   // renders. Null here means /verify/intro didn't run (dev nav / deep link);
   // we redirect back instead of fabricating a phrase.
   const [challenge] = useState(() => peekChallenge());
-  const params = useMemo(() => pickLissajous(), []);
 
   const [phase, setPhase] = useState<Phase>("countdown");
   const [countdown, setCountdown] = useState(3);
@@ -72,64 +70,11 @@ export default function VerifyCapture() {
   const mountedRef = useRef(true);
   const completionFiredRef = useRef(false);
 
-  // Empty-buffer guard. Reaching this screen without a fetched challenge
-  // is a routing bug, not a runtime case — redirect back to /verify/intro.
-  useEffect(() => {
-    if (!challenge) {
-      router.replace("/verify/intro");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Countdown loop. Guarded on `challenge` so the redirect above completes
-  // before sensors start spinning up.
-  useEffect(() => {
-    if (!challenge) return;
-    if (phase !== "countdown") return;
-    if (countdown <= 0) {
-      void beginCapture();
-      return;
-    }
-    const id = setTimeout(() => setCountdown((c) => c - 1), COUNTDOWN_MS / 3);
-    return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, countdown]);
-
-  // Capture progress + auto-finish.
-  useEffect(() => {
-    if (phase !== "capturing") return;
-    const tick = () => {
-      const elapsed = startedAtRef.current ? Date.now() - startedAtRef.current : 0;
-      setProgress(Math.min(1, elapsed / CAPTURE_MS));
-    };
-    const interval = setInterval(tick, 50);
-    const finish = setTimeout(() => {
-      void completeCapture();
-    }, CAPTURE_MS);
-    return () => {
-      clearInterval(interval);
-      clearTimeout(finish);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
-
-  // Cleanup on unmount: cancel any in-flight recordings + drop buffered data.
-  // Async cancels fire and forget — acceptable because the recorders' own
-  // teardown is synchronous-enough (one native call) and any leftover memory
-  // is collected once refs are nulled.
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      void audioRef.current?.cancel();
-      void motionRef.current?.cancel();
-      audioRef.current = null;
-      motionRef.current = null;
-      touchRef.current = null;
-    };
-  }, []);
-
-  const beginCapture = async () => {
+  async function beginCapture() {
     try {
+      if (challenge && performance.now() >= challenge.expiresAtMs) {
+        throw new Error("The server challenge expired before capture started. Please try again.");
+      }
       // JIT permission gate. Onboarding asks once but a returning user
       // navigating straight to /verify won't re-trigger it, and the
       // AudioRecord constructor silently fails if RECORD_AUDIO isn't held —
@@ -172,13 +117,14 @@ export default function VerifyCapture() {
       touchRef.current = startTouchRecording((v) => {
         if (!mountedRef.current) return;
         touchLevel.current = Math.max(0, Math.min(1, v * 1.4));
-      });
+      }, challenge?.projectionVersion ?? 0);
 
       startedAtRef.current = Date.now();
       setPhase("capturing");
     } catch (err) {
       await audioRef.current?.cancel();
       await motionRef.current?.cancel();
+      touchRef.current?.cancel();
       audioRef.current = null;
       motionRef.current = null;
       touchRef.current = null;
@@ -189,9 +135,9 @@ export default function VerifyCapture() {
         params: { bucket: "generic", message },
       });
     }
-  };
+  }
 
-  const completeCapture = async () => {
+  async function completeCapture() {
     if (completionFiredRef.current) return;
     completionFiredRef.current = true;
     try {
@@ -226,6 +172,8 @@ export default function VerifyCapture() {
       if (!mountedRef.current) return;
       router.replace("/verify/processing");
     } catch (err) {
+      touchRef.current?.cancel();
+      touchRef.current = null;
       if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : "Capture failed.";
       router.replace({
@@ -233,11 +181,73 @@ export default function VerifyCapture() {
         params: { bucket: "generic", message },
       });
     }
-  };
+  }
+
+  // Empty-buffer guard. Reaching this screen without a fetched challenge
+  // is a routing bug, not a runtime case — redirect back to /verify/intro.
+  useEffect(() => {
+    if (!challenge) {
+      router.replace("/verify/intro");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Countdown loop. Guarded on `challenge` so the redirect above completes
+  // before sensors start spinning up.
+  useEffect(() => {
+    if (!challenge) return;
+    if (phase !== "countdown") return;
+    const id = setTimeout(
+      () => {
+        if (countdown <= 0) {
+          void beginCapture();
+          return;
+        }
+        setCountdown((c) => c - 1);
+      },
+      countdown <= 0 ? 0 : COUNTDOWN_MS / 3,
+    );
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, countdown]);
+
+  // Capture progress + auto-finish.
+  useEffect(() => {
+    if (phase !== "capturing") return;
+    const tick = () => {
+      const elapsed = startedAtRef.current ? Date.now() - startedAtRef.current : 0;
+      setProgress(Math.min(1, elapsed / CAPTURE_MS));
+    };
+    const interval = setInterval(tick, 50);
+    const finish = setTimeout(() => {
+      void completeCapture();
+    }, CAPTURE_MS);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(finish);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // Cleanup on unmount: cancel any in-flight recordings + drop buffered data.
+  // Async cancels fire and forget — acceptable because the recorders' own
+  // teardown is synchronous-enough (one native call) and any leftover memory
+  // is collected once refs are nulled.
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      void audioRef.current?.cancel();
+      void motionRef.current?.cancel();
+      touchRef.current?.cancel();
+      audioRef.current = null;
+      motionRef.current = null;
+      touchRef.current = null;
+    };
+  }, []);
 
   // Touch points arrive on the JS thread via runOnJS from the gesture worklet.
   const handleTouchPoint = (point: NormalizedTouchPoint) => {
-    touchRef.current?.push(point);
+    touchRef.current?.push(point, { t: point.t, x: point.curveX, y: point.curveY });
   };
 
   // Guard render: while the redirect effect above runs, draw nothing rather
@@ -287,10 +297,14 @@ export default function VerifyCapture() {
           <View style={styles.middle}>
             <ChallengePhrase phrase={phrase} active />
             <LissajousCanvas
-              params={params}
+              params={challenge.curve}
+              projectionVersion={challenge.projectionVersion}
               active
               durationMs={CAPTURE_MS}
               onTouchPoint={handleTouchPoint}
+              onContactStart={() => touchRef.current?.beginContact()}
+              onContactEnd={() => touchRef.current?.endContact()}
+              onTouchFailure={(message) => touchRef.current?.fail(message)}
             />
             <View style={styles.sensorBlock}>
               <SectionLabel>SENSORS</SectionLabel>

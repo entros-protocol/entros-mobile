@@ -1,8 +1,8 @@
-// Protocol-level constants for the Stage-3 hashing layer.
+// Protocol-level hashing constants.
 //
 // Kept in their own module (separate from `src/config/index.ts`) because
 // the env-var validation in that module throws at import time when the
-// .env block isn't populated — and the unit tests don't need the runtime
+// .env block is not populated. Unit tests do not need the runtime
 // config block to evaluate. These constants are pure values, no env reads.
 
 export const SIMHASH_PUBLIC_SEED_HEX =
@@ -10,7 +10,7 @@ export const SIMHASH_PUBLIC_SEED_HEX =
 
 export const LEGACY_SIMHASH_SEED = "IAM-PROTOCOL-SIMHASH-V1";
 
-export const CLIENT_PROJECTION_VERSION = 1;
+export { HIGHEST_SUPPORTED_PROJECTION_VERSION as CLIENT_PROJECTION_VERSION } from "../projection";
 
 export const FINGERPRINT_BITS = 256;
 

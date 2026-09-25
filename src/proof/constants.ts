@@ -1,20 +1,10 @@
-// Stage 6 Groth16 proof constants. Values verbatim from
-// pulse-sdk/src/config.ts so the on-chain serialised format matches
-// byte-for-byte (the on-chain verifier program is shared between web and
-// mobile flows).
-//
-// The two-of-three thresholds (DEFAULT_THRESHOLD + DEFAULT_MIN_DISTANCE) are
-// the protocol-frozen values for the Hamming-distance circuit; changing
-// either invalidates every existing on-chain anchor, so they are NOT
-// configurable per-deployment.
+// The verifier program enforces these bounds. Mobile uses the same values as
+// client defaults and verifies them against its bundled program IDL.
 
-/** Maximum Hamming distance between consecutive verifications. Bits that
- *  drift further than this trigger a soft-reject (paper §3 + §6.1). */
+/** Default threshold. The verifier program enforces the maximum accepted value. */
 export const DEFAULT_THRESHOLD = 96;
 
-/** Minimum Hamming distance between consecutive verifications. Bits that
- *  drift LESS than this signal a synthetic-replay attack (paper §3 + §6.10
- *  + master-list #95). */
+/** Default minimum distance. The verifier program enforces the minimum value. */
 export const DEFAULT_MIN_DISTANCE = 3;
 
 /** Number of public inputs to the Hamming circuit:
@@ -27,7 +17,7 @@ export const PROOF_B_SIZE = 128;
 export const PROOF_C_SIZE = 64;
 export const TOTAL_PROOF_SIZE = PROOF_A_SIZE + PROOF_B_SIZE + PROOF_C_SIZE;
 
-/** BN254 base field prime — used to negate the G1 y-coordinate when
+/** BN254 base field prime used to negate the G1 y-coordinate when
  *  converting snarkjs / arkworks proof_a to groth16-solana format. */
 export const BN254_BASE_FIELD = BigInt(
   "21888242871839275222246405745257275088696311157297823662689037894645226208583",

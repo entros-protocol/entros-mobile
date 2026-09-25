@@ -7,14 +7,6 @@
 namespace jsi = facebook::jsi;
 namespace react = facebook::react;
 
-// Automated testing checks Java_com_moproffi_MoproFfiModule and moproffi
-// by comparing the whole line here.
-/*
-Java_com_moproffi_MoproFfiModule_nativeMultiply(JNIEnv *env, jclass type, jdouble a, jdouble b) {
-    return moproffi::multiply(a, b);
-}
-*/
-
 // Installer coming from MoproFfiModule
 extern "C"
 JNIEXPORT jboolean JNICALL

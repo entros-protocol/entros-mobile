@@ -19,15 +19,15 @@ describe("projection policy decoding", () => {
   });
 
   test("reads the current and minimum versions", () => {
-    expect(decodeProjectionPolicy(configData(113, 1, 0))).toEqual({
-      current: 1,
-      minimumSupported: 0,
+    expect(decodeProjectionPolicy(configData(113, 2, 1))).toEqual({
+      current: 2,
+      minimumSupported: 1,
     });
   });
 
   test("rejects truncated, inverted, and unsupported policy", () => {
     expect(() => decodeProjectionPolicy(configData(111))).toThrow(/truncated/i);
     expect(() => decodeProjectionPolicy(configData(113, 0, 1))).toThrow(/invalid/i);
-    expect(() => decodeProjectionPolicy(configData(113, 2, 0))).toThrow(/update Entros/i);
+    expect(() => decodeProjectionPolicy(configData(113, 3, 0))).toThrow(/update Entros/i);
   });
 });

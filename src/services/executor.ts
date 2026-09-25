@@ -12,37 +12,37 @@
 // is the single-failure-UX path (Alert + stay on /verify/intro), so it
 // throws.
 //
-// Timeouts: 5 s for /challenge (small payload, cheap to fail-fast and
-// retry); 15 s for /validate-features (Whisper-tiny inference adds ~1 s on
-// warm path, more on Railway cold-start — matches pulse-sdk's window).
+// The challenge GET has a fixed timeout. Validation uses upload progress and
+// the server challenge deadline.
 //
 // PRIVACY: see src/sensor/types.ts for the audio b64 contract. This module
 // only forwards what the caller assembled; it never logs values or retains
 // references after the fetch resolves.
 
 import { config } from "@/config";
+import { validateLissajousParams, type LissajousParams } from "@/challenge/lissajous";
 import type { SignedReceiptDto } from "@/protocol/receipt";
 
 import { reasonDisposition, type VerificationReason } from "./reasons";
+import {
+  postValidationJson,
+  ValidationTransportError,
+  type ValidationJsonResponse,
+  type ValidationUploadProgress,
+} from "./validationJsonTransport";
+import {
+  buildValidateFeaturesRequestBody,
+  type ValidateFeaturesRequestBody,
+  type ValidateInput,
+} from "./validationRequest";
 
 const CHALLENGE_TIMEOUT_MS = 5_000;
-// Must exceed the executor's own ceiling, not sit inside it. The executor
-// waits up to VALIDATOR_REQUEST_TIMEOUT (20s) on the validation service and
-// pads every timed response to HANDLER_MIN_DURATION (4s), so a legitimate
-// two-pass validation can legitimately take past 24s.
-//
-// Aborting earlier does not cancel any of that. The executor has already
-// recorded the wallet attempt and deducted quota by the time it calls the
-// validator, and the refund only runs if the handler completes. A client that
-// walks away at 15s therefore burns an attempt with no refund, and five of
-// those lock the wallet out for an hour. The previous 15s was safe only while
-// the executor's own ceiling was 8s.
-const VALIDATE_TIMEOUT_MS = 45_000;
+const MAX_CHALLENGE_LIFETIME_SEC = 300;
 
 export interface ChallengeResponse {
   /** 32-byte server-issued nonce. Bound to the wallet in the executor's
    *  ChallengeNonceRegistry; consumed by the on-chain create_challenge
-   *  instruction in Stage 7. */
+   *  instruction during on-chain submission. */
   nonce: Uint8Array;
   /** 5-word phrase drawn from the executor's curated dictionary. The
    *  validation service looks this up by wallet+ttl during phrase binding;
@@ -50,6 +50,10 @@ export interface ChallengeResponse {
   phrase: string;
   /** Server-side TTL in seconds. Default 60 per executor config. */
   expiresIn: number;
+  /** Conservative monotonic deadline measured from request start. */
+  expiresAtMs: number;
+  /** Server-issued touch challenge. */
+  curve: LissajousParams;
 }
 
 /** Discriminated outcome of a /validate-features call. Which reasons are
@@ -75,9 +79,7 @@ export interface ChallengeResponse {
  *    so `hard-reject` keeps meaning what its line above says.
  *  - `quota-exhausted`: integrator API key out of quota (402)
  *  - `unauthorized`: API key missing/wrong (401) — config bug, surfaces generic
- *  - `timeout`: the request outlived VALIDATE_TIMEOUT_MS and we aborted it.
- *    Separate from `service-down` because the executor may be healthy and the
- *    upload merely slow, which makes "can't reach the service" a lie.
+ *  - `timeout`: upload progress stalled or the challenge deadline elapsed.
  *  - `service-down`: 5xx, or a transport failure that never became a response
  *  - `unknown`: anything else; logged status for triage */
 export type ValidateOutcome =
@@ -99,20 +101,14 @@ export type ValidateOutcome =
   | { kind: "service-down"; message: string }
   | { kind: "unknown"; status: number; message: string };
 
-export interface ValidateInput {
-  features: number[];
-  projectionVersion: number;
-  walletId: string;
-  f0Contour?: number[];
-  accelMagnitude?: number[];
-  audioSamplesB64?: string;
-  audioSampleRateHz?: number;
-  /** Lowercase 64-char hex of the 32-byte Poseidon commitment. When present,
-   *  the validator signs a (wallet, commitment, validated_at) receipt and
-   *  returns it on the `ok` outcome for first-verify Ed25519 binding. */
-  commitmentNewHex?: string;
-  receiptPurpose?: "mint" | "rebaseline" | "reset";
+export interface ValidateFeaturesRequestOptions {
+  deadlineAtMs?: number;
+  signal?: AbortSignal;
+  onUploadProgress?: (progress: ValidationUploadProgress) => void;
 }
+
+export { buildValidateFeaturesRequestBody } from "./validationRequest";
+export type { ValidateFeaturesRequestBody, ValidateInput } from "./validationRequest";
 
 /** Thrown when EXPO_PUBLIC_RELAYER_URL is not set. The intro screen
  *  surfaces this as a friendly Alert; reaching this in production is a
@@ -152,6 +148,7 @@ export async function fetchChallenge(walletAddress: string): Promise<ChallengeRe
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CHALLENGE_TIMEOUT_MS);
+  const requestedAtMs = performance.now();
   let response: Response;
   try {
     response = await fetch(url.toString(), {
@@ -174,19 +171,34 @@ export async function fetchChallenge(walletAddress: string): Promise<ChallengeRe
     nonce?: number[];
     expires_in?: number;
     phrase?: string;
+    curve?: unknown;
   };
 
-  if (!Array.isArray(body.nonce) || body.nonce.length !== 32) {
+  if (
+    !Array.isArray(body.nonce) ||
+    body.nonce.length !== 32 ||
+    body.nonce.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+  ) {
     throw new Error("Executor returned a malformed nonce; expected a 32-byte array.");
   }
   if (typeof body.phrase !== "string" || body.phrase.trim().length === 0) {
     throw new Error("Executor returned an empty challenge phrase.");
   }
+  if (
+    !Number.isSafeInteger(body.expires_in) ||
+    body.expires_in! <= 0 ||
+    body.expires_in! > MAX_CHALLENGE_LIFETIME_SEC
+  ) {
+    throw new Error("Executor returned a malformed challenge lifetime.");
+  }
+  const curve = validateLissajousParams(body.curve);
 
   return {
     nonce: Uint8Array.from(body.nonce),
     phrase: body.phrase,
-    expiresIn: typeof body.expires_in === "number" ? body.expires_in : 60,
+    expiresIn: body.expires_in!,
+    expiresAtMs: requestedAtMs + body.expires_in! * 1_000,
+    curve,
   };
 }
 
@@ -207,7 +219,18 @@ interface ValidateBody {
  *  `service-down` so the contract holds even when the executor URL is
  *  missing (the relayer-down bucket surfaces the right "try again later"
  *  UX without leaking config detail to the user). */
-export async function validateFeatures(input: ValidateInput): Promise<ValidateOutcome> {
+export async function validateFeatures(
+  input: ValidateInput,
+  options?: ValidateFeaturesRequestOptions,
+): Promise<ValidateOutcome> {
+  return validateFeaturesRequest(buildValidateFeaturesRequestBody(input), options);
+}
+
+/** Send an already-built request so authorization signs the exact verdict inputs on the wire. */
+export async function validateFeaturesRequest(
+  requestBody: ValidateFeaturesRequestBody,
+  options: ValidateFeaturesRequestOptions = {},
+): Promise<ValidateOutcome> {
   let relayer: RelayerConfig;
   try {
     relayer = requireRelayer();
@@ -221,54 +244,33 @@ export async function validateFeatures(input: ValidateInput): Promise<ValidateOu
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["X-API-Key"] = apiKey;
 
-  const body = JSON.stringify({
-    features: input.features,
-    projection_version: input.projectionVersion,
-    wallet_id: input.walletId,
-    f0_contour: input.f0Contour,
-    accel_magnitude: input.accelMagnitude,
-    audio_samples_b64: input.audioSamplesB64,
-    audio_sample_rate_hz: input.audioSampleRateHz,
-    commitment_new_hex: input.commitmentNewHex,
-    // Explicit mint-intent signal. New validators sign a receipt over a
-    // commitment THEY derive from `features`; `commitment_new_hex` is still
-    // sent so older validators (which trust it) keep working.
-    request_receipt: input.receiptPurpose !== undefined,
-    receipt_purpose: input.receiptPurpose,
-    baseline_reset: input.receiptPurpose === "reset",
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), VALIDATE_TIMEOUT_MS);
-  let response: Response;
+  let response: ValidationJsonResponse;
   try {
-    response = await fetch(url.toString(), {
-      method: "POST",
+    response = await postValidationJson({
+      url: url.toString(),
       headers,
-      body,
-      signal: controller.signal,
+      body: JSON.stringify(requestBody),
+      deadlineAtMs: options.deadlineAtMs,
+      signal: options.signal,
+      onUploadProgress: options.onUploadProgress,
     });
   } catch (err) {
-    // The only thing that aborts this request is our own timer, so an
-    // AbortError means the upload outran VALIDATE_TIMEOUT_MS. Folding it into
-    // `service-down` told the user the executor was unreachable when it may
-    // have been healthy the whole time and the connection merely slow.
-    if (err instanceof Error && err.name === "AbortError") {
-      return { kind: "timeout" };
+    if (err instanceof ValidationTransportError) {
+      if (err.kind === "stalled" || err.kind === "deadline") return { kind: "timeout" };
+      return { kind: "service-down", message: err.message };
     }
     const message = err instanceof Error ? err.message : String(err);
     return { kind: "service-down", message };
-  } finally {
-    clearTimeout(timer);
   }
 
-  // Parse once. Executor's IntoResponse always emits JSON for both success and
-  // error paths; a body parse failure means the response wasn't from the
-  // executor at all (proxy / gateway error page). Default to {} so the status
-  // path below still gets to choose the right kind.
-  const parsed: ValidateBody = await response.json().catch(() => ({}) as ValidateBody);
+  let parsed: ValidateBody = {};
+  try {
+    parsed = JSON.parse(response.body) as ValidateBody;
+  } catch {
+    // Status mapping remains authoritative when a gateway returns non-JSON.
+  }
 
-  if (response.ok && parsed.valid === true) {
+  if (response.status >= 200 && response.status < 300 && parsed.valid === true) {
     return {
       kind: "ok",
       remainingQuota: typeof parsed.remaining_quota === "number" ? parsed.remaining_quota : null,

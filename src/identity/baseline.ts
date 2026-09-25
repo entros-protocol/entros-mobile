@@ -3,8 +3,8 @@
 // Stores the {fingerprint, salt, commitment, timestamp} bundle as an
 // AES-256-GCM ciphertext envelope in expo-secure-store. The AES key lives
 // in the same secure-store namespace, hardware-backed at rest by the OS
-// (Android Keystore / iOS Keychain). On future verify cycles, Stage 6 will
-// decrypt to recover the prior fingerprint for the Hamming distance proof.
+// (Android Keystore / iOS Keychain). Re-verification decrypts the prior
+// fingerprint only while generating the Hamming distance proof.
 //
 // Mirrors pulse-sdk/src/identity/{anchor,crypto}.ts envelope semantics so a
 // future migration tool could read either format. Plaintext shape matches
@@ -42,7 +42,7 @@ interface Envelope {
  * StoredVerificationData byte-for-byte so a future migration could read
  * either platform's envelope.
  *
- * - `fingerprint`: 256 bits as 0/1 array (Stage 3 simhash output).
+ * - `fingerprint`: 256 SimHash bits stored as a 0/1 array.
  * - `salt`: bigint serialised as decimal string (matches web SDK).
  * - `commitment`: bigint serialised as decimal string (matches web SDK).
  * - `timestamp`: epoch milliseconds at the moment of persistence.
@@ -146,9 +146,7 @@ export const loadBaseline = async (): Promise<StoredBaseline | null> => {
 };
 
 /**
- * Wipe both the envelope and the AES key. Called on `reset_identity_state`
- * confirmation (Stage 7 will route an on-chain reset here; Stage 5 wires
- * the dev-panel reset action through the same path).
+ * Wipe both the envelope and the AES key after a confirmed identity reset.
  *
  * Both deletes run in parallel. A partial failure leaves orphan state that
  * loadBaseline tolerates (returns null), so the next cycle still mints a

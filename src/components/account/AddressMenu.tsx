@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { Alert, BackHandler, Dimensions, Pressable, StyleSheet, View } from "react-native";
 import Animated, {
   Easing,
-  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -39,28 +38,27 @@ export const AddressMenu = () => {
   } = useAppState();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState<null | "disconnect">(null);
-  const [mounted, setMounted] = useState(walletMenuOpen);
 
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const backdropOpacity = useSharedValue(0);
 
   useEffect(() => {
     if (walletMenuOpen) {
-      setMounted(true);
-      translateY.value = withTiming(0, {
-        duration: ANIMATION_MS,
-        easing: Easing.out(Easing.cubic),
-      });
-      backdropOpacity.value = withTiming(1, { duration: ANIMATION_MS });
-    } else {
-      translateY.value = withTiming(
-        SCREEN_HEIGHT,
-        { duration: ANIMATION_MS, easing: Easing.in(Easing.cubic) },
-        (finished) => {
-          if (finished) runOnJS(setMounted)(false);
-        },
+      translateY.set(
+        withTiming(0, {
+          duration: ANIMATION_MS,
+          easing: Easing.out(Easing.cubic),
+        }),
       );
-      backdropOpacity.value = withTiming(0, { duration: ANIMATION_MS });
+      backdropOpacity.set(withTiming(1, { duration: ANIMATION_MS }));
+    } else {
+      translateY.set(
+        withTiming(SCREEN_HEIGHT, {
+          duration: ANIMATION_MS,
+          easing: Easing.in(Easing.cubic),
+        }),
+      );
+      backdropOpacity.set(withTiming(0, { duration: ANIMATION_MS }));
     }
   }, [walletMenuOpen, translateY, backdropOpacity]);
 
@@ -75,10 +73,10 @@ export const AddressMenu = () => {
   }, [walletMenuOpen, closeWalletMenu]);
 
   const sheetStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
+    transform: [{ translateY: translateY.get() }],
   }));
   const backdropStyle = useAnimatedStyle(() => ({
-    opacity: backdropOpacity.value,
+    opacity: backdropOpacity.get(),
   }));
 
   const address = connection.address;
@@ -114,10 +112,8 @@ export const AddressMenu = () => {
     }
   };
 
-  if (!mounted) return null;
-
   return (
-    <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+    <View style={StyleSheet.absoluteFill} pointerEvents={walletMenuOpen ? "box-none" : "none"}>
       <Animated.View style={[styles.backdrop, backdropStyle]} pointerEvents="auto">
         <Pressable
           style={StyleSheet.absoluteFill}
@@ -221,7 +217,7 @@ const ActionRow = ({
 
 const styles = StyleSheet.create({
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0,0,0,0.6)",
   },
   sheetWrap: {

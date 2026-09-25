@@ -133,8 +133,9 @@ export default function VerifyIntro() {
         return;
       }
 
+      let projectionPolicy;
       try {
-        await fetchProjectionPolicy(getConnection());
+        projectionPolicy = await fetchProjectionPolicy(getConnection());
       } catch (err) {
         Alert.alert(
           "Update required",
@@ -157,7 +158,14 @@ export default function VerifyIntro() {
 
       try {
         const challenge = await fetchChallenge(wallet);
-        setChallenge({ nonce: challenge.nonce, phrase: challenge.phrase });
+        setChallenge({
+          nonce: challenge.nonce,
+          phrase: challenge.phrase,
+          expiresIn: challenge.expiresIn,
+          expiresAtMs: challenge.expiresAtMs,
+          curve: challenge.curve,
+          projectionVersion: projectionPolicy.current,
+        });
         devWarn(`[Entros] /challenge ok ttl=${challenge.expiresIn}s`);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not reach the executor.";

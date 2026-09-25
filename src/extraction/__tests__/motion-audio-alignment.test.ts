@@ -18,8 +18,8 @@ import type { MotionSample } from "../types";
  * other. They now share an epoch and the contour is resampled onto the audio's
  * own window.
  *
- * Mirrors `pulse-sdk/test/motion-audio-alignment.test.ts`. The two are
- * hand-kept copies until mobile consumes the published SDK (master-list #219).
+ * Mirrors `pulse-sdk/test/motion-audio-alignment.test.ts`. Keep both copies
+ * aligned until mobile consumes the published SDK.
  */
 
 function correlation(a: number[], b: number[]): number {

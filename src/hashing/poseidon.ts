@@ -88,10 +88,10 @@ export function bigintToBytes32(n: bigint): Uint8Array {
 /**
  * Generate a complete TBH from a fingerprint.
  *
- * The returned `fingerprint` field is the same array reference passed in —
+ * The returned `fingerprint` field is the same array reference passed in.
  * callers should drop their own reference and read from `tbh.fingerprint`
- * only if they explicitly need it (e.g. to encrypt as the Stage 5 baseline).
- * For Stage 3, only `commitment`, `commitmentBytes`, and `salt` move forward.
+ * only when encrypting a baseline. Other paths retain only the commitment
+ * and salt.
  */
 export async function generateTBH(fingerprint: TemporalFingerprint, salt?: bigint): Promise<TBH> {
   const s = salt ?? generateSalt();

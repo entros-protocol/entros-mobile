@@ -1,4 +1,4 @@
-// Stage 8 — on-chain ProtocolConfig reads.
+// On-chain ProtocolConfig reads.
 //
 // The entros_registry program owns the ProtocolConfig PDA which holds the
 // global verification_fee (lamports per verification) and other
@@ -16,7 +16,7 @@ import { type Connection } from "@solana/web3.js";
 import { config } from "@/config";
 import { devWarn } from "@/lib/log";
 
-import { entrosRegistryIdl } from "./idl";
+import entrosRegistryIdl from "./idl/entros_registry.json";
 import { findProtocolConfigPda } from "./pdas";
 import { decodeProjectionPolicy, type ProjectionPolicy } from "./projectionPolicy";
 

@@ -465,10 +465,10 @@ export async function extractSpeakerFeaturesDetailed(
   ];
   await yieldToMainThread();
 
-  if (projectionVersion !== 0 && projectionVersion !== 1) {
+  if (projectionVersion !== 0 && projectionVersion !== 1 && projectionVersion !== 2) {
     throw new Error(`Unsupported projection version ${projectionVersion}`);
   }
-  const corrected = projectionVersion === 1;
+  const corrected = projectionVersion >= 1;
 
   // 7. Formant analysis
   const lpcSamples = corrected ? preEmphasizeAudio(normalizedSamples) : normalizedSamples;

@@ -39,10 +39,7 @@ const BarColumn = ({ label, count, color, active, levelRef }: ColumnProps) => {
   const [bars, setBars] = useState<number[]>(() => Array.from({ length: count }, () => 0.15));
 
   useEffect(() => {
-    if (!active) {
-      setBars((prev) => prev.map((v) => v * 0.6));
-      return;
-    }
+    if (!active) return;
     const id = setInterval(() => {
       setBars((prev) => {
         if (isLive) {

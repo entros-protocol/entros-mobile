@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import { generateProjectionWords, PROJECTION_PURPOSE } from "../hyperplanes";
-import { simhash } from "../simhash";
+import { simhash, simhashDotProducts } from "../simhash";
 
 const PUBLIC_SEED = Uint8Array.from([
   0x9e, 0xe9, 0xc0, 0x2f, 0x3f, 0xc6, 0xa2, 0xab, 0xce, 0x70, 0x30, 0x10, 0xe6, 0x43, 0x78, 0xd4,
@@ -71,6 +71,21 @@ describe("projection hyperplanes", () => {
   test("accepts exactly 308 features under projection version 1", () => {
     expect(simhash(new Array(308).fill(0), 1)).toHaveLength(256);
   });
+
+  test.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "rejects non-finite feature value %s",
+    (invalid) => {
+      const features = new Array(308).fill(0);
+      features[17] = invalid;
+
+      expect(() => simhash(features, 1)).toThrow(
+        "Feature vector contains a non-finite value at 17",
+      );
+      expect(() => simhashDotProducts(features, 1)).toThrow(
+        "Feature vector contains a non-finite value at 17",
+      );
+    },
+  );
 
   test("bounds the exported projection word stream", () => {
     expect(() => generateProjectionWords(PUBLIC_SEED, 255 as never, 1, 308, 1)).toThrow(
