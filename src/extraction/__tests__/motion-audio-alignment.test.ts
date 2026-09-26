@@ -5,18 +5,12 @@ import type { MotionSample } from "../types";
  * Aligning the motion contour to the audio window.
  *
  * `accel_magnitude` is correlated against the F0 contour server-side, so the
- * two have to describe the same stretch of wall-clock time. This used to be
- * built by mapping motion's array index proportionally onto audio's frame
- * count, which holds only while both streams happen to cover the same window.
- *
- * On web that assumption broke on 2026-07-31: `pulse-sdk@4.0.0` trimmed the
- * pre-prompt lead-in out of the audio and left motion carrying it, coupling
- * fell from r=0.31 to r=0.03, and every mobile browser verification was
- * rejected for ten hours. Mobile never shipped that trim, so this file was
- * correct by luck rather than by construction, and both sensors stamped
- * `Date.now()` from their own start so neither could be placed against the
- * other. They now share an epoch and the contour is resampled onto the audio's
- * own window.
+ * two have to describe the same stretch of wall-clock time. Mapping motion's
+ * array index proportionally onto audio's frame count holds only while both
+ * streams happen to cover the same window. Trimming a lead-in from one stream
+ * and not the other breaks that mapping and decorrelates the contours. Both
+ * sensors therefore stamp samples against a shared epoch, and the contour is
+ * resampled onto the audio's own window.
  *
  * Mirrors `pulse-sdk/test/motion-audio-alignment.test.ts`. Keep both copies
  * aligned until mobile consumes the published SDK.

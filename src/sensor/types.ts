@@ -5,7 +5,7 @@
 // are never persisted (no AsyncStorage, no SecureStore, no app document
 // directory), never logged with values (only lengths and statistics for
 // diagnostics), and never transmitted off-device EXCEPT for the audio b64
-// path to /validate-features for Whisper STT (paper §6.8 sanctioned exception).
+// path to /validate-features for transient phrase transcription.
 
 /**
  * The rate `audio.ts` asks `AudioRecord` to configure.
