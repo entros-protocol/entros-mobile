@@ -10,6 +10,7 @@
 // `err.name`, so this is byte-equivalent to constructing the real classes.
 
 import { parseSubmitError } from "../errors";
+import anchorIdl from "../idl/entros_anchor.json";
 
 /** Build an Error whose `.name` matches one of the MWA class names. The
  *  parser uses `err.name === "..."` rather than `instanceof`, so this is
@@ -104,9 +105,14 @@ describe("parseSubmitError — Anchor numeric codes", () => {
     expect(parseSubmitError(err).kind).toBe("clock-drift");
   });
 
-  test("ProofFromFuture (6014) → clock-drift", () => {
-    const err = { message: "Error Number: 6014. ProofFromFuture" };
+  test("ProofFromFuture (6015) → clock-drift", () => {
+    const err = { message: "Error Number: 6015. ProofFromFuture" };
     expect(parseSubmitError(err).kind).toBe("clock-drift");
+  });
+
+  test("UnauthorizedNewWallet (6014) → generic", () => {
+    const err = { message: "Error Number: 6014. UnauthorizedNewWallet" };
+    expect(parseSubmitError(err).kind).toBe("generic");
   });
 
   test("ResetCooldownActive (6012) → cooldown-active", () => {
@@ -114,30 +120,84 @@ describe("parseSubmitError — Anchor numeric codes", () => {
     expect(parseSubmitError(err).kind).toBe("cooldown-active");
   });
 
-  test("MissingValidatorReceipt (6015) → receipt-rejected", () => {
-    const err = { message: "Error Number: 6015. MissingValidatorReceipt" };
+  test("MissingValidatorReceipt (6016) → receipt-rejected", () => {
+    const err = { message: "Error Number: 6016. MissingValidatorReceipt" };
     expect(parseSubmitError(err).kind).toBe("receipt-rejected");
-    expect(parseSubmitError(err).anchorCode).toBe(6015);
+    expect(parseSubmitError(err).anchorCode).toBe(6016);
   });
 
-  test("ReceiptValidatorMismatch (6016) → receipt-rejected", () => {
-    expect(parseSubmitError({ message: "Error Number: 6016" }).kind).toBe("receipt-rejected");
-  });
-
-  test("ReceiptCommitmentMismatch (6017) → receipt-rejected", () => {
+  test("ReceiptValidatorMismatch (6017) → receipt-rejected", () => {
     expect(parseSubmitError({ message: "Error Number: 6017" }).kind).toBe("receipt-rejected");
   });
 
-  test("ReceiptExpired (6019) → receipt-rejected", () => {
-    expect(parseSubmitError({ message: "Error Number: 6019" }).kind).toBe("receipt-rejected");
+  test("ReceiptCommitmentMismatch (6018) → receipt-rejected", () => {
+    expect(parseSubmitError({ message: "Error Number: 6018" }).kind).toBe("receipt-rejected");
   });
 
-  test("ReceiptFromFuture (6020) → receipt-rejected", () => {
-    expect(parseSubmitError({ message: "Error Number: 6020" }).kind).toBe("receipt-rejected");
+  test("ReceiptExpired (6020) → clock-drift, a retry rather than a key rotation", () => {
+    expect(parseSubmitError({ message: "Error Number: 6020" }).kind).toBe("clock-drift");
+    expect(parseSubmitError(new Error(`{"InstructionError":[1,{"Custom":6020}]}`)).kind).toBe(
+      "clock-drift",
+    );
   });
 
-  test("MalformedReceiptMessage (6021) → receipt-rejected", () => {
-    expect(parseSubmitError({ message: "Error Number: 6021" }).kind).toBe("receipt-rejected");
+  test("ReceiptFromFuture (6021) → clock-drift, a retry rather than a key rotation", () => {
+    expect(parseSubmitError({ message: "Error Number: 6021" }).kind).toBe("clock-drift");
+  });
+
+  test("MalformedReceiptMessage (6022) → receipt-rejected", () => {
+    expect(parseSubmitError({ message: "Error Number: 6022" }).kind).toBe("receipt-rejected");
+  });
+
+  test("InvalidAssuranceTier (6036) → receipt-rejected", () => {
+    const parsed = parseSubmitError(
+      new Error(`Transaction failed on chain: {"InstructionError":[1,{"Custom":6036}]}`),
+    );
+    expect(parsed.kind).toBe("receipt-rejected");
+    expect(parsed.anchorCode).toBe(6036);
+  });
+
+  test("classifies every receipt and clock error by the code the bundled IDL gives it", () => {
+    const codes = new Map(anchorIdl.errors.map((error) => [error.name, error.code]));
+    const receipts = [
+      "MissingValidatorReceipt",
+      "ReceiptValidatorMismatch",
+      "ReceiptCommitmentMismatch",
+      "ReceiptWalletMismatch",
+      "MalformedReceiptMessage",
+      "ReceiptVersionMismatch",
+      "ReceiptPurposeMismatch",
+      "ReceiptProjectionVersionMismatch",
+      "InvalidAssuranceTier",
+    ];
+    const clocks = ["ProofExpired", "ProofFromFuture", "ReceiptExpired", "ReceiptFromFuture"];
+    for (const [names, kind] of [
+      [receipts, "receipt-rejected"],
+      [clocks, "clock-drift"],
+    ] as const) {
+      for (const name of names) {
+        const code = codes.get(name);
+        expect([name, code]).toEqual([name, expect.any(Number)]);
+        expect([name, parseSubmitError({ message: `Error Number: ${code}` }).kind]).toEqual([
+          name,
+          kind,
+        ]);
+        expect([name, parseSubmitError({ message: `Error Code: ${name}.` }).kind]).toEqual([
+          name,
+          kind,
+        ]);
+      }
+    }
+    // A new receipt error must join a table. InvalidResetReceiptAccounts names
+    // an account layout, not a refused receipt.
+    for (const error of anchorIdl.errors) {
+      if (
+        /Receipt|AssuranceTier/.test(error.name) &&
+        error.name !== "InvalidResetReceiptAccounts"
+      ) {
+        expect([...receipts, ...clocks]).toContain(error.name);
+      }
+    }
   });
 
   test("an unmatched anchor code is generic, not a bug report", () => {
@@ -151,6 +211,46 @@ describe("parseSubmitError — Anchor numeric codes", () => {
 
   test("ArithmeticOverflow (6002) → programming-error", () => {
     expect(parseSubmitError({ message: "Error Number: 6002" }).kind).toBe("programming-error");
+  });
+});
+
+describe("parseSubmitError - Anchor error names", () => {
+  test("the printed name decides before the number", () => {
+    const out = parseSubmitError({
+      message: "AnchorError occurred. Error Code: ReceiptExpired. Error Number: 6017.",
+    });
+    expect(out.kind).toBe("clock-drift");
+    expect(out.anchorCode).toBe(6020);
+  });
+
+  test("the parsed AnchorError's code name decides before its number", () => {
+    const out = parseSubmitError({
+      message: "AnchorError occurred.",
+      error: { errorCode: { number: 6017, code: "ReceiptFromFuture" } },
+    });
+    expect(out.kind).toBe("clock-drift");
+    expect(out.anchorCode).toBe(6021);
+  });
+
+  test("a name without a number still resolves", () => {
+    const out = parseSubmitError({ message: "Error Code: ResetCooldownActive." });
+    expect(out.kind).toBe("cooldown-active");
+    expect(out.anchorCode).toBe(6012);
+  });
+
+  test("a verifier name that shares a number with entros-anchor keeps its own meaning", () => {
+    // entros-verifier numbers ArithmeticOverflow 6007, which entros-anchor uses
+    // for a stale verification result.
+    const out = parseSubmitError({
+      message: "Error Code: ArithmeticOverflow. Error Number: 6007.",
+    });
+    expect(out.kind).toBe("programming-error");
+  });
+
+  test("a name entros-anchor does not define falls back to the number", () => {
+    const out = parseSubmitError({ message: "Error Code: SomethingNew. Error Number: 6010." });
+    expect(out.kind).toBe("commitment-binding");
+    expect(out.anchorCode).toBe(6010);
   });
 });
 
@@ -190,8 +290,8 @@ describe("parseSubmitError — RPC-shape InstructionError JSON", () => {
     expect(out.anchorCode).toBe(6010);
   });
 
-  test("InstructionError Custom=6015 → receipt-rejected", () => {
-    const err = new Error(`{"InstructionError":[1,{"Custom":6015}]}`);
+  test("InstructionError Custom=6016 → receipt-rejected", () => {
+    const err = new Error(`{"InstructionError":[1,{"Custom":6016}]}`);
     expect(parseSubmitError(err).kind).toBe("receipt-rejected");
   });
 

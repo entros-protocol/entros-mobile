@@ -6,7 +6,8 @@
 // on top via SendTransactionError.
 //
 // Source-of-truth error catalogues:
-// - protocol-core/programs/entros-anchor/src/errors.rs (codes 6000-6025)
+// - protocol-core/programs/entros-anchor/src/errors.rs, as bundled in
+//   ./idl/entros_anchor.json (codes 6000-6036)
 // - protocol-core/programs/entros-verifier/src/errors.rs (codes 6000-6007)
 // - Solana runtime: SystemProgram InsufficientFunds, BlockhashNotFound,
 //   AlreadyProcessed, AccountAlreadyInitialized, AccountNotInitialized
@@ -15,11 +16,15 @@
 //
 // Anchor numerically allocates 6000+ per program independently, so the same
 // numeric code maps to different errors across entros-anchor / entros-verifier.
-// We disambiguate by (a) preferring the message-string match for verifier
-// codes (their messages are distinctive), then (b) falling through to
-// entros-anchor's range. Anchor 0.32+ ships per-program errors via
-// `error.program` on the parsed AnchorError, but we don't depend on that
-// because older error paths (preflight RPC) drop the program field.
+// The error name is unambiguous where the number is not, so the parser reads it
+// first: Anchor prints it as `Error Code: <Name>`, and the parsed AnchorError
+// carries it as `error.errorCode.code`. A name in the bundled entros-anchor IDL
+// resolves to that program's code. Without such a name the parser falls back to
+// the number, prefers the message-string match for verifier codes (their
+// messages are distinctive), and reads anything else in entros-anchor's range.
+// Anchor 0.32+ ships per-program errors via `error.program` on the parsed
+// AnchorError, but we don't depend on that because older error paths
+// (preflight RPC) drop the program field.
 //
 // MWA typed errors (MWAUserRejectedError, MWATimeoutError, etc) are matched
 // via `err.name === "..."` rather than `instanceof` so this module stays
@@ -28,6 +33,8 @@
 // can't run under Jest's Node test environment without an RN runtime mock).
 // The class constructors set `this.name` explicitly, so name-matching is
 // equivalent to instanceof for these well-known classes.
+
+import anchorIdl from "./idl/entros_anchor.json";
 
 const MWA_ERROR_NAMES = {
   userRejected: "MWAUserRejectedError",
@@ -54,13 +61,51 @@ export type SubmitErrorKind =
   | "anchor-already-exists" // Path A repeat for already-anchored wallet; route to reset_identity_state
   | "proof-rejected" // entros-verifier ProofVerificationFailed; circuit/key drift class
   | "commitment-binding" // entros-anchor 6010 / 6011; proof <-> on-chain mismatch
-  | "receipt-rejected" // entros-anchor 6015-6021 hard-fail family
+  | "receipt-rejected" // entros-anchor receipt family, see RECEIPT_ERRORS
   | "challenge-stale" // entros-verifier ChallengeExpired / AlreadyUsed / NotUsed / InvalidNonce
-  | "clock-drift" // entros-anchor 6014 (ProofFromFuture) / 6020 (ReceiptFromFuture)
+  | "clock-drift" // entros-anchor proof or receipt timestamp off the cluster clock, see CLOCK_ERRORS
   | "cooldown-active" // entros-anchor 6012; 7-day reset gate
   | "programming-error" // arithmetic overflow / serialization; bug class — surface "report this"
   | "network-unreachable" // RPC unreachable mid-confirm; transient
   | "generic"; // last resort
+
+/** entros-anchor error codes by name, from the bundled IDL. */
+const ANCHOR_CODES_BY_NAME: ReadonlyMap<string, number> = new Map(
+  anchorIdl.errors.map((error) => [error.name, error.code]),
+);
+
+/** The codes the bundled IDL gives these entros-anchor error names. The
+ *  program appends new codes and has inserted some mid-range, so the tables
+ *  below hold names and never a numeric range. */
+function anchorCodes(names: readonly string[]): ReadonlySet<number> {
+  const codes = new Set<number>();
+  for (const name of names) {
+    const code = ANCHOR_CODES_BY_NAME.get(name);
+    if (code !== undefined) codes.add(code);
+  }
+  return codes;
+}
+
+/** entros-anchor errors for a receipt the program refused. */
+const RECEIPT_ERRORS = [
+  "MissingValidatorReceipt",
+  "ReceiptValidatorMismatch",
+  "ReceiptCommitmentMismatch",
+  "ReceiptWalletMismatch",
+  "MalformedReceiptMessage",
+  "ReceiptVersionMismatch",
+  "ReceiptPurposeMismatch",
+  "ReceiptProjectionVersionMismatch",
+  "InvalidAssuranceTier",
+];
+
+/** entros-anchor errors for a proof or receipt whose timestamp sits outside
+ *  the cluster clock's window. A fresh attempt carries fresh timestamps, so
+ *  these retry rather than report a validator that rotated its key. */
+const CLOCK_ERRORS = ["ProofExpired", "ProofFromFuture", "ReceiptExpired", "ReceiptFromFuture"];
+
+const RECEIPT_CODES = anchorCodes(RECEIPT_ERRORS);
+const CLOCK_CODES = anchorCodes(CLOCK_ERRORS);
 
 export interface ParsedSubmitError {
   kind: SubmitErrorKind;
@@ -68,6 +113,19 @@ export interface ParsedSubmitError {
   raw: string;
   /** Anchor error code (typically 6000-6999) when matched; null otherwise. */
   anchorCode: number | null;
+}
+
+/** The entros-anchor code an error names, from the parsed AnchorError's
+ *  `errorCode.code` or the `Error Code: <Name>` Anchor prints. Null when the
+ *  error names nothing, or names an error entros-anchor does not define. */
+function namedAnchorCode(err: unknown): number | null {
+  if (err == null || typeof err !== "object") return null;
+  const candidate = err as { error?: { errorCode?: { code?: unknown } }; message?: unknown };
+  const nested = candidate.error?.errorCode?.code;
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  const name =
+    typeof nested === "string" ? nested : /Error\s+Code:\s*([A-Za-z0-9_]+)/.exec(message)?.[1];
+  return name === undefined ? null : (ANCHOR_CODES_BY_NAME.get(name) ?? null);
 }
 
 /** Pull a numeric Anchor error code out of whatever shape the SDK threw.
@@ -145,7 +203,7 @@ function categorizeAnchorCode(code: number, raw: string): ParsedSubmitError {
   }
 
   // entros-anchor receipt failures.
-  if (code >= 6015 && code <= 6021) {
+  if (RECEIPT_CODES.has(code)) {
     return { kind: "receipt-rejected", raw, anchorCode: code };
   }
 
@@ -155,7 +213,7 @@ function categorizeAnchorCode(code: number, raw: string): ParsedSubmitError {
   }
 
   // entros-anchor: clock-drift
-  if (code === 6009 || code === 6014) {
+  if (CLOCK_CODES.has(code)) {
     return { kind: "clock-drift", raw, anchorCode: code };
   }
 
@@ -198,7 +256,8 @@ const extractRaw = (err: unknown): string => {
 /** Convert a raw caught error into a typed ParsedSubmitError. Order matters:
  *  - MWA Error classes (instanceof) FIRST so we catch known typed errors
  *    before falling into message-regex heuristics
- *  - Anchor numeric code SECOND because its match is most specific
+ *  - Anchor error name, then numeric code, SECOND because their match is
+ *    most specific
  *  - SystemProgram + runtime patterns THIRD
  *  - Generic fallthrough LAST */
 export function parseSubmitError(err: unknown): ParsedSubmitError {
@@ -240,8 +299,11 @@ export function parseSubmitError(err: unknown): ParsedSubmitError {
     return { kind: "receipt-rejected", raw, anchorCode: null };
   }
 
-  // 3. Anchor numeric code path (mintAnchor / updateAnchor / verifyProof /
-  // resetIdentityState all surface here on chain-side rejection)
+  // 3. Anchor error path (mintAnchor / updateAnchor / verifyProof /
+  // resetIdentityState all surface here on chain-side rejection). The name
+  // resolves before the number, which two programs can share.
+  const namedCode = namedAnchorCode(err);
+  if (namedCode !== null) return categorizeAnchorCode(namedCode, raw);
   const anchorCode = extractAnchorCode(err);
   if (anchorCode !== null && anchorCode >= 6000 && anchorCode < 7000) {
     return categorizeAnchorCode(anchorCode, raw);
