@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { type Connection, PublicKey, SystemProgram, SYSVAR_CLOCK_PUBKEY } from "@solana/web3.js";
 
+import { equalBytes } from "@/lib/values";
 import {
   type NativeProofManifest,
   type PreparedNativeProofRequest,
@@ -27,10 +28,6 @@ export class NativeIdentityLayoutUpgradeRequired extends Error {
     super("The identity account requires an authenticated layout upgrade before proving.");
     this.name = "NativeIdentityLayoutUpgradeRequired";
   }
-}
-
-function equal(left: Uint8Array, right: Uint8Array): boolean {
-  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
 export async function readNativeProofRequest(
@@ -71,13 +68,13 @@ export async function readNativeProofRequest(
     identityAccount.executable ||
     !identityAccount.owner.equals(anchor) ||
     ![543, 551, 583, 593].includes(identityAccount.data.length) ||
-    !equal(identityAccount.data.subarray(0, 8), discriminator("IdentityState")) ||
-    !equal(identityAccount.data.subarray(8, 40), owner.toBytes()) ||
+    !equalBytes(identityAccount.data.subarray(0, 8), discriminator("IdentityState")) ||
+    !equalBytes(identityAccount.data.subarray(8, 40), owner.toBytes()) ||
     identityAccount.data[126] !== identityBump
   )
     throw new Error("Invalid identity account for proof preparation.");
   const mint = PublicKey.findProgramAddressSync([Buffer.from("mint"), owner.toBytes()], anchor)[0];
-  if (!equal(identityAccount.data.subarray(94, 126), mint.toBytes())) {
+  if (!equalBytes(identityAccount.data.subarray(94, 126), mint.toBytes())) {
     throw new Error("Invalid identity mint for proof preparation.");
   }
   if (identityAccount.data.length !== 593) throw new NativeIdentityLayoutUpgradeRequired();
@@ -105,9 +102,9 @@ export async function readNativeProofRequest(
       counterAccount.executable ||
       !counterAccount.owner.equals(anchor) ||
       counterAccount.data.length !== 50 ||
-      !equal(counterAccount.data.subarray(0, 8), discriminator("ProofRequestState")) ||
+      !equalBytes(counterAccount.data.subarray(0, 8), discriminator("ProofRequestState")) ||
       counterAccount.data[8] !== 1 ||
-      !equal(counterAccount.data.subarray(9, 41), owner.toBytes()) ||
+      !equalBytes(counterAccount.data.subarray(9, 41), owner.toBytes()) ||
       counterAccount.data[49] !== requestBump
     )
       throw new Error("Invalid persistent proof request state.");
