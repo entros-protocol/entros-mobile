@@ -9,7 +9,7 @@ import { Countdown } from "@/components/primitives/Countdown";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
-import type { RetryableReason } from "@/services/reasons";
+import type { RetryableReason, VerificationReason } from "@/services/reasons";
 import { useAppState } from "@/state/AppState";
 import { FailureBucket } from "@/state/types";
 import { spacing } from "@/theme/tokens";
@@ -31,15 +31,68 @@ const SOFT_HINT: Record<RetryableReason, string> = {
   entropy_bounds: "Your gestures and speech were a bit too uniform. Try varying both naturally.",
   temporal_coupling_low: "Speak and move at the same time—they were a bit out of sync.",
   phrase_content_mismatch: "Read the phrase clearly at a normal pace, exactly as shown.",
+  trace_incomplete:
+    "Your trace missed a point or reached them out of order. Trace through each numbered point, from the first to the last.",
   captcha_required:
     "Liveness pattern anomaly detected. Please complete this dynamic voice/motion challenge to verify your identity.",
   validation_unavailable:
     "We couldn't reach the verification service. Check your connection and try again.",
   validation_timeout:
     "Your connection stalled while sending the verification. Somewhere with a stronger signal should work.",
+  technical_failure:
+    "The verification service couldn't finish this session. Nothing you did caused it. Start a new session.",
+  session_expired: "This session closed before it finished. Start a new one when you're ready.",
+  round_expired:
+    "The verification service stopped waiting for a round and closed the session. Start a new one when you're ready.",
+  session_superseded:
+    "Another session for this wallet started and replaced this one. Start a new session to continue.",
+  session_consumed:
+    "The verification service already used this session. Start a new session to verify again.",
+  session_unknown: "The verification service no longer has this session. Start a new session.",
+  session_not_ready:
+    "The verification service wasn't ready to finish this session. Start a new session.",
+  round_not_outstanding:
+    "The verification service expected a different round. Start a new session.",
+  session_busy:
+    "The verification service was too busy to take this session. Nothing you did caused it. Start a new session.",
 };
 const SOFT_HINT_FALLBACK =
   "Something didn't come through cleanly. Give it another shot with natural movement and clear speech.";
+
+interface SessionReasonCopy {
+  title: string;
+  body: string;
+}
+
+// Copy for paired-session reasons that end on the wait or session-error
+// screens. A reason without an entry keeps its screen's own copy. A Map
+// matches own keys only, so a `reason` param such as "toString" finds nothing.
+const SESSION_REASON_COPY: ReadonlyMap<string, SessionReasonCopy> = new Map<
+  VerificationReason,
+  SessionReasonCopy
+>([
+  [
+    "session_active",
+    {
+      title: "A session is already open",
+      body: "This wallet already has a verification open. You can start a new session once it closes.",
+    },
+  ],
+  [
+    "invalid_request",
+    {
+      title: "This session didn't go through",
+      body: "The verification service could not read this app's request. Update Entros, then start a new session.",
+    },
+  ],
+  [
+    "automated_browser_detected",
+    {
+      title: "This session didn't go through",
+      body: "The verification service could not accept a session from this environment. Start a new session directly in the Entros app.",
+    },
+  ],
+]);
 
 /** Buckets surfaced on the danger-toned hard-failure branch. The cyan-toned
  *  retry branch and report-bug branch are handled separately below. */
@@ -114,6 +167,8 @@ const ALL_FAILURE_BUCKETS: ReadonlySet<FailureBucket> = new Set<FailureBucket>([
   "retry-now",
   "capture-drift",
   "report-bug",
+  "session-busy",
+  "session-error",
   "generic",
 ]);
 
@@ -122,12 +177,18 @@ const ALL_FAILURE_BUCKETS: ReadonlySet<FailureBucket> = new Set<FailureBucket>([
  *  intervention. `allowsImmediateRetry=false` for buckets where the wait
  *  is large and a "Try again" CTA would be misleading (e.g. the on-chain
  *  reset cooldown is 7 days). */
-type RetryBucket = "rate-limited" | "chain-rate-limited" | "retry-now" | "capture-drift";
+type RetryBucket =
+  | "rate-limited"
+  | "chain-rate-limited"
+  | "retry-now"
+  | "capture-drift"
+  | "session-busy";
 const RETRY_BUCKETS = new Set<FailureBucket>([
   "rate-limited",
   "chain-rate-limited",
   "retry-now",
   "capture-drift",
+  "session-busy",
 ]);
 
 const retryBucketConfig: Record<
@@ -182,6 +243,16 @@ const retryBucketConfig: Record<
     countdownSuffix: "",
     settledSubtitle:
       "That capture didn't closely match your usual pattern. It often happens after an interrupted or rushed recording. Try again with a steady, uninterrupted capture.",
+    allowsImmediateRetry: true,
+  },
+  "session-busy": {
+    // A paired session limit: another session or finalize for this wallet is
+    // running, the open budget is spent, or the service is at capacity.
+    label: "PLEASE WAIT",
+    title: "The service needs a moment",
+    countdownPrefix: "You can start a new session in about ",
+    countdownSuffix: ".",
+    settledSubtitle: "You can start a new session now.",
     allowsImmediateRetry: true,
   },
 };
@@ -263,6 +334,9 @@ export default function VerifyFailure() {
   // string. Runtime-validate against the union before narrowing instead of
   // a naive cast: malformed deeplinks fall to "generic" instead of leaking
   // a bogus literal through to switch-case fallthrough.
+  const reasonCopy =
+    typeof params.reason === "string" ? SESSION_REASON_COPY.get(params.reason) : undefined;
+
   const bucketParam = params.bucket;
   const bucket: FailureBucket =
     typeof bucketParam === "string" && ALL_FAILURE_BUCKETS.has(bucketParam as FailureBucket)
@@ -270,7 +344,11 @@ export default function VerifyFailure() {
       : "generic";
   if (RETRY_BUCKETS.has(bucket)) {
     const retryKey = bucket as RetryBucket;
-    const config = retryBucketConfig[retryKey];
+    const bucketConfig = retryBucketConfig[retryKey];
+    const config =
+      retryKey === "session-busy" && reasonCopy
+        ? { ...bucketConfig, title: reasonCopy.title, settledSubtitle: reasonCopy.body }
+        : bucketConfig;
     const rawSec = Number(params.retryAfter ?? "0");
     const safeSec = Number.isFinite(rawSec) && rawSec > 0 ? Math.ceil(rawSec) : 0;
     const showCountdown = safeSec > 0 && !retryReady;
@@ -365,6 +443,46 @@ export default function VerifyFailure() {
               variant="ghost"
               onPress={() => router.replace("/verify/intro")}
             />
+          </View>
+        </View>
+      </Screen>
+    );
+  }
+
+  // Session-error branch. The app and the service disagree about a paired
+  // session, so a new session is the recovery and the code helps the team.
+  if (bucket === "session-error") {
+    const codeFromMessage = typeof params.message === "string" ? params.message : "";
+    return (
+      <Screen>
+        <View style={styles.wrap}>
+          <View style={styles.body}>
+            <View
+              style={[
+                styles.bubble,
+                { backgroundColor: `${palette.danger}1F`, borderColor: palette.danger },
+              ]}
+            >
+              <AlertIcon size={32} color={palette.danger} strokeWidth={2} />
+            </View>
+            <SectionLabel tone="muted">SESSION ERROR</SectionLabel>
+            <Text variant="title" align="center">
+              {reasonCopy?.title ?? "This session didn't go through"}
+            </Text>
+            <Text variant="body" tone="muted" align="center">
+              {reasonCopy
+                ? `${reasonCopy.body} If it happens again, copy the code below and share it with the team.`
+                : "The verification service could not accept this session. Start a new session. If it happens again, copy the code below and share it with the team."}
+            </Text>
+            {codeFromMessage ? (
+              <Text variant="body" align="center" tone="muted">
+                {codeFromMessage}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.footer}>
+            <Button label="Start again" onPress={() => router.replace("/verify/intro")} />
+            <Button label="Copy diagnostics" variant="ghost" onPress={handleCopyDiagnostics} />
           </View>
         </View>
       </Screen>

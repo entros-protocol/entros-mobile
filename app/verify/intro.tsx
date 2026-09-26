@@ -18,17 +18,17 @@ import { GlowCard } from "@/components/primitives/GlowCard";
 import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
-import { getConnection } from "@/config";
+import { config, getConnection } from "@/config";
+import { holdSingleCaptureChallenge } from "@/flows/singleCaptureChallenge";
 import { devWarn } from "@/lib/log";
 import {
   fetchProjectionPolicy,
   fetchProtocolConfig,
   formatLamportsAsSol,
 } from "@/protocol/protocolConfig";
+import { PAIRED_PROJECTION_VERSION } from "@/paired";
 import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
-import { fetchChallenge } from "@/services/executor";
 import { useAppState } from "@/state/AppState";
-import { setChallenge } from "@/state/challengeBuffer";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -43,6 +43,35 @@ const steps: Step[] = [
   { Icon: TouchIcon, title: "Trace", body: "Trace the on-screen curve at your own pace." },
   { Icon: MotionIcon, title: "Hold", body: "Hold the device steady through the count." },
 ];
+
+const pairedSteps: Step[] = [
+  { Icon: MicIcon, title: "Speak", body: "Say each word aloud when it appears." },
+  { Icon: TouchIcon, title: "Trace", body: "Draw through the numbered points in order." },
+  { Icon: MotionIcon, title: "Hold", body: "Hold the device the way you usually do." },
+];
+
+interface IntroCopy {
+  title: string;
+  body: string;
+  steps: Step[];
+  microphone: string;
+}
+
+const singleCopy: IntroCopy = {
+  title: "Three signals,\ntwelve seconds.",
+  body: "We analyse how you speak, hold, and tap. Raw motion and full-resolution touch stay on the device. Phrase audio is sent for transient validation.",
+  steps,
+  microphone:
+    "Entros needs the microphone to capture a 12-second voice sample. Grant access in System Settings → Apps → Entros → Permissions, then try again.",
+};
+
+const pairedCopy: IntroCopy = {
+  title: "Three rounds,\none word each.",
+  body: "Each round shows a word and a short path. The next round starts when you finish, so take your time. Raw motion and raw touch stay on this device. Entros sends the recorded words for transient validation.",
+  steps: pairedSteps,
+  microphone:
+    "Entros needs the microphone to record the words you say. Grant access in System Settings → Apps → Entros → Permissions, then try again.",
+};
 
 // Default fallback when the on-chain ProtocolConfig read fails (RPC error,
 // PDA uninitialized, env unset). Matches the protocol's devnet default of
@@ -97,6 +126,10 @@ export default function VerifyIntro() {
   const { connection } = useAppState();
   const [pending, setPending] = useState(false);
   const [feeLabel, setFeeLabel] = useState<string>(DEFAULT_FEE_LABEL);
+  // Paired sessions run under projection 1 only. With the flag on and another
+  // projection current, the single capture still verifies the wallet.
+  const [paired, setPaired] = useState(config.pairedVerify);
+  const copy = paired ? pairedCopy : singleCopy;
 
   // Fetch the live verification fee from ProtocolConfig once on mount. The
   // result is cosmetic — Begin still proceeds even if the read failed —
@@ -144,29 +177,34 @@ export default function VerifyIntro() {
         return;
       }
 
+      const usePaired =
+        config.pairedVerify && projectionPolicy.current === PAIRED_PROJECTION_VERSION;
+      if (config.pairedVerify && !usePaired) {
+        devWarn(`[Entros] paired rounds need projection 1, current=${projectionPolicy.current}`);
+      }
+      setPaired(usePaired);
+
       const already = await audioPermissionGranted();
       if (!already) {
         const granted = await requestAudioPermission();
         if (!granted) {
           Alert.alert(
             "Microphone access required",
-            "Entros needs the microphone to capture a 12-second voice sample. Grant access in System Settings → Apps → Entros → Permissions, then try again.",
+            (usePaired ? pairedCopy : singleCopy).microphone,
           );
           return;
         }
       }
 
+      if (usePaired) {
+        // The rounds screen opens the session itself, so its first reveal
+        // arrives only once the recorder is listening.
+        router.replace("/verify/rounds");
+        return;
+      }
+
       try {
-        const challenge = await fetchChallenge(wallet);
-        setChallenge({
-          nonce: challenge.nonce,
-          phrase: challenge.phrase,
-          expiresIn: challenge.expiresIn,
-          expiresAtMs: challenge.expiresAtMs,
-          curve: challenge.curve,
-          projectionVersion: projectionPolicy.current,
-        });
-        devWarn(`[Entros] /challenge ok ttl=${challenge.expiresIn}s`);
+        await holdSingleCaptureChallenge(wallet, projectionPolicy.current);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not reach the executor.";
         Alert.alert("Couldn't fetch challenge", `${message}\n\nCheck your network and try again.`);
@@ -184,13 +222,12 @@ export default function VerifyIntro() {
       <View style={styles.wrap}>
         <View style={styles.body}>
           <SectionLabel>VERIFICATION</SectionLabel>
-          <Text variant="title">Three signals,{"\n"}twelve seconds.</Text>
+          <Text variant="title">{copy.title}</Text>
           <Text variant="body" tone="muted">
-            We analyse how you speak, hold, and tap. Raw motion and full-resolution touch stay on
-            the device. Phrase audio is sent for transient validation.
+            {copy.body}
           </Text>
           <View style={styles.steps}>
-            {steps.map((s, i) => (
+            {copy.steps.map((s, i) => (
               <GlowCard key={s.title} style={styles.step}>
                 <View style={[styles.bubble, { backgroundColor: palette.accentMuted }]}>
                   <PulseIcon Icon={s.Icon} color={palette.accent} delayMs={i * 400} />

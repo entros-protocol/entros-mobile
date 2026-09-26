@@ -140,25 +140,50 @@ const computeRmsInt16 = (samples: Int16Array): number => {
   return n > 0 ? Math.sqrt(sum / n) : 0;
 };
 
-export const startAudioRecording = async (
-  onLevel?: (rms: number) => void,
-): Promise<AudioRecorder> => {
+export interface NativePcmStreamOptions {
+  /** Receives each PCM chunk as the native side delivers it. */
+  onChunk: (pcm: Int16Array) => void;
+  /** Runs once the native rate is known, before the first chunk can arrive. */
+  onConfigured?: (sampleRate: number) => void;
+  /** Runs once if the native recorder fails after the first chunk arrived. */
+  onFailure?: (error: Error) => void;
+}
+
+/** One live native recording. Only one can exist at a time. */
+export interface NativePcmStream {
+  /** The AudioRecord rate the native side configured. */
+  readonly sampleRate: number;
+  /** The first native failure, if one arrived. */
+  failure: () => Error | null;
+  /**
+   * Stops the native recorder and releases the session latch once it has.
+   * Every call returns the same promise.
+   */
+  stop: () => Promise<void>;
+}
+
+/**
+ * Starts the native recorder, checks what it configured, and waits for the
+ * first PCM chunk. Chunks arrive through `onChunk` until `stop()`. A native
+ * failure stops the recorder and is reported through `failure()` and
+ * `onFailure`.
+ */
+export const openNativePcmStream = async ({
+  onChunk,
+  onConfigured,
+  onFailure,
+}: NativePcmStreamOptions): Promise<NativePcmStream> => {
   if (recordingActive) {
     throw new Error("Audio recording already in progress.");
   }
   recordingActive = true;
 
-  // Buffer of Int16 chunks; deferred concatenation in stop() avoids per-chunk
-  // realloc + copy. ~9 chunks/sec × 12s × 8KB = ~864KB total — easy to hold.
-  const chunks: Int16Array[] = [];
-  let totalSamples = 0;
   let stopped = false;
   let configuredSampleRate = TARGET_AUDIO_SAMPLE_RATE;
   let dataSubscription: EmitterSubscription | null = null;
   let errorSubscription: EmitterSubscription | null = null;
   let recordingError: Error | null = null;
   let teardownPromise: Promise<void> | null = null;
-  let terminalPromise: Promise<AudioCapture | null> | null = null;
 
   // The data callback resolves this gate without polling.
   let firstChunkReceived = false;
@@ -202,6 +227,7 @@ export const startAudioRecording = async (
       );
       configuredSampleRate = nativeConfig.configuredSampleRate;
     }
+    onConfigured?.(configuredSampleRate);
 
     dataSubscription = LiveAudioStream.on("data", (b64: string) => {
       if (stopped) return;
@@ -209,18 +235,13 @@ export const startAudioRecording = async (
         firstChunkReceived = true;
         resolveFirstChunk?.();
       }
-      const int16 = decodeBase64Pcm(b64);
-      chunks.push(int16);
-      totalSamples += int16.length;
-      if (onLevel) {
-        // Boost slightly so quiet voices still register on the bar visualiser.
-        onLevel(Math.min(1, computeRmsInt16(int16) * 4));
-      }
+      onChunk(decodeBase64Pcm(b64));
     });
     errorSubscription = LiveAudioStream.on("error", (nativeError) => {
       if (stopped || recordingError) return;
       recordingError = new Error(`${nativeError.message} (${nativeError.code})`);
       rejectFirstChunk?.(recordingError);
+      if (firstChunkReceived) onFailure?.(recordingError);
       void teardown().catch(() => undefined);
     });
     await LiveAudioStream.start();
@@ -237,7 +258,7 @@ export const startAudioRecording = async (
   // see a chunk within the timeout, the constructor likely failed (no mic
   // hardware on the emulator, permission revoked between request and start,
   // etc.) and we should surface a clear error rather than silently capturing
-  // 12 seconds of nothing.
+  // nothing.
   await new Promise<void>((resolve, reject) => {
     if (recordingError) {
       reject(recordingError);
@@ -269,6 +290,33 @@ export const startAudioRecording = async (
     }, FIRST_CHUNK_TIMEOUT_MS);
   });
 
+  return {
+    sampleRate: configuredSampleRate,
+    failure: () => recordingError,
+    stop: teardown,
+  };
+};
+
+export const startAudioRecording = async (
+  onLevel?: (rms: number) => void,
+): Promise<AudioRecorder> => {
+  // Buffer of Int16 chunks; deferred concatenation in stop() avoids per-chunk
+  // realloc + copy. ~9 chunks/sec × 12s × 8KB = ~864KB total, easy to hold.
+  const chunks: Int16Array[] = [];
+  let totalSamples = 0;
+  let terminalPromise: Promise<AudioCapture | null> | null = null;
+
+  const stream = await openNativePcmStream({
+    onChunk: (int16) => {
+      chunks.push(int16);
+      totalSamples += int16.length;
+      if (onLevel) {
+        // Boost slightly so quiet voices still register on the bar visualiser.
+        onLevel(Math.min(1, computeRmsInt16(int16) * 4));
+      }
+    },
+  });
+
   const finish = (returnCapture: boolean): Promise<AudioCapture | null> => {
     if (terminalPromise) return terminalPromise;
     const captureEndedAt = Date.now();
@@ -276,12 +324,13 @@ export const startAudioRecording = async (
     terminalPromise = (async () => {
       let teardownError: unknown;
       try {
-        await teardown();
+        await stream.stop();
       } catch (error) {
         teardownError = error;
       }
 
       try {
+        const recordingError = stream.failure();
         if (recordingError) throw recordingError;
         if (teardownError) throw teardownError;
         if (!returnCapture) return null;
@@ -296,7 +345,7 @@ export const startAudioRecording = async (
           offset += chunk.length;
         }
 
-        const canonical = await toCanonicalCapture(nativePcm, configuredSampleRate);
+        const canonical = await toCanonicalCapture(nativePcm, stream.sampleRate);
         const maxSamples = Math.round((MAX_CAPTURE_MS / 1_000) * canonical.sampleRate);
         const bounded =
           canonical.samples.length > maxSamples
@@ -308,7 +357,7 @@ export const startAudioRecording = async (
         return {
           pcm,
           sampleRate: canonical.sampleRate,
-          nativeSampleRate: configuredSampleRate,
+          nativeSampleRate: stream.sampleRate,
           durationMs,
           startedAt: captureEndedAt - durationMs,
         };

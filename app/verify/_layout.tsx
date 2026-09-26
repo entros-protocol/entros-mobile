@@ -16,6 +16,7 @@ export default function VerifyLayout() {
     >
       <Stack.Screen name="intro" options={{ title: "Verify", headerBackTitle: "Cancel" }} />
       <Stack.Screen name="capture" options={{ headerShown: false }} />
+      <Stack.Screen name="rounds" options={{ headerShown: false }} />
       <Stack.Screen name="processing" options={{ headerShown: false, gestureEnabled: false }} />
       <Stack.Screen name="success" options={{ headerShown: false, gestureEnabled: false }} />
       <Stack.Screen name="failure" options={{ headerShown: false, gestureEnabled: false }} />

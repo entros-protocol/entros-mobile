@@ -21,6 +21,14 @@ const parseProgramId = (name: string, raw: string | undefined): PublicKey | null
   }
 };
 
+// A Google Cloud project number is a positive integer. A malformed value turns
+// attestation off rather than stopping the app, because attestation never
+// gates a verification.
+const parseCloudProjectNumber = (raw: string | undefined): number | null => {
+  const value = optional(raw);
+  return value && /^[1-9][0-9]{0,14}$/.test(value) ? Number(value) : null;
+};
+
 export const config = {
   rpcUrl: required("EXPO_PUBLIC_SOLANA_RPC", process.env.EXPO_PUBLIC_SOLANA_RPC),
   cluster: (process.env.EXPO_PUBLIC_SOLANA_CLUSTER ?? "devnet") as Cluster,
@@ -41,6 +49,11 @@ export const config = {
   relayerUrl: optional(process.env.EXPO_PUBLIC_RELAYER_URL),
   relayerApiKey: optional(process.env.EXPO_PUBLIC_RELAYER_API_KEY),
   proofManifest: parseNativeProofManifest(process.env.EXPO_PUBLIC_PROOF_MANIFEST),
+  /** Paired verification. Off unless the build sets exactly "1". */
+  pairedVerify: process.env.EXPO_PUBLIC_ENTROS_PAIRED_VERIFY === "1",
+  playIntegrityCloudProjectNumber: parseCloudProjectNumber(
+    process.env.EXPO_PUBLIC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER,
+  ),
 } as const;
 
 let cachedConnection: Connection | null = null;
