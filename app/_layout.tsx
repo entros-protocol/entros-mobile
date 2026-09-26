@@ -18,6 +18,8 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AddressMenu } from "@/components/account/AddressMenu";
+import { config } from "@/config";
+import { warm as warmPlayIntegrity } from "@/services/playIntegrity";
 import { AppStateProvider } from "@/state/AppState";
 import { ThemeProvider, useTheme } from "@/theme/ThemeProvider";
 
@@ -67,6 +69,14 @@ export default function RootLayout() {
       void SplashScreen.hideAsync();
     }
   }, [fontsLoaded, fontError]);
+
+  // Paired sessions request an integrity token at finalize. Preparing the
+  // provider at launch keeps that request short.
+  useEffect(() => {
+    if (config.pairedVerify && config.playIntegrityCloudProjectNumber !== null) {
+      warmPlayIntegrity();
+    }
+  }, []);
 
   // Defensive: force-hide the splash after 3s if `useFonts` hasn't resolved.
   // Falls back to system-mono for any unstyled paint rather than trapping the
