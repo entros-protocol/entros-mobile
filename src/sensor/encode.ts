@@ -15,7 +15,7 @@ export function encodeAudioAsBase64(samples: Float32Array): string {
   return bytesToBase64(new Uint8Array(buf));
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
+export function bytesToBase64(bytes: Uint8Array): string {
   // React Native 0.74+ ships native btoa/atob globals on Hermes (the same
   // Web-compat path src/sensor/audio.ts uses for atob). Chunk to 32KB
   // before fromCharCode to avoid the maximum-call-stack on ~768KB inputs.

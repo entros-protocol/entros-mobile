@@ -114,3 +114,115 @@ export async function resampleTo(
 
   return output;
 }
+
+/** Canonicalises audio as it arrives, one chunk at a time. */
+export interface StreamingCanonicalizer {
+  /** Feeds source samples. Returns the canonical samples that became final. */
+  push(chunk: Float32Array): Float32Array;
+  /** Ends the stream and returns the canonical samples still pending. */
+  flush(): Float32Array;
+}
+
+/** Consumed source samples kept before the buffer is compacted. */
+const STREAM_COMPACT_THRESHOLD = 65_536;
+
+/**
+ * The streaming form of {@link resampleTo}, with the same filter and the same
+ * arithmetic in the same order. The concatenated output equals `resampleTo`
+ * over the whole input, value for value, whatever the chunking.
+ *
+ * An output sample is final once every source sample under its filter window
+ * has arrived. Filtering each round's audio on its own would damp both of its
+ * edges, so a paired session filters one continuous stream.
+ *
+ * Throws for a rate below the canonical rate. The batch path passes such audio
+ * through untouched, which a paired session cannot use because its segments
+ * are 16 kHz by contract.
+ */
+export function createStreamingCanonicalizer(fromRate: number): StreamingCanonicalizer {
+  if (!(fromRate >= CANONICAL_SAMPLE_RATE) || !Number.isFinite(fromRate)) {
+    throw new RangeError(`Audio rate ${fromRate} is below the canonical rate.`);
+  }
+  const ratio = fromRate / CANONICAL_SAMPLE_RATE;
+  const numTaps = tapsForRate(fromRate);
+  const taps = designLowpassFir(fromRate, CANONICAL_SAMPLE_RATE * CUTOFF_FRACTION, numTaps);
+  const delay = (numTaps - 1) / 2;
+
+  let buffer = new Float32Array(4_096);
+  // Source index of buffer[0].
+  let bufferStart = 0;
+  let received = 0;
+  let nextOutput = 0;
+  let ended = false;
+
+  const convolve = (sourceIndex: number, total: number): number => {
+    let sample = 0;
+    for (let tapIndex = 0; tapIndex < numTaps; tapIndex++) {
+      const inputIndex = sourceIndex + delay - tapIndex;
+      if (inputIndex >= 0 && inputIndex < total) {
+        sample += buffer[inputIndex - bufferStart]! * taps[tapIndex]!;
+      }
+    }
+    return sample;
+  };
+
+  const outputAt = (outputIndex: number, total: number): number => {
+    const sourcePosition = outputIndex * ratio;
+    const sourceIndex = Math.floor(sourcePosition);
+    const fraction = sourcePosition - sourceIndex;
+    let sample = convolve(sourceIndex, total);
+    if (fraction !== 0) {
+      const nextSample = convolve(sourceIndex + 1, total);
+      sample += (nextSample - sample) * fraction;
+    }
+    return sample;
+  };
+
+  const append = (chunk: Float32Array): void => {
+    const used = received - bufferStart;
+    if (used + chunk.length > buffer.length) {
+      const grown = new Float32Array(Math.max(buffer.length * 2, used + chunk.length));
+      grown.set(buffer.subarray(0, used));
+      buffer = grown;
+    }
+    buffer.set(chunk, used);
+    received += chunk.length;
+  };
+
+  const compact = (): void => {
+    const oldestNeeded = Math.floor(nextOutput * ratio) - delay - 1;
+    const discard = oldestNeeded - bufferStart;
+    if (discard < STREAM_COMPACT_THRESHOLD) return;
+    buffer.copyWithin(0, discard, received - bufferStart);
+    bufferStart += discard;
+  };
+
+  return {
+    push(chunk) {
+      if (ended) throw new Error("The audio stream has ended.");
+      append(chunk);
+      const ready: number[] = [];
+      for (;;) {
+        const sourcePosition = nextOutput * ratio;
+        const sourceIndex = Math.floor(sourcePosition);
+        const lastInput = sourceIndex + delay + (sourcePosition - sourceIndex !== 0 ? 1 : 0);
+        if (lastInput >= received) break;
+        ready.push(outputAt(nextOutput, received));
+        nextOutput++;
+      }
+      compact();
+      return Float32Array.from(ready);
+    },
+    flush() {
+      if (ended) return new Float32Array(0);
+      ended = true;
+      const outputLength = Math.round(received / ratio);
+      const rest = new Float32Array(Math.max(0, outputLength - nextOutput));
+      for (let index = 0; index < rest.length; index++) {
+        rest[index] = outputAt(nextOutput + index, received);
+      }
+      nextOutput = outputLength;
+      return rest;
+    },
+  };
+}
