@@ -15,6 +15,8 @@ export type FailureBucket =
   | "retry-now" // transient — congestion / wallet hung / RPC drop / clock skew; "Try again"
   | "capture-drift" // behavioral drift past the consistency ceiling; retry with a steady capture
   | "report-bug" // proof-rejected / programming-error; CTA = copy diagnostics
+  | "session-busy" // paired session limit: open session, finalize, open budget, capacity; countdown
+  | "session-error" // paired protocol disagreement; CTA = start a new session, copy diagnostics
   | "generic"; // last resort
 
 /** Whether the next verify cycle should mint/update the anchor (verify) or

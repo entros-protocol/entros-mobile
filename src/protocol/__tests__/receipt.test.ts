@@ -14,6 +14,8 @@
 
 import { Ed25519Program } from "@solana/web3.js";
 
+import { vectors } from "@/paired/__tests__/vectors";
+
 import {
   buildEd25519ReceiptIx,
   decodeSignedReceipt,
@@ -159,5 +161,93 @@ describe("receipt transition binding", () => {
 
     expect(receiptMatchesBinding(VALID_RECEIPT, binding)).toBe(true);
     expect(receiptMatchesBinding(VALID_RECEIPT, { ...binding, purpose: 3 })).toBe(false);
+  });
+});
+
+describe("version 3 receipts against the shared vectors", () => {
+  const receipts = vectors.receipts;
+  const dto = (messageHex: string): SignedReceiptDto => ({
+    validator_pubkey_hex: repeatHex(0x8c, 32),
+    signature_hex: repeatHex(0xab, 64),
+    message_hex: messageHex,
+  });
+  const hex = (value: string): Uint8Array => Uint8Array.from(Buffer.from(value, "hex"));
+  const binding = {
+    purpose: 1 as const,
+    projectionVersion: receipts.projectionVersion,
+    wallet: hex(receipts.walletHex),
+    commitment: hex(receipts.commitmentHex),
+  };
+  const mintAttested = receipts.v3.find(
+    (entry) => entry.purpose === 1 && entry.assuranceTier === 2,
+  )!;
+
+  test("decodes every v3 vector with its version, final digest and tier", () => {
+    for (const entry of receipts.v3) {
+      const decoded = decodeSignedReceipt(dto(entry.messageHex));
+      expect(decoded?.version).toBe(3);
+      expect(decoded?.message).toHaveLength(136);
+      expect(decoded?.message[28]).toBe(entry.purpose);
+      expect(decoded?.assuranceTier).toBe(entry.assuranceTier);
+      expect(Buffer.from(decoded!.finalDigest!).toString("hex")).toBe(receipts.finalDigestHex);
+    }
+  });
+
+  test("decodes the v2 vector without a session or tier", () => {
+    const decoded = decodeSignedReceipt(dto(receipts.v2.messageHex));
+    expect(decoded?.version).toBe(2);
+    expect(decoded?.message).toHaveLength(103);
+    expect(decoded?.finalDigest).toBeNull();
+    expect(decoded?.assuranceTier).toBeNull();
+  });
+
+  test.each(receipts.invalid.map((entry) => [entry.name, entry.messageHex] as const))(
+    "refuses %s",
+    (_name, messageHex) => {
+      expect(decodeSignedReceipt(dto(messageHex))).toBeNull();
+      expect(buildEd25519ReceiptIx(dto(messageHex))).toBeNull();
+    },
+  );
+
+  test("keeps tolerating uppercase hex in every field", () => {
+    const decoded = decodeSignedReceipt({
+      validator_pubkey_hex: repeatHex(0x8c, 32).toUpperCase(),
+      signature_hex: repeatHex(0xab, 64).toUpperCase(),
+      message_hex: mintAttested.messageHex.toUpperCase(),
+    });
+    expect(decoded?.version).toBe(3);
+    expect(decoded?.assuranceTier).toBe(2);
+  });
+
+  test("binds a final digest only through a v3 receipt carrying it", () => {
+    const finalDigest = hex(receipts.finalDigestHex);
+    expect(receiptMatchesBinding(dto(mintAttested.messageHex), { ...binding, finalDigest })).toBe(
+      true,
+    );
+    expect(receiptMatchesBinding(dto(mintAttested.messageHex), binding)).toBe(true);
+    expect(
+      receiptMatchesBinding(dto(mintAttested.messageHex), {
+        ...binding,
+        finalDigest: new Uint8Array(32),
+      }),
+    ).toBe(false);
+    expect(receiptMatchesBinding(dto(receipts.v2.messageHex), { ...binding, finalDigest })).toBe(
+      false,
+    );
+    expect(receiptMatchesBinding(dto(receipts.v2.messageHex), binding)).toBe(true);
+    expect(receiptMatchesBinding(dto(mintAttested.messageHex), { ...binding, purpose: 3 })).toBe(
+      false,
+    );
+    expect(
+      receiptMatchesBinding(dto(mintAttested.messageHex), { ...binding, projectionVersion: 2 }),
+    ).toBe(false);
+  });
+
+  test("embeds the whole 136-byte message in the Ed25519 instruction", () => {
+    const instruction = buildEd25519ReceiptIx(dto(mintAttested.messageHex));
+    expect(instruction?.data).toHaveLength(16 + 32 + 64 + 136);
+    expect(
+      Buffer.from(instruction!.data).includes(Buffer.from(mintAttested.messageHex, "hex")),
+    ).toBe(true);
   });
 });

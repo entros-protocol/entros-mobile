@@ -26,6 +26,7 @@
     "app/**/*.tsx",
     "src/**/*.ts",
     "src/**/*.tsx",
+    "modules/**/*.ts",
     "test/**/*.ts",
     "patches/**/*.ts",
     "scripts/**/*.ts",
