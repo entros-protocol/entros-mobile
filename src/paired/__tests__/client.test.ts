@@ -11,6 +11,8 @@ import {
   initialCommitment,
   PairedClientError,
   parseCommitResponse,
+  parseCueResponse,
+  buildCueBody,
   parseOpenResponse,
   refusalOf,
   type FinalizeBinding,
@@ -20,12 +22,17 @@ import {
 } from "../client";
 import {
   attestationDigest,
-  challengeDigest,
+  challengeDigestV2,
   encodePathTarget,
   MAX_ROUND_SAMPLES,
 } from "../transcript";
 
-import { bytes, traceSession, vectors, type RoundEntryVector } from "./vectors";
+import {
+  bytes,
+  traceSessionV2 as traceSession,
+  vectorsV2,
+  type CueRoundVector as RoundEntryVector,
+} from "./vectorsV2";
 
 const session = traceSession();
 const SESSION_ID = "8f14e45fceea167a5a36dedd4bea2543";
@@ -47,15 +54,16 @@ function revealJson(round: RoundEntryVector): Record<string, unknown> {
     round_nonce: round.roundNonceHex,
     word: round.word,
     path_target_hex: round.pathTargetHex,
+    cue_commitment: round.cueCommitmentHex,
     challenge_digest: round.challengeDigestHex,
-    expires_in_ms: 120_000,
+    expires_in_ms: 12_000,
   };
 }
 
 function openJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocol: "paired",
-    protocol_version: 1,
+    protocol_version: 2,
     session_id: SESSION_ID,
     session_nonce: session.sessionNonceHex,
     attempt_binding: session.attemptBindingDigestHex,
@@ -148,7 +156,7 @@ describe("open response", () => {
 
   test.each([
     ["an unknown protocol", { protocol: "single" }, "protocol"],
-    ["another protocol version", { protocol_version: 2 }, "protocol_version"],
+    ["another protocol version", { protocol_version: 1 }, "protocol_version"],
     ["a uuid session id", { session_id: "8f14e45f-ceea-167a-5a36-dedd4bea2543" }, "session_id"],
     ["an uppercase session id", { session_id: SESSION_ID.toUpperCase() }, "session_id"],
     ["a short session nonce", { session_nonce: session.sessionNonceHex.slice(2) }, "session_nonce"],
@@ -195,7 +203,7 @@ describe("open response", () => {
 
   test.each([
     ["protocol", { protocol: "single" }],
-    ["protocol version", { protocol_version: 2 }],
+    ["protocol version", { protocol_version: 1 }],
     ["round count", { rounds: 4 }],
     ["tier", { tier: "speech_only" }],
     ["audio format", { audio_format: "pcm_s16le_48000_mono" }],
@@ -225,12 +233,13 @@ describe("open response", () => {
   test("accepts a word of 32 letters", () => {
     const round = entry(1);
     const word = "a".repeat(32);
-    const digest = challengeDigest(
+    const digest = challengeDigestV2(
       bytes(session.sessionNonceHex),
       1,
       bytes(round.roundNonceHex),
       word,
       bytes(round.pathTargetHex),
+      bytes(round.cueCommitmentHex),
     );
     const open = parseOpenResponse(
       openJson({
@@ -270,12 +279,13 @@ describe("open response", () => {
       view.setUint16(4 + index * 4, index * 50, false);
     }
     const round = entry(1);
-    const digest = challengeDigest(
+    const digest = challengeDigestV2(
       bytes(session.sessionNonceHex),
       1,
       bytes(round.roundNonceHex),
       round.word,
       target,
+      bytes(round.cueCommitmentHex),
     );
     const error = openFailure(
       openJson({
@@ -316,21 +326,17 @@ describe("commit chain", () => {
     const final = computeFinalDigest(open, commits);
     expect(bytesToHex(final)).toBe(session.finalDigestHex);
 
-    const expected = vectors.attestation.find(
-      (vector) =>
-        vector.finalDigestHex === session.finalDigestHex && vector.projectionVersion === 1,
-    );
     expect(
       bytesToHex(
         attestationDigest({
-          protocolVersion: 1,
+          protocolVersion: 2,
           sessionNonce: open.sessionNonce,
           attemptBinding: open.attemptBinding,
           finalDigest: final,
           projectionVersion: 1,
         }),
       ),
-    ).toBe(expected?.requestHash);
+    ).toBe(vectorsV2.attestationDigestHex);
   });
 
   test("refuses inputs that disagree with the declared evidence", () => {
@@ -347,7 +353,7 @@ describe("commit chain", () => {
       idempotencyKey: idempotencyKey(1),
     };
     expect(() => buildCommitBody(base)).not.toThrow();
-    expect(() => buildCommitBody({ ...base, pointCount: round.pathPointCount + 1 })).toThrow(
+    expect(() => buildCommitBody({ ...base, pointCount: round.pathPointCount - 1 })).toThrow(
       RangeError,
     );
     expect(() => buildCommitBody({ ...base, pointCount: 0 })).toThrow("tier_violation");
@@ -702,6 +708,9 @@ describe("refusals", () => {
     expect(finalizeRetryAfterMs(response(502), 2)).toBe(1_000);
     expect(finalizeRetryAfterMs(response(503, { reason: "technical_failure" }), 0)).toBeNull();
     expect(finalizeRetryAfterMs(response(400, { reason: "trace_incomplete" }), 0)).toBeNull();
+    expect(
+      finalizeRetryAfterMs(response(400, { reason: "audio_evidence_insufficient" }), 0),
+    ).toBeNull();
     expect(finalizeRetryAfterMs(response(409, { reason: "session_consumed" }), 0)).toBeNull();
     expect(finalizeRetryAfterMs(response(429, { reason: "rate_limited" }), 0)).toBeNull();
     expect(finalizeRetryAfterMs(response(200, { valid: true }), 0)).toBeNull();
@@ -829,5 +838,37 @@ describe("finalize success check", () => {
       assuranceTier: null,
     });
     expect(checkFinalizeSuccess(body(), update)).toBe("receipt_mismatch");
+  });
+});
+
+describe("cue response binding", () => {
+  test("opens the independently generated commitment", () => {
+    const open = parseOpenResponse(openJson());
+    const round = entry(1);
+    const response = {
+      ...buildCueBody(open, open.reveal, WALLET),
+      point: { x: round.cuePoint[0], y: round.cuePoint[1] },
+      salt: round.cueSaltHex,
+      expires_in_ms: 6000,
+    };
+    expect(parseCueResponse(response, open, open.reveal)).toEqual({
+      point: response.point,
+      expiresInMs: 6000,
+    });
+    for (const changed of [
+      { session_id: "00".repeat(16) },
+      { round_index: 3 },
+      { round_nonce: "00".repeat(32) },
+      { challenge_digest: "00".repeat(32) },
+      { point: { x: 850, y: 850 } },
+      { point: { x: 150.5, y: 500 } },
+      { point: { x: 149, y: 500 } },
+      { salt: "00".repeat(32) },
+      { salt: "a" },
+    ]) {
+      expect(() => parseCueResponse({ ...response, ...changed }, open, open.reveal)).toThrow(
+        PairedClientError,
+      );
+    }
   });
 });

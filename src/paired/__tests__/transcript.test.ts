@@ -72,13 +72,14 @@ describe("paired-round vector file", () => {
     // Server settings the client never reads. The server reports the session
     // and round lifetimes with each response. Any other constant the generator
     // adds fails here until the client pins it.
+    expect(PAIRED_PROTOCOL_VERSION).toBe(2);
     const serverOnly = new Set(["sessionExpirySeconds", "roundExpirySeconds", "separatorSamples"]);
     const clientConstants = Object.fromEntries(
       Object.entries(vectors.constants).filter(([key]) => !serverOnly.has(key)),
     );
     expect({
       rounds: PAIRED_ROUNDS,
-      protocolVersion: PAIRED_PROTOCOL_VERSION,
+      protocolVersion: 1,
       schemaVersion: PATH_SCHEMA_VERSION,
       sampleRate: PAIRED_SAMPLE_RATE,
       audioFormat: PAIRED_AUDIO_FORMAT,

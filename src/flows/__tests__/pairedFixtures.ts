@@ -4,7 +4,10 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { parseCommitResponse, type PairedRoundCommit } from "@/paired/client";
-import { traceSession, type RoundEntryVector } from "@/paired/__tests__/vectors";
+import {
+  traceSessionV2 as traceSession,
+  type CueRoundVector as RoundEntryVector,
+} from "@/paired/__tests__/vectorsV2";
 
 export const SESSION = traceSession();
 export const SESSION_ID = "8f14e45fceea167a5a36dedd4bea2543";
@@ -22,15 +25,16 @@ export function revealJson(round: RoundEntryVector): Record<string, unknown> {
     round_nonce: round.roundNonceHex,
     word: round.word,
     path_target_hex: round.pathTargetHex,
+    cue_commitment: round.cueCommitmentHex,
     challenge_digest: round.challengeDigestHex,
-    expires_in_ms: 120_000,
+    expires_in_ms: 12_000,
   };
 }
 
 export function openJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocol: "paired",
-    protocol_version: 1,
+    protocol_version: 2,
     session_id: SESSION_ID,
     session_nonce: SESSION.sessionNonceHex,
     attempt_binding: SESSION.attemptBindingDigestHex,
@@ -60,7 +64,7 @@ export function acceptJson(commit: PairedRoundCommit): Record<string, unknown> {
     commitment: bytesToHex(commit.commitment),
     replayed: false,
     ...(next ? { reveal: revealJson(next) } : {}),
-    session_expires_in_ms: 590_000,
+    session_expires_in_ms: next ? 590_000 : 120_000,
   };
 }
 

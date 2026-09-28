@@ -108,6 +108,22 @@ describe("continuous recording", () => {
     expect(recorder.sampleIndexAt(9_000)).toBe(0);
   });
 
+  test("a future release preserves the unfinished canonical frame", async () => {
+    const { open, holder } = fakeOpener(16_000);
+    const levels: number[] = [];
+    const recorder = await startContinuousRecording({
+      onFrame: (level) => levels.push(level),
+      openStream: open,
+    });
+    holder.stream!.emit(new Int16Array(1000).fill(8192));
+    recorder.releaseBefore(10000);
+    holder.stream!.emit(new Int16Array(1000).fill(8192));
+    expect(levels).toHaveLength(2);
+    expect(levels[1]).toBe(0.25);
+    expect(recorder.slice(800, 1600)).toEqual(new Float32Array(800).fill(0.25));
+    await recorder.stop();
+  });
+
   test("reports a mid-session microphone failure and stops cleanly", async () => {
     const { open, holder } = fakeOpener(16_000);
     const onFailure = jest.fn();

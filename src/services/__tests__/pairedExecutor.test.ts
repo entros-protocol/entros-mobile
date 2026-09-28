@@ -8,7 +8,7 @@ import {
   type PairedFinalizeBody,
   type PairedRoundCommit,
 } from "@/paired";
-import { bytes, traceSession } from "@/paired/__tests__/vectors";
+import { bytes, traceSessionV2 as traceSession } from "@/paired/__tests__/vectorsV2";
 
 import { PairedServiceError } from "../pairedErrors";
 import { commitPairedRound, finalizePairedSession, openPairedSession } from "../pairedExecutor";
@@ -85,11 +85,11 @@ describe("open", () => {
     const time = clock();
     const opened = await openPairedSession(WALLET, time);
     expect(opened.open.sessionId).toBe(openJson().session_id);
-    expect(opened.receivedAtMs).toBe(0);
+    expect(opened.startedAtMs).toBe(0);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("https://executor.test/challenge/paired");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ wallet: WALLET, tier: "trace" });
+    expect(JSON.parse(init.body)).toEqual({ wallet: WALLET, tier: "trace", protocol_version: 2 });
     expect(init.headers).toEqual({
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -152,7 +152,7 @@ describe("open", () => {
       reason: "finalize_in_progress",
       status: 409,
     });
-    respond(200, openJson({ protocol_version: 2 }));
+    respond(200, openJson({ protocol_version: 1 }));
     expect((await failureOf(openPairedSession(WALLET, clock()))).reason).toBe(
       "unsupported_session",
     );
@@ -231,7 +231,7 @@ describe("commit", () => {
       throw new TypeError("Network request failed");
     });
     await expect(
-      commitPairedRound(commit, 60_000, { signal: controller.signal }),
+      commitPairedRound(commit, 60_000, { signal: controller.signal, now: () => 0 }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     fetchMock.mockReset();
@@ -282,6 +282,11 @@ describe("finalize", () => {
       { reason: "phrase_content_mismatch", status: 400 },
     ],
     [400, { reason: "trace_incomplete" }, { reason: "trace_incomplete", status: 400 }],
+    [
+      400,
+      { reason: "audio_evidence_insufficient" },
+      { reason: "audio_evidence_insufficient", status: 400 },
+    ],
     [400, { error: "Verification failed" }, { status: 400 }],
     [409, { reason: "session_consumed" }, { reason: "session_consumed", status: 409 }],
     [

@@ -26,9 +26,10 @@ import {
   type PairedPhase,
   type PairedRecorder,
   type PairedRoundView,
+  type PairedSessionDeps,
 } from "../pairedSession";
 
-import { accept, acceptJson, openJson, WALLET } from "./pairedFixtures";
+import { accept, acceptJson, openJson, roundEntry, WALLET } from "./pairedFixtures";
 
 const SURFACE = { width: 300, height: 300 };
 /** Wall-clock ms per canonical sample in the fake recorder: sample i was recorded at i / 16. */
@@ -41,6 +42,10 @@ const OPENED_AT_MS = 1_000;
 /** A recorder whose frames the test emits. A frame's samples all equal its level. */
 class FakeRecorder implements PairedRecorder {
   readonly nativeSampleRate = 48_000;
+  readonly ready = Promise.resolve();
+  markNow(): number {
+    return this.framedSamples();
+  }
   private samples: number[] = [];
   private start = 0;
   stopped = false;
@@ -92,6 +97,7 @@ interface FakeTimer {
 interface HarnessOptions {
   respond?: (commit: PairedRoundCommit) => Promise<PairedCommitResponse>;
   open?: (now: number) => Promise<OpenedPairedSession>;
+  cue?: PairedSessionDeps["cue"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -101,6 +107,8 @@ function harness(options: HarnessOptions = {}) {
   const clock = { now: OPENED_AT_MS };
   const state = {
     commits: [] as PairedRoundCommit[],
+    cues: [] as GridPoint[],
+    levels: [] as [number, boolean][],
     deadlines: [] as number[],
     reveals: [] as PairedRoundView[],
     phases: [] as PairedPhase[],
@@ -119,12 +127,24 @@ function harness(options: HarnessOptions = {}) {
       },
       open:
         options.open === undefined
-          ? async () => ({ open: parseOpenResponse(openJson()), receivedAtMs: clock.now })
+          ? async () => ({ open: parseOpenResponse(openJson()), startedAtMs: clock.now })
           : () => options.open!(clock.now),
+      cue:
+        options.cue === undefined
+          ? async (_open, reveal) => {
+              const point = roundEntry(reveal.roundIndex).cuePoint;
+              return {
+                point: { x: point[0], y: point[1] },
+                expiresInMs: 6000,
+                startedAtMs: clock.now,
+              };
+            }
+          : options.cue,
       commit: async (commit, deadlineMs) => {
         state.commits.push(commit);
         state.deadlines.push(deadlineMs);
-        return respond(commit);
+        const startedAtMs = clock.now;
+        return { ...(await respond(commit)), startedAtMs };
       },
       now: () => clock.now,
       randomBytes: (length) => new Uint8Array(length).fill(state.commits.length + 1),
@@ -141,9 +161,10 @@ function harness(options: HarnessOptions = {}) {
     },
     {
       reveal: (view) => state.reveals.push(view),
+      cue: (view) => state.cues.push(view.point),
       phase: (phase) => state.phases.push(phase),
       continueAvailable: (available) => state.continueStates.push(available),
-      level: () => undefined,
+      level: (rms, active) => state.levels.push([rms, active]),
       failure: (failure) => state.failures.push(failure),
       unavailable: () => state.fallbacks.push(WALLET),
       complete: (result) => state.completed.push(result),
@@ -190,7 +211,16 @@ async function playRound(h: Harness): Promise<void> {
   const view = h.reveals[h.reveals.length - 1]!;
   traceGrid(h, view.waypoints);
   h.recorder().frames([QUIET, QUIET, ...SPOKEN]);
+  await finishCue(h);
+}
+
+async function finishCue(h: Harness) {
   await h.flush();
+  if (h.phases.at(-1) === "cue") {
+    traceGrid(h, [h.cues.at(-1)!]);
+    h.recorder().frames([QUIET]);
+    await h.flush();
+  }
 }
 
 describe("paired session rounds", () => {
@@ -239,14 +269,13 @@ describe("paired session rounds", () => {
       previous = commit.body.commitment;
     }
 
-    // Round 1 starts where the tracker began. Each later round starts at the
-    // previous mark, so the three windows join without a gap.
+    // Waiting for the second commit is outside every committed interval.
     const lengths = h.commits.map((commit) => commit.segment.length / 2);
     expect(lengths.every((length) => length % FRAME_SAMPLES === 0)).toBe(true);
     const result = h.completed[0]!;
     expect(result.audioStartedAtMs).toBe(openedAt / SAMPLES_PER_MS);
     expect(result.audioEndedAtMs - result.audioStartedAtMs).toBe(
-      lengths.reduce((sum, length) => sum + length, 0) / SAMPLES_PER_MS,
+      (lengths.reduce((sum, length) => sum + length, 0) + 20 * FRAME_SAMPLES) / SAMPLES_PER_MS,
     );
     expect(result.commits).toHaveLength(3);
     expect(result.nativeSampleRate).toBe(48_000);
@@ -262,7 +291,7 @@ describe("paired session rounds", () => {
     const expected = encodePcm16(
       Float32Array.from({ length: end - start }, (_, index) => {
         const frame = Math.floor(index / FRAME_SAMPLES);
-        return [QUIET, QUIET, ...SPOKEN][frame]!;
+        return [QUIET, QUIET, ...SPOKEN, QUIET][frame]!;
       }),
     );
     expect(bytesToHex(segment)).toBe(bytesToHex(expected));
@@ -275,6 +304,9 @@ describe("paired session rounds", () => {
     const trace = traceGrid(h, view.waypoints);
     h.recorder().frames([QUIET, QUIET, ...SPOKEN]);
     await h.flush();
+    trace.push(...traceGrid(h, [h.cues.at(-1)!]));
+    h.recorder().frames([QUIET]);
+    await h.flush();
     const outline = toCoarsePath(trace, SURFACE);
     expect(scorePath(view.waypoints, outline).inOrder).toBe(true);
     expect(bytesToHex(h.commits[0]!.coarsePath)).toBe(
@@ -283,62 +315,57 @@ describe("paired session rounds", () => {
     expect(h.commits[0]!.body.path_point_count).toBe(outline.length);
   });
 
-  test("keeps a late word when a long round is trimmed, measuring runs from the tracker's start", async () => {
+  test("excludes network waiting and preserves early quiet speech", async () => {
     let release: (() => void) | null = null;
     const h = harness({
       respond: async (commit) => {
-        if (commit.body.round_index === 1) {
+        if (commit.body.round_index === 1)
           await new Promise<void>((resolve) => {
             release = resolve;
           });
-        }
         return accept(commit);
       },
     });
     await h.session.start(WALLET);
     await playRound(h);
-    const mark = h.recorder().framedSamples() - 2 * FRAME_SAMPLES;
-    // 100 frames pass between round 1's mark and round 2's reveal. They belong
-    // to round 2's window but precede its tracker frames.
-    h.recorder().frames(Array(100).fill(QUIET));
+    h.recorder().frames(Array(100).fill(0.3));
     release!();
     await h.flush();
-    const view = h.reveals[1]!;
-    const trackerStart = h.recorder().framedSamples();
-    h.recorder().frames([...Array(250).fill(QUIET), ...Array(6).fill(VOICED)]);
-    traceGrid(h, view.waypoints);
-    h.recorder().frames(Array(14).fill(QUIET));
-    await h.flush();
-
+    h.recorder().frames([QUIET, QUIET, ...Array(6).fill(0.007), ...Array(14).fill(QUIET)]);
+    traceGrid(h, h.reveals[1]!.waypoints);
+    h.recorder().frames([QUIET]);
+    if (h.phases.at(-1) === "round") expect(h.session.continueRound()).toBe(true);
+    await finishCue(h);
     const segment = decodePcm16(h.commits[1]!.segment);
-    expect(segment).toHaveLength(MAX_ROUND_SAMPLES);
-    const roundEnd = trackerStart + 256 * FRAME_SAMPLES + 12 * FRAME_SAMPLES;
-    expect(roundEnd - mark).toBeGreaterThan(MAX_ROUND_SAMPLES);
-    // The window ends at the round end, 600 ms after the word, and holds it.
-    const windowStart = roundEnd - MAX_ROUND_SAMPLES;
-    const wordStart = trackerStart + 250 * FRAME_SAMPLES - windowStart;
-    expect(segment[wordStart - 1]).toBeCloseTo(QUIET, 3);
-    expect(segment[wordStart]).toBeCloseTo(VOICED, 3);
-    expect(segment[wordStart + 6 * FRAME_SAMPLES - 1]).toBeCloseTo(VOICED, 3);
+    expect(segment).toHaveLength(24 * FRAME_SAMPLES);
+    expect(segment[2 * FRAME_SAMPLES]).toBeCloseTo(0.007, 4);
+    expect(Math.max(...segment)).toBeLessThan(0.01);
   });
 
-  test("offers Continue only after a stall and only with a trace that passes", async () => {
+  test("fails oversized capture without discarding early audio", async () => {
     const h = harness();
     await h.session.start(WALLET);
-    const view = h.reveals[0]!;
-    // No speech: the trace completes, then the tracker stalls after 80 frames.
-    h.recorder().frames(Array(10).fill(QUIET));
+    h.recorder().frames(Array(MAX_ROUND_SAMPLES / FRAME_SAMPLES + 1).fill(QUIET));
+    await h.flush();
+    expect(h.failures).toEqual([{ reason: "evidence_bounds_invalid" }]);
+    expect(h.commits).toHaveLength(0);
+    expect(h.recorder().stopped).toBe(true);
+  });
+
+  test("offers Continue immediately after a valid outline and requests one cue", async () => {
+    const h = harness();
+    await h.session.start(WALLET);
     expect(h.session.continueRound()).toBe(false);
-    traceGrid(h, view.waypoints);
-    h.recorder().frames(Array(79).fill(QUIET));
-    expect(h.continueStates).toEqual([]);
-    h.recorder().frames(Array(10).fill(QUIET));
+    traceGrid(h, h.reveals[0]!.waypoints);
     expect(h.continueStates).toEqual([true]);
     expect(h.session.continueRound()).toBe(true);
+    expect(h.session.continueRound()).toBe(false);
     await h.flush();
+    expect(h.cues).toHaveLength(1);
+    expect(h.commits).toHaveLength(0);
+    await finishCue(h);
     expect(h.commits).toHaveLength(1);
     expect(h.continueStates).toEqual([true, false]);
-    expect(h.reveals).toHaveLength(2);
   });
 
   test("waits for a trace that forms a path before it ends a round", async () => {
@@ -347,7 +374,7 @@ describe("paired session rounds", () => {
     const view = h.reveals[0]!;
     // Pressed at the first point only: the trace has no length.
     traceGrid(h, [view.waypoints[0]!, view.waypoints[0]!]);
-    h.recorder().frames([QUIET, QUIET, ...SPOKEN, ...Array(300).fill(QUIET)]);
+    h.recorder().frames([QUIET, QUIET, ...SPOKEN, ...Array(100).fill(QUIET)]);
     await h.flush();
     expect(h.commits).toHaveLength(0);
     expect(h.phases.at(-1)).toBe("round");
@@ -357,7 +384,7 @@ describe("paired session rounds", () => {
     traceGrid(h, view.waypoints.slice(1));
     expect(h.continueStates).toEqual([true]);
     expect(h.session.continueRound()).toBe(true);
-    await h.flush();
+    await finishCue(h);
     expect(h.commits).toHaveLength(1);
   });
 
@@ -366,7 +393,7 @@ describe("paired session rounds", () => {
     await h.session.start(WALLET);
     const view = h.reveals[0]!;
     traceGrid(h, [...view.waypoints].reverse());
-    h.recorder().frames([QUIET, QUIET, ...SPOKEN, ...Array(300).fill(QUIET)]);
+    h.recorder().frames([QUIET, QUIET, ...SPOKEN, ...Array(100).fill(QUIET)]);
     await h.flush();
     expect(h.commits).toHaveLength(0);
     expect(h.continueStates).toEqual([]);
@@ -404,6 +431,55 @@ describe("paired session rounds", () => {
     expect(h.continueStates).toEqual([]);
     expect(h.session.continueRound()).toBe(false);
   });
+
+  test.each([0, 160])(
+    "retains speech during outline recovery after %i extra frames",
+    async (delay) => {
+      const h = harness();
+      await h.session.start(WALLET);
+      const view = h.reveals[0]!;
+      const detour = Array.from({ length: 16 }, (_, index) =>
+        index % 2 === 0 ? { x: 950, y: 1000 } : { x: 1000, y: 0 },
+      );
+      const [first, ...rest] = view.waypoints;
+      const path = [
+        first!,
+        { x: 950, y: first!.y },
+        ...rest.flatMap((point) => [
+          ...detour,
+          { x: 950, y: point.y },
+          point,
+          { x: 950, y: point.y },
+        ]),
+      ];
+      const trace = traceGrid(h, path);
+      expect(scorePath(view.waypoints, toCoarsePath(trace, SURFACE)).inOrder).toBe(false);
+      h.recorder().frames([QUIET, QUIET, ...Array(6).fill(0.02), ...Array(14).fill(QUIET)]);
+      await h.flush();
+      expect(h.commits).toHaveLength(0);
+      expect(h.session.continueRound()).toBe(false);
+
+      h.recorder().frames(Array(delay).fill(0.008));
+      const repair = traceGrid(h, Array.from({ length: 10 }, () => view.waypoints).flat());
+      expect(scorePath(view.waypoints, toCoarsePath([...trace, ...repair], SURFACE)).inOrder).toBe(
+        true,
+      );
+      h.recorder().frames(Array(10).fill(QUIET));
+      await finishCue(h);
+      expect(h.commits).toHaveLength(1);
+      expect(h.reveals.map((round) => round.roundIndex)).toEqual([1, 2]);
+      const segment = decodePcm16(h.commits[0]!.segment);
+      expect(segment[2 * FRAME_SAMPLES]).toBeCloseTo(0.02, 3);
+      expect(segment[8 * FRAME_SAMPLES - 1]).toBeCloseTo(0.02, 3);
+      if (delay > 0) expect(segment).toHaveLength((22 + delay + 10 + 1) * FRAME_SAMPLES);
+
+      traceGrid(h, h.reveals[1]!.waypoints);
+      h.recorder().frames(Array(100).fill(QUIET));
+      await h.flush();
+      expect(h.commits).toHaveLength(1);
+      h.session.abort();
+    },
+  );
 
   test("ignores touches outside a round", async () => {
     const h = harness({ respond: () => new Promise<PairedCommitResponse>(() => undefined) });
@@ -445,7 +521,10 @@ describe("paired session rounds", () => {
             retryAfterSec: 5,
           });
         },
-        commit: async (commit) => accept(commit),
+        cue: async () => {
+          throw new Error("unreachable");
+        },
+        commit: async (commit) => ({ ...accept(commit), startedAtMs: 0 }),
         now: () => 0,
         randomBytes: (length) => new Uint8Array(length),
         defer: (task) => task(),
@@ -453,6 +532,7 @@ describe("paired session rounds", () => {
       },
       {
         reveal: () => undefined,
+        cue: () => undefined,
         phase: () => undefined,
         continueAvailable: () => undefined,
         level: () => undefined,
@@ -479,6 +559,16 @@ describe("paired session rounds", () => {
     expect(h.recorder().stopped).toBe(true);
   });
 
+  test("cancellation erases copied round audio still owned by the controller", async () => {
+    const h = harness();
+    await h.session.start(WALLET);
+    await playRound(h);
+    const audio = h.commits[0]!.segment;
+    expect(audio.some((value) => value !== 0)).toBe(true);
+    await h.session.abort();
+    expect(audio.every((value) => value === 0)).toBe(true);
+  });
+
   test("abort stops the recorder and the round's timer without reporting", async () => {
     const h = harness();
     await h.session.start(WALLET);
@@ -497,7 +587,7 @@ describe("paired session deadlines", () => {
     const h = harness();
     await h.session.start(WALLET);
     const [timer] = h.pending();
-    expect(timer!.delayMs).toBe(120_000);
+    expect(timer!.delayMs).toBe(12_000);
     timer!.task();
     expect(h.failures).toEqual([{ reason: "round_expired" }]);
     expect(h.phases.at(-1)).toBe("failed");
@@ -509,46 +599,91 @@ describe("paired session deadlines", () => {
   test("ends a round whose expiry was cut to the session's end with session_expired", async () => {
     const h = harness({
       open: async (now) => ({
-        open: parseOpenResponse(openJson({ expires_in_ms: 60_000 })),
-        receivedAtMs: now,
+        open: parseOpenResponse(openJson({ expires_in_ms: 6_000 })),
+        startedAtMs: now,
       }),
     });
     await h.session.start(WALLET);
     const [timer] = h.pending();
-    expect(timer!.delayMs).toBe(60_000);
+    expect(timer!.delayMs).toBe(6_000);
     timer!.task();
     expect(h.failures).toEqual([{ reason: "session_expired" }]);
   });
 
-  test("accepts a reveal that expires at once", async () => {
+  test("ignores a cue response that lands after abort", async () => {
+    let release!: () => void;
+    const h = harness({
+      cue: () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ point: { x: 200, y: 800 }, expiresInMs: 6_000, startedAtMs: OPENED_AT_MS });
+        }),
+    });
+    await h.session.start(WALLET);
+    await playRound(h);
+    expect(h.phases.at(-1)).toBe("cue_loading");
+    await h.session.abort();
+    release();
+    await h.flush();
+    expect(h.session.currentRoundStatus).toBeNull();
+    expect(h.cues).toEqual([]);
+    expect(h.failures).toEqual([]);
+    expect(h.commits).toHaveLength(0);
+    expect(h.recorder().stopped).toBe(true);
+  });
+
+  test("ignores a cue response that lands after the round expired", async () => {
+    let release!: () => void;
+    const h = harness({
+      cue: () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ point: { x: 200, y: 800 }, expiresInMs: 6_000, startedAtMs: OPENED_AT_MS });
+        }),
+    });
+    await h.session.start(WALLET);
+    await playRound(h);
+    expect(h.phases.at(-1)).toBe("cue_loading");
+    // The round's twelve-second window closes while its cue response is lost.
+    h.clock.now += 13_000;
+    h.recorder().frames([QUIET]);
+    expect(h.failures).toEqual([{ reason: "round_expired" }]);
+    release();
+    await h.flush();
+    expect(h.cues).toEqual([]);
+    expect(h.commits).toHaveLength(0);
+    expect(h.phases.at(-1)).toBe("failed");
+    expect(h.failures).toHaveLength(1);
+  });
+
+  test("refuses a reveal that has expired before display", async () => {
     const reveal = openJson().reveal as Record<string, unknown>;
     const h = harness({
       open: async (now) => ({
         open: parseOpenResponse(openJson({ reveal: { ...reveal, expires_in_ms: 0 } })),
-        receivedAtMs: now,
+        startedAtMs: now,
       }),
     });
     await h.session.start(WALLET);
-    const [timer] = h.pending();
-    expect(timer!.delayMs).toBe(0);
-    timer!.task();
+    expect(h.pending()).toHaveLength(0);
+    expect(h.reveals).toHaveLength(0);
     expect(h.failures).toEqual([{ reason: "round_expired" }]);
   });
 
   test("keeps the session end from each commit and cuts the next reveal to it", async () => {
     const h = harness({
       respond: async (commit) =>
-        parseCommitResponse({ ...acceptJson(commit), session_expires_in_ms: 30_000 }, commit),
+        parseCommitResponse({ ...acceptJson(commit), session_expires_in_ms: 3_000 }, commit),
     });
     await h.session.start(WALLET);
     const [first] = h.pending();
     h.clock.now += 2_000;
     await playRound(h);
     // The commit may retry until the round's own expiry.
-    expect(h.deadlines).toEqual([OPENED_AT_MS + 120_000]);
+    expect(h.deadlines).toEqual([OPENED_AT_MS + 2_000 + 6_000]);
     expect(first!.cancelled).toBe(true);
     const [second] = h.pending();
-    expect(second!.delayMs).toBe(30_000);
+    expect(second!.delayMs).toBe(3_000);
     second!.task();
     expect(h.failures).toEqual([{ reason: "session_expired" }]);
   });
@@ -561,6 +696,17 @@ describe("paired session deadlines", () => {
     await playRound(h);
     expect(h.completed).toHaveLength(1);
     expect(h.pending()).toEqual([]);
-    expect(h.completed[0]!.sessionEndsAtMs).toBe(OPENED_AT_MS + 590_000);
+    expect(h.completed[0]!.sessionEndsAtMs).toBe(OPENED_AT_MS + 120_000);
   });
+});
+
+test("delivers the current frame classification to the meter", async () => {
+  const run = harness();
+  await run.session.start(WALLET);
+  run.recorder().frames([...Array<number>(20).fill(0.001), 0.009, 0.02]);
+  expect(run.levels.slice(-2)).toEqual([
+    [0.009, false],
+    [0.02, true],
+  ]);
+  await run.session.abort();
 });

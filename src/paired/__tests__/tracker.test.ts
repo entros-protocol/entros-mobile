@@ -199,3 +199,59 @@ describe("round tracker behaviour", () => {
     expect(() => frameRms(new Float32Array(FRAME_SAMPLES - 1))).toThrow(RangeError);
   });
 });
+
+test("reports activity against the current floor and clears it for a new round", () => {
+  const tracker = createRoundTracker();
+  for (let index = 0; index < 60; index++) tracker.observe(0.001);
+  tracker.begin([], false);
+  tracker.frame(0.009);
+  expect(tracker.speechActive()).toBe(false);
+  tracker.frame(0.01);
+  expect(tracker.speechActive()).toBe(true);
+  tracker.begin([], false);
+  expect(tracker.speechActive()).toBe(false);
+  for (let index = 0; index < HISTORY_FRAMES; index++) tracker.observe(0.02);
+  tracker.frame(0.05);
+  expect(tracker.speechActive()).toBe(false);
+  tracker.frame(0.08);
+  expect(tracker.speechActive()).toBe(true);
+});
+
+test("speech readiness survives new room noise before the trace", () => {
+  const tracker = createRoundTracker();
+  for (let frame = 0; frame < 2; frame++) tracker.observe(0.001);
+  const path = [
+    { x: 150, y: 150 },
+    { x: 150, y: 700 },
+    { x: 750, y: 700 },
+  ];
+  tracker.begin(path, true);
+  for (const [level, count] of [
+    [0.05, 6],
+    [0.001, 12],
+    [0.04, 160],
+  ]) {
+    for (let frame = 0; frame < count!; frame++) tracker.frame(level!);
+  }
+  for (const point of path) tracker.reach(point.x, point.y);
+  expect(tracker.frame(0.04)).toBe("complete");
+});
+
+test("keeps a later completed speech witness after the recording boundary advances", () => {
+  const tracker = createRoundTracker();
+  tracker.observe(0.001);
+  tracker.observe(0.001);
+  tracker.begin([{ x: 200, y: 200 }], true);
+  for (const level of [
+    ...Array(6).fill(0.05),
+    ...Array(12).fill(0.001),
+    ...Array(6).fill(0.05),
+    ...Array(12).fill(0.001),
+  ])
+    tracker.frame(level);
+  expect(tracker.speechReady()).toBe(true);
+  tracker.discardPrefix(1);
+  tracker.reach(200, 200);
+  expect(tracker.frame(0.04)).toBe("complete");
+  expect(tracker.speechReady()).toBe(true);
+});

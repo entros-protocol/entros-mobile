@@ -74,6 +74,7 @@ const ALL_REASONS: VerificationReason[] = [
   "temporal_coupling_low",
   "phrase_content_mismatch",
   "trace_incomplete",
+  "audio_evidence_insufficient",
   "captcha_required",
   "rate_limited",
   "ip_rate_limited",
@@ -191,6 +192,7 @@ describe("derived sets", () => {
   it("RETRYABLE_REASONS holds exactly the retry-disposition labels", () => {
     expect([...RETRYABLE_REASONS].sort()).toEqual(
       [
+        "audio_evidence_insufficient",
         "captcha_required",
         "entropy_bounds",
         "phrase_content_mismatch",
