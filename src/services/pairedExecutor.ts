@@ -16,6 +16,11 @@ import { config } from "@/config";
 import { isRecord, type JsonRecord } from "@/lib/values";
 import {
   commitWithRetry,
+  buildCueBody,
+  parseCueResponse,
+  PAIRED_PROTOCOL_VERSION,
+  type PairedReveal,
+  type PairedCue,
   finalizeRetryAfterMs,
   isTransientStatus,
   PairedClientError,
@@ -47,8 +52,8 @@ const FINALIZE_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface OpenedPairedSession {
   open: PairedOpenSession;
-  /** The `now` clock reading when the open response arrived. Server durations count from it. */
-  receivedAtMs: number;
+  /** The `now` clock reading at request start. Server durations are anchored conservatively to it. */
+  startedAtMs: number;
 }
 
 export interface PairedRequestOptions {
@@ -122,9 +127,13 @@ async function postJson(
   target: Endpoint,
   serializedBody: string,
   signal: AbortSignal | undefined,
+  remainingMs = ROUND_REQUEST_TIMEOUT_MS,
 ): Promise<PairedHttpResponse> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ROUND_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    Math.max(0, Math.min(ROUND_REQUEST_TIMEOUT_MS, remainingMs)),
+  );
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
@@ -173,12 +182,14 @@ export async function openPairedSession(
 ): Promise<OpenedPairedSession> {
   const target = endpoint("/challenge/paired");
   const clock = clockOf(options);
-  const body = JSON.stringify({ wallet, tier: "trace" });
+  const body = JSON.stringify({ wallet, tier: "trace", protocol_version: PAIRED_PROTOCOL_VERSION });
+  let startedAtMs = clock.now();
   try {
     const response = await retryUntil<PairedHttpResponse>(
       async () => {
         let response: PairedHttpResponse;
         try {
+          startedAtMs = clock.now();
           response = await postJson(target, body, options.signal);
         } catch (error) {
           if (options.signal?.aborted) throw error;
@@ -192,7 +203,7 @@ export async function openPairedSession(
       clock.now() + OPEN_RETRY_WINDOW_MS,
       clock,
     );
-    return { open: parseOpenResponse(response.body), receivedAtMs: clock.now() };
+    return { open: parseOpenResponse(response.body), startedAtMs };
   } catch (error) {
     if (error instanceof PairedClientError) throw new PairedServiceError(failureOf(error));
     throw error;
@@ -208,14 +219,57 @@ export async function commitPairedRound(
   commit: PairedRoundCommit,
   deadlineMs: number,
   options: PairedRequestOptions = {},
-): Promise<PairedCommitResponse> {
+): Promise<PairedCommitResponse & { startedAtMs: number }> {
   const target = endpoint("/paired/commit");
+  const clock = clockOf(options);
+  let startedAtMs = clock.now();
   try {
-    return await commitWithRetry(
-      (serialized) => postJson(target, serialized, options.signal),
+    const response = await commitWithRetry(
+      (serialized) => {
+        startedAtMs = clock.now();
+        return postJson(target, serialized, options.signal, deadlineMs - startedAtMs);
+      },
       commit,
-      { deadlineMs, ...clockOf(options) },
+      { deadlineMs, ...clock },
     );
+    return { ...response, startedAtMs };
+  } catch (error) {
+    if (error instanceof PairedClientError) throw new PairedServiceError(failureOf(error));
+    throw error;
+  }
+}
+
+export async function requestPairedCue(
+  open: PairedOpenSession,
+  reveal: PairedReveal,
+  walletId: string,
+  deadlineMs: number,
+  options: PairedRequestOptions = {},
+): Promise<PairedCue & { startedAtMs: number }> {
+  const target = endpoint("/paired/cue");
+  const clock = clockOf(options);
+  const serialized = JSON.stringify(buildCueBody(open, reveal, walletId));
+  let startedAtMs = clock.now();
+  try {
+    const response = await retryUntil<PairedHttpResponse>(
+      async () => {
+        let reply: PairedHttpResponse;
+        try {
+          startedAtMs = clock.now();
+          reply = await postJson(target, serialized, options.signal, deadlineMs - startedAtMs);
+        } catch (error) {
+          if (options.signal?.aborted) throw error;
+          return { retry: new PairedClientError("refused", "validation_unavailable") };
+        }
+        if (reply.status >= 200 && reply.status < 300) return { value: reply };
+        const error = refusalOf(reply);
+        if (!isTransientStatus(reply.status)) throw error;
+        return { retry: error, waitMs: (error.retryAfterSec ?? 0) * 1000 };
+      },
+      deadlineMs,
+      clock,
+    );
+    return { ...parseCueResponse(response.body, open, reveal), startedAtMs };
   } catch (error) {
     if (error instanceof PairedClientError) throw new PairedServiceError(failureOf(error));
     throw error;

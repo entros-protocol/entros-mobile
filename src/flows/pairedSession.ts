@@ -6,14 +6,9 @@
 // next challenge. It does not prove capture time, sensor origin, human
 // presence or physiological coupling.
 //
-// Recording runs without a break for the whole session. A round ends when the
-// tracker hears speech after the trace has reached every waypoint in order,
-// and the round's outline passes the rule the server applies to it. A round
-// that stalls may end by hand, under the same outline rule. Its segment is
-// final at that mark: the window is cut from the canonical stream, encoded,
-// hashed and committed. The server bounds each round and the session in time,
-// and the session ends when either bound passes. Nothing on screen counts
-// down.
+// A round retains audio from reveal through the completed final trace. The
+// server's committed cue is verified before the endpoint is displayed. Speech
+// and tracing may happen in either order; Continue uses the same server checks.
 //
 // PRIVACY: the pressed-stroke samples for each round stay in memory until its
 // coarse path is built. Segment audio leaves the device only in the finalize
@@ -28,7 +23,9 @@ import {
   FRAME_SAMPLES,
   initialCommitment,
   PAIRED_ROUNDS,
-  roundWindow,
+  MAX_ROUND_SAMPLES,
+  WAYPOINT_REACH,
+  type PairedCue,
   scorePath,
   toCoarsePath,
   toGridPoint,
@@ -51,13 +48,23 @@ export interface PairedRoundView {
   word: string;
   /** Waypoints on the 0 to 1000 grid of the trace surface, in order. */
   waypoints: GridPoint[];
+  expiresAtMs: number;
 }
 
-export type PairedPhase = "opening" | "round" | "committing" | "complete" | "failed";
+export type PairedPhase =
+  | "opening"
+  | "round"
+  | "cue_loading"
+  | "cue"
+  | "committing"
+  | "complete"
+  | "failed";
 
 /** The recorder surface the session needs. `startContinuousRecording` provides it. */
 export interface PairedRecorder {
   readonly nativeSampleRate: number;
+  readonly ready: Promise<void>;
+  markNow(): number;
   framedSamples(): number;
   sampleIndexAt(wallClockMs: number): number;
   timeAt(sampleIndex: number): number;
@@ -72,11 +79,18 @@ export interface PairedSessionDeps {
     onFailure: (error: Error) => void,
   ): Promise<PairedRecorder>;
   open(walletId: string, signal: AbortSignal): Promise<OpenedPairedSession>;
+  cue(
+    open: PairedOpenSession,
+    reveal: PairedReveal,
+    walletId: string,
+    deadlineMs: number,
+    signal: AbortSignal,
+  ): Promise<PairedCue & { startedAtMs: number }>;
   commit(
     commit: PairedRoundCommit,
     deadlineMs: number,
     signal: AbortSignal,
-  ): Promise<PairedCommitResponse>;
+  ): Promise<PairedCommitResponse & { startedAtMs: number }>;
   /** Monotonic clock for server deadlines, the same one `open` reports against. */
   now(): number;
   randomBytes(length: number): Uint8Array;
@@ -88,11 +102,12 @@ export interface PairedSessionDeps {
 
 export interface PairedSessionListener {
   reveal(view: PairedRoundView): void;
+  cue(view: { point: GridPoint; expiresAtMs: number }): void;
   phase(phase: PairedPhase): void;
-  /** Whether the stalled round may end by hand. */
+  /** Whether the visible outline permits the speech fallback. */
   continueAvailable(available: boolean): void;
-  /** One level per 50 ms frame, for a live meter. */
-  level(rms: number): void;
+  /** Amplitude and tracker activity every 50 ms. Activity is false outside a round. */
+  level(rms: number, speechActive: boolean): void;
   failure(failure: PairedFailure): void;
   /** The relayer offers no paired sessions. The host falls back to the single capture. */
   unavailable(): void;
@@ -113,10 +128,11 @@ export interface CompletedPairedRounds {
 }
 
 export interface PairedSessionController {
+  readonly currentRoundStatus: { speechReady: boolean; traceReady: boolean } | null;
   start(walletId: string): Promise<void>;
   /** One pressed-stroke sample: surface pixels and a `Date.now()` instant. */
   trace(sample: TraceSample, surface: TraceSurface): void;
-  /** Ends a stalled round by hand. Returns whether the round ended. */
+  /** Requests the cue after speech. Returns whether the request started. */
   continueRound(): boolean;
   /** Stops every sensor and ends the session without reporting. */
   abort(): Promise<void>;
@@ -151,14 +167,16 @@ export function createPairedSession(
   /** When the session ends unless the client acts, on the `now` clock, as the server last said. */
   let sessionEndsAtMs = 0;
   let cancelTimer: (() => void) | null = null;
-  // The window a round commits starts at the previous mark. The tracker's
-  // frames for the round start where it began, after the reveal arrived.
+  // Audio and classification both start at this round's reveal.
   let roundStart = 0;
+  let roundStartedAtMs = 0;
   let trackerStart = 0;
   let roundTrace: TraceSample[] = [];
   let surface: TraceSurface | null = null;
-  let pendingReaches: { sample: number; point: GridPoint }[] = [];
-  let stalled = false;
+  let pendingReaches: { timeMs: number; point: GridPoint }[] = [];
+  let cuePoint: GridPoint | null = null;
+  let cueRevealedAtMs = 0;
+  let cueReached = false;
   let continueShown = false;
   let audioStartedAtMs: number | null = null;
   let audioEndedAtMs = 0;
@@ -187,7 +205,7 @@ export function createPairedSession(
   };
 
   const refreshContinue = (): void => {
-    const available = phase === "round" && stalled && completedOutline() !== null;
+    const available = phase === "round" && completedOutline() !== null;
     if (available !== continueShown) {
       continueShown = available;
       listener.continueAvailable(available);
@@ -199,6 +217,11 @@ export function createPairedSession(
   const release = (): Promise<void> => {
     released ??= (async () => {
       controller.abort();
+      for (const commit of commits) commit.segment.fill(0);
+      commits.length = 0;
+      roundTrace = [];
+      pendingReaches = [];
+      surface = null;
       const active = recorder;
       recorder = null;
       await active?.stop().catch(() => undefined);
@@ -231,18 +254,22 @@ export function createPairedSession(
     );
   };
 
-  const beginRound = (next: PairedReveal, receivedAtMs: number): void => {
+  const beginRound = (next: PairedReveal, startedAtMs: number): void => {
     if (!recorder) return;
     reveal = next;
-    roundEndsAtMs = Math.min(receivedAtMs + next.expiresInMs, sessionEndsAtMs);
+    roundEndsAtMs = Math.min(startedAtMs + next.expiresInMs, sessionEndsAtMs);
     roundTrace = [];
     pendingReaches = [];
-    stalled = false;
-    trackerStart = recorder.framedSamples();
-    if (next.roundIndex === 1) {
-      roundStart = trackerStart;
-      recorder.releaseBefore(roundStart);
+    if (deps.now() >= roundEndsAtMs) {
+      end(() => listener.failure({ reason: "round_expired" }));
+      return;
     }
+    cuePoint = null;
+    cueReached = false;
+    roundStart = recorder.markNow();
+    roundStartedAtMs = recorder.timeAt(roundStart);
+    trackerStart = Math.ceil(roundStart / FRAME_SAMPLES) * FRAME_SAMPLES;
+    recorder.releaseBefore(roundStart);
     tracker.begin(next.waypoints, true);
     // A round whose expiry was cut to the session's end fails as the session.
     arm(roundEndsAtMs, roundEndsAtMs < sessionEndsAtMs ? "round_expired" : "session_expired");
@@ -253,6 +280,7 @@ export function createPairedSession(
       rounds: PAIRED_ROUNDS,
       word: next.word,
       waypoints: next.waypoints.map((point) => ({ x: point.x, y: point.y })),
+      expiresAtMs: roundEndsAtMs,
     });
   };
 
@@ -263,7 +291,7 @@ export function createPairedSession(
     setPhase("complete");
     const result: CompletedPairedRounds = {
       open,
-      commits: [...commits],
+      commits: commits.splice(0),
       walletId,
       audioStartedAtMs: audioStartedAtMs ?? audioEndedAtMs,
       audioEndedAtMs,
@@ -272,14 +300,17 @@ export function createPairedSession(
     };
     recorder = null;
     await active.stop().catch(() => undefined);
-    listener.complete(result);
+    roundTrace = [];
+    pendingReaches = [];
+    surface = null;
+    if (controller.signal.aborted) {
+      for (const commit of result.commits) commit.segment.fill(0);
+      result.commits.length = 0;
+    } else listener.complete(result);
   };
 
-  const commitRound = async (
-    mark: number,
-    window: SampleWindow,
-    outline: GridPoint[],
-  ): Promise<void> => {
+  const commitRound = async (endedAtMs: number, outline: GridPoint[]): Promise<void> => {
+    if (controller.signal.aborted) return;
     const active = recorder;
     const session = open;
     const round = reveal;
@@ -287,6 +318,10 @@ export function createPairedSession(
     if (!active || !session || !round || !chained) {
       throw new Error("The paired session lost its state before a commit.");
     }
+    const mark = active.sampleIndexAt(endedAtMs);
+    const window: SampleWindow = { start: active.sampleIndexAt(roundStartedAtMs), end: mark };
+    if (window.start >= mark || mark - window.start > MAX_ROUND_SAMPLES)
+      throw new PairedServiceError({ reason: "evidence_bounds_invalid" });
     const segment = encodePcm16(active.slice(window.start, window.end));
     const coarsePath = encodeCoarsePath(session.tier, outline);
     const commit = buildCommitBody({
@@ -301,74 +336,152 @@ export function createPairedSession(
     });
     audioStartedAtMs ??= active.timeAt(window.start);
     audioEndedAtMs = active.timeAt(mark);
-    // The next round's audio starts at this mark. Nothing before it is needed.
+    // Committed samples have been copied. Network waiting is excluded.
     active.releaseBefore(mark);
-    roundStart = mark;
     roundTrace = [];
 
-    const response = await deps.commit(commit, roundEndsAtMs, controller.signal);
+    let response: Awaited<ReturnType<PairedSessionDeps["commit"]>>;
+    try {
+      response = await deps.commit(commit, roundEndsAtMs, controller.signal);
+    } finally {
+      if (controller.signal.aborted) commit.segment.fill(0);
+    }
     if (controller.signal.aborted) return;
-    const receivedAtMs = deps.now();
     commits.push(commit);
     previous = commit.commitment;
-    sessionEndsAtMs = receivedAtMs + response.sessionExpiresInMs;
-    if (response.reveal) beginRound(response.reveal, receivedAtMs);
+    sessionEndsAtMs = Math.min(sessionEndsAtMs, response.startedAtMs + response.sessionExpiresInMs);
+    if (response.reveal) beginRound(response.reveal, response.startedAtMs);
     else await complete();
   };
 
-  const finishRound = (mark: number, outline: GridPoint[]): void => {
-    let window: SampleWindow;
-    try {
-      // Fixed at the mark: frames heard after it move the noise floor, and with
-      // it the runs, but belong to the next round.
-      const runs = tracker
-        .runs()
-        .filter((run) => run.qualifies)
-        .map(
-          (run) =>
-            [
-              trackerStart + run.startFrame * FRAME_SAMPLES,
-              trackerStart + run.endFrame * FRAME_SAMPLES,
-            ] as const,
-        );
-      window = roundWindow(roundStart, mark, runs);
-    } catch (error) {
-      fail(error);
+  const requestCue = async (): Promise<void> => {
+    const session = open;
+    const round = reveal;
+    const active = recorder;
+    if (phase !== "round" || !session || !round || !active) return;
+    setPhase("cue_loading");
+    refreshContinue();
+    pendingReaches = [];
+    const cue = await deps.cue(session, round, walletId, roundEndsAtMs, controller.signal);
+    if (controller.signal.aborted || reveal !== round) return;
+    roundEndsAtMs = Math.min(roundEndsAtMs, sessionEndsAtMs, cue.startedAtMs + cue.expiresInMs);
+    if (deps.now() >= roundEndsAtMs) {
+      end(() => listener.failure({ reason: "round_expired" }));
       return;
     }
+    cuePoint = cue.point;
+    cueRevealedAtMs = active.timeAt(active.markNow());
+    reveal = { ...round, waypoints: [...round.waypoints, cue.point] };
+    arm(roundEndsAtMs, "round_expired");
+    setPhase("cue");
+    listener.cue({ point: cue.point, expiresAtMs: roundEndsAtMs });
+  };
+
+  const finishRound = (mark: number, outline: GridPoint[]): void => {
+    if (phase !== "cue" || mark <= roundStart || mark - roundStart > MAX_ROUND_SAMPLES) {
+      end(() => listener.failure({ reason: "evidence_bounds_invalid" }));
+      return;
+    }
+    const endedAtMs = recorder!.timeAt(mark);
     setPhase("committing");
     refreshContinue();
     // Leave the audio callback before hashing and posting.
     deps.defer(() => {
-      commitRound(mark, window, outline).catch(fail);
+      commitRound(endedAtMs, outline).catch(fail);
     });
   };
 
   const onFrame = (level: number, endSample: number): void => {
     if (controller.signal.aborted) return;
-    listener.level(level);
-    if (phase !== "round") {
-      tracker.observe(level);
+    const active = phase === "round" || phase === "cue_loading" || phase === "cue";
+    if (active && recorder) {
+      roundStart = recorder.sampleIndexAt(roundStartedAtMs);
+      const start = Math.ceil(roundStart / FRAME_SAMPLES) * FRAME_SAMPLES;
+      if (phase === "round" && start > trackerStart)
+        tracker.discardPrefix((start - trackerStart) / FRAME_SAMPLES);
+      trackerStart = start;
+    }
+    if (active && endSample - roundStart > MAX_ROUND_SAMPLES) {
+      end(() => listener.failure({ reason: "evidence_bounds_invalid" }));
       return;
     }
-    const due = pendingReaches.filter((reach) => reach.sample <= endSample);
-    if (due.length > 0) {
-      pendingReaches = pendingReaches.filter((reach) => reach.sample > endSample);
-      for (const reach of due) tracker.reach(reach.point.x, reach.point.y);
+    if (active && deps.now() >= roundEndsAtMs) {
+      end(() => listener.failure({ reason: "round_expired" }));
+      return;
     }
-    const decision = tracker.frame(level);
-    // The server scores the committed outline, so a round ends only on an
-    // outline that passes. Otherwise it waits like a stalled round.
-    const outline = decision === "complete" ? completedOutline() : null;
-    if (outline) {
-      finishRound(endSample, outline);
-    } else if (decision !== "open" && !stalled) {
-      stalled = true;
-      refreshContinue();
+    if (!active || phase === "cue_loading" || endSample <= trackerStart) {
+      tracker.observe(level);
+      listener.level(level, false);
+      return;
     }
+    const due = pendingReaches.filter(
+      (reach) => recorder!.sampleIndexAt(reach.timeMs) <= endSample,
+    );
+    pendingReaches = pendingReaches.filter(
+      (reach) => recorder!.sampleIndexAt(reach.timeMs) > endSample,
+    );
+    if (phase === "cue") {
+      const point = cuePoint;
+      if (
+        point &&
+        due.some(
+          (reach) =>
+            reach.timeMs >= cueRevealedAtMs &&
+            Math.hypot(reach.point.x - point.x, reach.point.y - point.y) <= WAYPOINT_REACH,
+        )
+      )
+        cueReached = true;
+      listener.level(level, false);
+      if (controller.signal.aborted) return;
+      const outline = cueReached ? completedOutline() : null;
+      if (outline) finishRound(endSample, outline);
+      return;
+    }
+    for (const reach of due) tracker.reach(reach.point.x, reach.point.y);
+    tracker.frame(level);
+    listener.level(level, tracker.speechActive());
+    if (controller.signal.aborted || phase !== "round") return;
+    refreshContinue();
+    if (tracker.speechReady() && completedOutline()) void requestCue().catch(fail);
   };
 
+  const waitForRecorder = (active: PairedRecorder): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const signal = controller.signal;
+      const cleanup = () => {
+        cancel();
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("Recording cancelled."));
+      };
+      const cancel = deps.setTimer(onAbort, 15_000);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      active.ready.then(
+        () => {
+          cleanup();
+          resolve();
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      );
+    });
+
   return {
+    get currentRoundStatus() {
+      if (phase !== "round" && phase !== "cue_loading" && phase !== "cue") return null;
+      return {
+        speechReady: tracker.speechReady(),
+        traceReady: completedOutline() !== null,
+      };
+    },
     async start(wallet) {
       if (phase !== "opening" || recorder) throw new Error("This paired session has started.");
       walletId = wallet;
@@ -382,6 +495,8 @@ export function createPairedSession(
           return;
         }
         recorder = started;
+        await waitForRecorder(started);
+        if (controller.signal.aborted) return;
         let opened: OpenedPairedSession;
         try {
           opened = await deps.open(wallet, controller.signal);
@@ -395,15 +510,15 @@ export function createPairedSession(
         if (controller.signal.aborted) return;
         open = opened.open;
         previous = initialCommitment(opened.open);
-        sessionEndsAtMs = opened.receivedAtMs + opened.open.expiresInMs;
-        beginRound(opened.open.reveal, opened.receivedAtMs);
+        sessionEndsAtMs = opened.startedAtMs + opened.open.expiresInMs;
+        beginRound(opened.open.reveal, opened.startedAtMs);
       } catch (error) {
         fail(error);
       }
     },
 
     trace(sample, nextSurface) {
-      if (phase !== "round" || !recorder) return;
+      if ((phase !== "round" && phase !== "cue") || !recorder) return;
       if (![sample.x, sample.y, sample.t].every(Number.isFinite)) return;
       surface = nextSurface;
       const last = roundTrace[roundTrace.length - 1];
@@ -412,27 +527,27 @@ export function createPairedSession(
       const t = last && sample.t < last.t ? last.t : sample.t;
       roundTrace.push({ x: sample.x, y: sample.y, t });
       pendingReaches.push({
-        sample: recorder.sampleIndexAt(t),
+        timeMs: t,
         point: toGridPoint(sample.x, sample.y, nextSurface),
       });
-      // Checking again once Continue shows would rebuild the outline on every
-      // sample. The press checks the outline itself.
-      if (stalled && !continueShown) refreshContinue();
+      if (phase === "round" && !continueShown) refreshContinue();
     },
 
     continueRound() {
-      if (phase !== "round" || !stalled || !recorder) return false;
-      const outline = completedOutline();
-      if (!outline) {
+      if (phase !== "round" || !recorder || deps.now() >= roundEndsAtMs) return false;
+      if (!completedOutline()) {
         refreshContinue();
         return false;
       }
-      finishRound(recorder.framedSamples(), outline);
+      void requestCue().catch(fail);
       return true;
     },
 
     async abort() {
-      if (phase === "complete") return;
+      if (phase === "complete") {
+        controller.abort();
+        return;
+      }
       phase = "failed";
       disarm();
       await release();

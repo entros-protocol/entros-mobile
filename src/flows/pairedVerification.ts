@@ -110,6 +110,40 @@ export async function preparePairedVerification(
   handoff: PairedSessionHandoff,
   context: PairedVerificationContext,
 ): Promise<PreparedPairedVerification> {
+  const discard = () => {
+    handoff.rounds.commits.forEach((commit) => commit.segment.fill(0));
+    handoff.motion.samples.length = 0;
+    handoff.touch.samples.length = 0;
+    if (handoff.touch.curveTrace) handoff.touch.curveTrace.length = 0;
+  };
+  try {
+    if (handoff.rounds.walletId !== context.wallet.address)
+      throw new Error("The capture wallet changed.");
+    if (context.isCancelled()) throw new Error("Verification was cancelled.");
+    const prepared = await preparePairedVerificationInner(handoff, context);
+    if (prepared.kind === "no-voice") discard();
+    else {
+      const release = prepared.release;
+      prepared.release = () => {
+        release();
+        discard();
+      };
+      if (context.isCancelled()) {
+        prepared.release();
+        throw new Error("Verification was cancelled.");
+      }
+    }
+    return prepared;
+  } catch (error) {
+    discard();
+    throw error;
+  }
+}
+
+async function preparePairedVerificationInner(
+  handoff: PairedSessionHandoff,
+  context: PairedVerificationContext,
+): Promise<PreparedPairedVerification> {
   const { rounds, motion, touch } = handoff;
   const { open, commits } = rounds;
   const now = context.now ?? (() => performance.now());
@@ -130,7 +164,11 @@ export async function preparePairedVerification(
   const tokenRequest = context.attestationToken(requestHash).catch(() => null);
 
   const { joined, signal: pcm } = analysisSignal(commits.map((commit) => commit.segment));
-  if (pcm.length < MIN_AUDIO_SAMPLES) return { kind: "no-voice" };
+  if (pcm.length < MIN_AUDIO_SAMPLES) {
+    pcm.fill(0);
+    joined.fill(0);
+    return { kind: "no-voice" };
+  }
   const audioWindowMs = Math.max(0, rounds.audioEndedAtMs - rounds.audioStartedAtMs);
   const sensorData: SensorData = {
     audio: {
@@ -144,7 +182,14 @@ export async function preparePairedVerification(
     touch,
   };
   const captureTiming = describePairedCaptureTiming(joined, motion, audioWindowMs);
-  const extracted = await extractFeatures(sensorData, PAIRED_PROJECTION_VERSION);
+  let extracted: ExtractedFeatures;
+  try {
+    extracted = await extractFeatures(sensorData, PAIRED_PROJECTION_VERSION);
+  } catch (error) {
+    pcm.fill(0);
+    joined.fill(0);
+    throw error;
+  }
   const token = await tokenRequest;
   devWarn(`[Entros] paired attestation token=${token ? "present" : "absent"}`);
 
@@ -169,12 +214,16 @@ export async function preparePairedVerification(
       ...(token ? { attestationToken: token } : {}),
     });
     context.onFinalize?.();
-    const outcome = await finalizePairedSession(body, {
-      sessionEndsAtMs: rounds.sessionEndsAtMs,
-      signal: context.signal,
-      now,
-    });
-    body.segments.length = 0;
+    let outcome;
+    try {
+      outcome = await finalizePairedSession(body, {
+        sessionEndsAtMs: rounds.sessionEndsAtMs,
+        signal: context.signal,
+        now,
+      });
+    } finally {
+      body.segments.length = 0;
+    }
     if (context.isCancelled()) return { kind: "cancelled" };
     if (outcome.kind === "rejected") return { kind: "failed", failure: outcome.failure };
 
@@ -208,6 +257,8 @@ export async function preparePairedVerification(
     },
     release() {
       released = true;
+      pcm.fill(0);
+      joined.fill(0);
       commits.forEach((commit) => commit.segment.fill(0));
     },
   };

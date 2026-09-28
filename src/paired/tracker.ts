@@ -52,6 +52,10 @@ export interface RoundTracker {
   frame(level: number): RoundDecision;
   /** The voiced runs of the current round against the current speech bar. */
   runs(): VoicedRun[];
+  /** Reports the latest round frame against the same bar used for completion. */
+  speechActive(): boolean;
+  speechReady(): boolean;
+  discardPrefix(frames: number): void;
 }
 
 /** RMS of one frame: the f64 sum of squares over the frame length, then the root. */
@@ -124,6 +128,8 @@ interface RoundState {
   levels: number[];
   tracedAt: number | null;
   reported: boolean;
+  speechReady: boolean;
+  readyFrom: number | null;
 }
 
 /**
@@ -218,6 +224,8 @@ export function createRoundTracker(): RoundTracker {
         levels: [],
         tracedAt: null,
         reported: false,
+        speechReady: false,
+        readyFrom: null,
       };
     },
 
@@ -236,14 +244,19 @@ export function createRoundTracker(): RoundTracker {
       const traced =
         !state.traceRequired ||
         (state.waypoints.length > 0 && state.reached === state.waypoints.length);
-      if (!traced) return now >= OPEN_STALL_FRAMES ? "stalled" : "open";
-      if (state.tracedAt === null) state.tracedAt = now;
-      if (state.reported) return "stalled";
-
       const bar = history.speechBar();
-      const spoken = voicedRuns(state.levels, bar).some((run) => run.qualifies);
+      const spoken = voicedRuns(state.levels, bar)
+        .reverse()
+        .find((run) => run.qualifies);
       const lastVoiced = lastVoicedFrame(state.levels, bar);
       if (spoken && lastVoiced !== null && now - lastVoiced >= QUIET_FRAMES) {
+        state.speechReady = true;
+        state.readyFrom = Math.max(state.readyFrom ?? 0, spoken.startFrame);
+      }
+      if (!traced) return now >= OPEN_STALL_FRAMES ? "stalled" : "open";
+      state.tracedAt ??= now;
+      if (state.reported) return "stalled";
+      if (state.speechReady) {
         state.reported = true;
         return "complete";
       }
@@ -252,6 +265,28 @@ export function createRoundTracker(): RoundTracker {
 
     runs() {
       return round ? voicedRuns(round.levels, history.speechBar()) : [];
+    },
+
+    speechReady: () => round?.speechReady ?? false,
+
+    discardPrefix(frames) {
+      const state = requireRound();
+      const removed = Math.min(frames, state.levels.length);
+      state.levels.splice(0, removed);
+      if (state.readyFrom !== null) {
+        state.readyFrom -= removed;
+        if (state.readyFrom < 0) {
+          state.readyFrom = null;
+          state.speechReady = false;
+          state.reported = false;
+        }
+      }
+      if (state.tracedAt !== null) state.tracedAt = Math.max(0, state.tracedAt - removed);
+    },
+
+    speechActive() {
+      if (!round || round.levels.length === 0) return false;
+      return round.levels[round.levels.length - 1]! >= history.speechBar();
     },
   };
 }

@@ -19,7 +19,8 @@ import type { ClientSignals } from "@/services/validationAuthorization";
 
 import {
   audioDigest,
-  challengeDigest,
+  challengeDigestV2,
+  cueCommitment,
   checkTierPointCount,
   decodeCoarsePath,
   decodePathTarget,
@@ -96,7 +97,8 @@ export interface PairedReveal {
   pathTarget: Uint8Array;
   waypoints: GridPoint[];
   challengeDigest: Uint8Array;
-  /** How long the round stays open, from the response's arrival. The session's end caps it. */
+  cueCommitment: Uint8Array;
+  /** How long the round stays open, from request start. The session's end caps it. */
   expiresInMs: number;
 }
 
@@ -108,7 +110,7 @@ export interface PairedOpenSession {
   tier: "trace";
   /** The absolute expiry that `C_0` binds. */
   sessionExpiryUnixMs: number;
-  /** How long the session stays open, from the response's arrival. */
+  /** How long the session stays open, from request start. */
   expiresInMs: number;
   audioFormat: typeof PAIRED_AUDIO_FORMAT;
   bounds: PairedBounds;
@@ -125,7 +127,7 @@ export interface PairedCommitResponse {
   /** The next round. Present only while the state is `awaiting_commit`. */
   reveal?: PairedReveal;
   /**
-   * How long the session stays open from the response's arrival: its own expiry while rounds
+   * How long the session stays open from request start: its own expiry while rounds
    * remain, then the window to finalize in.
    */
   sessionExpiresInMs: number;
@@ -273,8 +275,10 @@ function parseReveal(
     if (error instanceof PairedEncodingError) throw invalid("reveal.path_target_hex", error.reason);
     throw error;
   }
+  if (waypoints.length < 3 || waypoints.length > 4) throw invalid("reveal.path_target_hex");
+  const cue = readHex(record, "cue_commitment", "reveal.cue_commitment", DIGEST_BYTES);
   const declared = readHex(record, "challenge_digest", "reveal.challenge_digest", DIGEST_BYTES);
-  const recomputed = challengeDigest(sessionNonce, roundIndex, roundNonce, word, pathTarget);
+  const recomputed = challengeDigestV2(sessionNonce, roundIndex, roundNonce, word, pathTarget, cue);
   // A reveal whose digest does not recompute is refused: the next commitment would bind a
   // challenge the server never issued.
   if (!equalBytes(declared, recomputed)) {
@@ -288,6 +292,7 @@ function parseReveal(
     pathTarget,
     waypoints,
     challengeDigest: recomputed,
+    cueCommitment: cue,
     expiresInMs,
   };
 }
@@ -315,7 +320,7 @@ export function parseOpenResponse(json: unknown): PairedOpenSession {
   const expiresInMs = readInteger(record, "expires_in_ms", "expires_in_ms", 0);
   const audioFormat = readExact(record, "audio_format", "audio_format", PAIRED_AUDIO_FORMAT);
 
-  // Protocol version 1 fixes the bounds. A server that announces others under it has
+  // Protocol version 2 fixes the bounds. A server that announces others under it has
   // drifted from the contract this client encodes against.
   const boundsRecord = readRecord(record.bounds, "bounds");
   const bounds: PairedBounds = {
@@ -391,6 +396,55 @@ export function parseCommitResponse(
   }
   const reveal = parseReveal(record.reveal, commit.sessionNonce, acceptedRound + 1);
   return { state, acceptedRound, commitment, reveal, sessionExpiresInMs };
+}
+
+export interface PairedCue {
+  point: GridPoint;
+  expiresInMs: number;
+}
+
+export function buildCueBody(
+  open: PairedOpenSession,
+  reveal: PairedReveal,
+  walletId: string,
+): Record<string, unknown> {
+  return {
+    wallet_id: walletId,
+    session_id: open.sessionId,
+    round_index: reveal.roundIndex,
+    round_nonce: bytesToHex(reveal.roundNonce),
+    challenge_digest: bytesToHex(reveal.challengeDigest),
+  };
+}
+
+export function parseCueResponse(
+  value: unknown,
+  open: PairedOpenSession,
+  reveal: PairedReveal,
+): PairedCue {
+  const body = readRecord(value, "cue");
+  if (
+    body.session_id !== open.sessionId ||
+    body.round_index !== reveal.roundIndex ||
+    body.round_nonce !== bytesToHex(reveal.roundNonce) ||
+    body.challenge_digest !== bytesToHex(reveal.challengeDigest)
+  )
+    throw invalid("cue.binding");
+  const encodedPoint = readRecord(body.point, "cue.point");
+  const point = {
+    x: readInteger(encodedPoint, "x", "cue.point.x", 150),
+    y: readInteger(encodedPoint, "y", "cue.point.y", 150),
+  };
+  if (point.x > 850 || point.y > 850) throw invalid("cue.point");
+  const salt = readHex(body, "salt", "cue.salt", 32);
+  if (
+    !equalBytes(
+      cueCommitment(open.sessionNonce, reveal.roundIndex, reveal.roundNonce, salt, point),
+      reveal.cueCommitment,
+    )
+  )
+    throw invalid("cue.commitment", "challenge_mismatch");
+  return { point, expiresInMs: readInteger(body, "expires_in_ms", "cue.expires_in_ms", 0) };
 }
 
 /** `C_0`, from the session nonce, attempt binding, round count and absolute expiry. */
@@ -550,6 +604,7 @@ export async function retryUntil<T>(
   clock: RetryClock,
 ): Promise<T> {
   for (let count = 0; ; count++) {
+    if (clock.now() >= deadlineMs) throw new PairedClientError("refused", "round_expired");
     const result = await attempt();
     if ("value" in result) return result.value;
     const wait = Math.max(backoffMs(count), result.waitMs ?? 0);

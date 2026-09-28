@@ -76,9 +76,14 @@ export class WalletSession {
       address: string,
       kind: WalletKind,
     ) => Promise<boolean>,
+    private readonly isCancelled: () => boolean = () => false,
   ) {
     this.token = authToken;
   }
+
+  readonly assertActive = (): void => {
+    if (this.isCancelled()) throw new Error("Verification was cancelled.");
+  };
 
   get authToken(): string {
     return this.token;
@@ -91,8 +96,9 @@ export class WalletSession {
 
   /** Stores a rotated token. Throws when the connected wallet changed. */
   readonly acceptRotated = async (authToken: string): Promise<void> => {
+    if (this.isCancelled()) throw new Error("Verification was cancelled.");
     const accepted = await this.persist(authToken, this.address, this.kind);
-    if (!accepted) {
+    if (!accepted || this.isCancelled()) {
       throw new Error("The connected wallet changed during signing.");
     }
     this.token = authToken;
@@ -379,6 +385,7 @@ export async function runVerificationPipeline<F>(
               authToken: wallet.authToken,
               walletKind: wallet.kind,
               onAuthTokenRotated: wallet.acceptRotated,
+              assertActive: wallet.assertActive,
             });
             wallet.adopt(upgraded.authToken);
             preparedRequest = await readRequest();
@@ -452,6 +459,7 @@ export async function runVerificationPipeline<F>(
   const commitmentBuf = takeCommitment();
   const proofBuf = takeProof();
   input.beforeSigning?.();
+  if (input.isCancelled()) return { kind: "cancelled" };
   if (!commitmentBuf) {
     // Hashing always populates this slot.
     return {
@@ -475,6 +483,7 @@ export async function runVerificationPipeline<F>(
           projectionVersion,
           signedReceipt: signedReceipt ?? undefined,
           onAuthTokenRotated: wallet.acceptRotated,
+          assertActive: wallet.assertActive,
         },
         () => input.onAdvance(), // → "submitting" once signed
       );
@@ -491,6 +500,7 @@ export async function runVerificationPipeline<F>(
           projectionVersion,
           signedReceipt,
           onAuthTokenRotated: wallet.acceptRotated,
+          assertActive: wallet.assertActive,
         },
         () => input.onAdvance(),
       );
@@ -511,6 +521,7 @@ export async function runVerificationPipeline<F>(
           // Re-verification ignores it.
           signedReceipt: signedReceipt ?? undefined,
           onAuthTokenRotated: wallet.acceptRotated,
+          assertActive: wallet.assertActive,
         },
         () => input.onAdvance(), // → "submitting" once signed
       );

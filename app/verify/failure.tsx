@@ -31,6 +31,8 @@ const SOFT_HINT: Record<RetryableReason, string> = {
   entropy_bounds: "Your gestures and speech were a bit too uniform. Try varying both naturally.",
   temporal_coupling_low: "Speak and move at the same time—they were a bit out of sync.",
   phrase_content_mismatch: "Read the phrase clearly at a normal pace, exactly as shown.",
+  audio_evidence_insufficient:
+    "The service could not assess the recorded speech. Start a new verification and speak at your normal volume.",
   trace_incomplete:
     "Your trace missed a point or reached them out of order. Trace through each numbered point, from the first to the last.",
   captcha_required:

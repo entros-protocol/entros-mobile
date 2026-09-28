@@ -24,6 +24,8 @@ import {
 export type FrameListener = (level: number, endSample: number) => void;
 
 export interface ContinuousRecorder {
+  readonly ready: Promise<void>;
+  markNow(): number;
   /** The rate the native recorder delivers, before canonicalisation. */
   readonly nativeSampleRate: number;
   /** Canonical samples recorded so far. */
@@ -74,6 +76,14 @@ export async function startContinuousRecording({
   let total = 0;
   let framed = 0;
   let stopped = false;
+  let markReady: () => void = () => undefined;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+  const indexAt = (time: number): number =>
+    Number.isFinite(originMs)
+      ? Math.max(0, Math.floor(((time - originMs) * CANONICAL_SAMPLE_RATE) / MS_PER_SECOND))
+      : 0;
 
   const append = (samples: Float32Array): void => {
     const used = total - bufferStart;
@@ -84,11 +94,12 @@ export async function startContinuousRecording({
     }
     buffer.set(samples, used);
     total += samples.length;
-    while (framed + FRAME_SAMPLES <= total) {
+    while (!stopped && framed + FRAME_SAMPLES <= total) {
       const start = framed - bufferStart;
       const end = framed + FRAME_SAMPLES;
       const level = frameRms(buffer.subarray(start, start + FRAME_SAMPLES));
       framed = end;
+      markReady();
       onFrame(level, end);
     }
   };
@@ -116,14 +127,12 @@ export async function startContinuousRecording({
   });
 
   return {
+    ready,
+    markNow: () => indexAt(now()),
     nativeSampleRate: stream.sampleRate,
     samplesRecorded: () => total,
     framedSamples: () => framed,
-    sampleIndexAt(wallClockMs) {
-      if (!Number.isFinite(originMs)) return 0;
-      const index = Math.round(((wallClockMs - originMs) * CANONICAL_SAMPLE_RATE) / MS_PER_SECOND);
-      return Math.max(0, index);
-    },
+    sampleIndexAt: indexAt,
     timeAt(sampleIndex) {
       return originMs + (sampleIndex * MS_PER_SECOND) / CANONICAL_SAMPLE_RATE;
     },
@@ -137,7 +146,7 @@ export async function startContinuousRecording({
       return buffer.slice(start - bufferStart, end - bufferStart);
     },
     releaseBefore(sampleIndex) {
-      const discard = Math.min(sampleIndex, total) - bufferStart;
+      const discard = Math.min(sampleIndex, framed) - bufferStart;
       if (discard <= 0) return;
       buffer.copyWithin(0, discard, total - bufferStart);
       buffer.fill(0, total - bufferStart - discard, total - bufferStart);
@@ -146,6 +155,7 @@ export async function startContinuousRecording({
     async stop() {
       if (stopped) return;
       stopped = true;
+      markReady();
       try {
         await stream.stop();
       } finally {
