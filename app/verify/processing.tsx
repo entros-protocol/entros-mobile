@@ -14,7 +14,7 @@
 // - See verificationPipeline.ts for the fingerprint and logging rules.
 
 import { useRouter } from "expo-router";
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { ProcessingStage } from "@/components/pulse/ProcessingStage";
@@ -66,6 +66,23 @@ export default function Processing() {
   } = useAppState();
   const [ctx, dispatch] = useReducer(reduce, { ...initialContext, state: "extracting" });
 
+  const walletRef = useRef(connection);
+  useEffect(() => {
+    walletRef.current = connection;
+  }, [connection]);
+  const processingWallet = useRef({ address: connection.address, wallet: connection.wallet });
+  const cancelRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (
+      connection.address === processingWallet.current.address &&
+      connection.wallet === processingWallet.current.wallet
+    )
+      return;
+    cancelRef.current?.();
+    router.replace(connection.address ? "/verify/intro" : "/connect");
+  }, [connection.address, connection.wallet, router]);
+
   useEffect(() => {
     let cancelled = false;
     const validationController = new AbortController();
@@ -79,7 +96,7 @@ export default function Processing() {
     // Every exit runs once. Leaving also stops the pipeline and the session
     // expiry, so nothing routes a second time before the screen unmounts.
     const leave = (): boolean => {
-      if (cancelled) return false;
+      if (isCancelled()) return false;
       cancelled = true;
       stopSessionExpiry();
       return true;
@@ -96,7 +113,22 @@ export default function Processing() {
       router.replace("/connect");
       return;
     }
-    const wallet = new WalletSession(walletId, walletKind, initialAuthToken, updateAuthToken);
+    const isCancelled = () =>
+      cancelled ||
+      walletRef.current.address !== walletId ||
+      walletRef.current.wallet !== walletKind;
+    const wallet = new WalletSession(
+      walletId,
+      walletKind,
+      initialAuthToken,
+      updateAuthToken,
+      isCancelled,
+    );
+    cancelRef.current = () => {
+      cancelled = true;
+      stopSessionExpiry();
+      validationController.abort();
+    };
     const flowIntent = flow.intent;
 
     const failOut = (bucket: FailureBucket, message?: string) => {
@@ -254,6 +286,7 @@ export default function Processing() {
     /** Reads the chain once. Routes and returns null when it cannot proceed. */
     const readChain = async () => {
       const result = await readChainContext(walletId, flowIntent);
+      if (isCancelled()) return null;
       switch (result.kind) {
         case "unreadable":
           failOut("retry-now", result.message);
@@ -307,7 +340,7 @@ export default function Processing() {
           projectionVersion,
           receiptPurpose: chain.receiptPurpose,
           challenge,
-          isCancelled: () => cancelled,
+          isCancelled,
           signal: validationController.signal,
         });
         // Drop the closure ref to the raw sensor buffers — the four largest
@@ -324,7 +357,7 @@ export default function Processing() {
           extracted: single.extracted,
           validate: single.validate,
           proofNonce: async () => challenge.nonce,
-          isCancelled: () => cancelled,
+          isCancelled,
           onAdvance: () => dispatch({ type: "advance" }),
           devOverride: handleDevOverride,
           beforeSigning: () => {
@@ -352,6 +385,8 @@ export default function Processing() {
         Math.max(0, handoff.rounds.sessionEndsAtMs - performance.now()),
       );
       try {
+        if (handoff.rounds.walletId !== walletId)
+          throw new Error("The capture wallet changed. Start a new capture.");
         const chain = await readChain();
         if (!chain) return;
         const { projectionVersion } = chain;
@@ -364,11 +399,15 @@ export default function Processing() {
           wallet,
           flowIntent,
           receiptPurpose: chain.receiptPurpose,
-          isCancelled: () => cancelled,
+          isCancelled,
           signal: validationController.signal,
           attestationToken: (requestHashHex) => tokenFor(requestHashHex),
           onFinalize: stopSessionExpiry,
         });
+        if (isCancelled()) {
+          if (paired.kind === "ready") paired.release();
+          return;
+        }
         if (paired.kind === "no-voice") {
           failOut(
             "generic",
@@ -386,7 +425,7 @@ export default function Processing() {
           extracted: paired.extracted,
           validate: paired.validate,
           proofNonce: paired.proofNonce,
-          isCancelled: () => cancelled,
+          isCancelled,
           onAdvance: () => dispatch({ type: "advance" }),
           devOverride: handleDevOverride,
           release: paired.release,
@@ -395,6 +434,11 @@ export default function Processing() {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Verification failed.";
         failOut("generic", message);
+      } finally {
+        handoff.rounds.commits.forEach((commit) => commit.segment.fill(0));
+        handoff.motion.samples.length = 0;
+        handoff.touch.samples.length = 0;
+        if (handoff.touch.curveTrace) handoff.touch.curveTrace.length = 0;
       }
     };
 
@@ -402,9 +446,8 @@ export default function Processing() {
     if (pairedSession) void runPaired(pairedSession);
     else void runVerify();
     return () => {
-      cancelled = true;
-      stopSessionExpiry();
-      validationController.abort();
+      cancelRef.current?.();
+      cancelRef.current = null;
       // Defence-in-depth: clear every handoff slot if the screen unmounts
       // mid-flow (back nav, app suspend, etc.). The next verify cycle starts
       // from a known-empty state.

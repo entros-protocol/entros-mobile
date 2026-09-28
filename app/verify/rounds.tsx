@@ -1,10 +1,5 @@
-// Paired-round capture screen: three rounds of one word and one short path.
-//
-// The server reveals each round only after it accepts the previous one. A
-// round advances on its own once the tracker hears the word and the trace has
-// reached every point in order. Nothing on this screen counts down or asks the
-// person to hurry. A small Continue action appears only when a round has
-// stalled with a trace that passes.
+// Captures three word-and-path rounds, each completed with a server-issued cue.
+// Continue requests the cue when the visible outline passes and speech is quiet.
 //
 // PRIVACY CONTRACT:
 // - Audio, motion and touch stay in memory. Each round sends digests only.
@@ -41,7 +36,7 @@ import { startContinuousRecording } from "@/sensor/continuousAudio";
 import { MotionRecorder, startMotionRecording } from "@/sensor/motion";
 import { startTouchRecording, TouchRecorder } from "@/sensor/touch";
 import type { PairedFailure } from "@/services/pairedErrors";
-import { commitPairedRound, openPairedSession } from "@/services/pairedExecutor";
+import { commitPairedRound, openPairedSession, requestPairedCue } from "@/services/pairedExecutor";
 import { useAppState } from "@/state/AppState";
 import { setPairedSession } from "@/state/pairedSessionBuffer";
 import { fontFamily, fontSize, spacing } from "@/theme/tokens";
@@ -63,6 +58,7 @@ export default function VerifyRounds() {
   );
 
   const [phase, setPhase] = useState<PairedPhase>("opening");
+  const [remainingMs, setRemainingMs] = useState(0);
   const [round, setRound] = useState<PairedRoundView | null>(null);
   /** Waypoints the trace has reached in order, counted from the first. */
   const [reached, setReached] = useState(0);
@@ -79,6 +75,12 @@ export default function VerifyRounds() {
   );
 
   const mountedRef = useRef(true);
+  const walletRef = useRef(connection.address);
+  useEffect(() => {
+    walletRef.current = connection.address;
+  }, [connection.address]);
+  const cancelCaptureRef = useRef<(() => void) | null>(null);
+  const captureWalletRef = useRef<string | null>(null);
   const sessionRef = useRef<PairedSessionController | null>(null);
   const motionRef = useRef<MotionRecorder | null>(null);
   const touchRef = useRef<TouchRecorder | null>(null);
@@ -92,7 +94,10 @@ export default function VerifyRounds() {
       router.replace("/connect");
       return;
     }
+    captureWalletRef.current = walletId;
     let settled = false;
+    let cancelled = false;
+    const isActive = () => !cancelled && mountedRef.current && walletRef.current === walletId;
 
     const stopSensors = async (keep: boolean) => {
       const motion = motionRef.current;
@@ -110,7 +115,7 @@ export default function VerifyRounds() {
     };
 
     const showFailure = (failure: PairedFailure) => {
-      if (!mountedRef.current) return;
+      if (!isActive()) return;
       const screen = pairedFailureScreen(failure);
       if (screen.record) fail(screen.record);
       setForceOutcome(null);
@@ -118,7 +123,7 @@ export default function VerifyRounds() {
     };
 
     const routeFailure = (failure: PairedFailure) => {
-      if (settled) return;
+      if (settled || !isActive()) return;
       settled = true;
       void stopSensors(false);
       showFailure(failure);
@@ -127,22 +132,26 @@ export default function VerifyRounds() {
     // The relayer offers no paired sessions, so this wallet verifies with the
     // single capture instead.
     const fallBackToSingleCapture = async () => {
-      if (settled) return;
+      if (settled || !isActive()) return;
       settled = true;
       // The capture screen opens its own recording, so this one must be closed first.
       await Promise.all([sessionRef.current?.abort(), stopSensors(false)]);
-      if (!mountedRef.current) return;
+      if (!isActive()) return;
       try {
         await holdSingleCaptureChallenge(walletId, PAIRED_PROJECTION_VERSION);
       } catch {
         showFailure({ reason: "validation_unavailable" });
         return;
       }
-      if (mountedRef.current) router.replace("/verify/capture");
+      if (isActive()) router.replace("/verify/capture");
     };
 
     const finish = async (rounds: CompletedPairedRounds) => {
-      if (settled) return;
+      if (settled || !isActive() || rounds.walletId !== walletId) {
+        for (const commit of rounds.commits) commit.segment.fill(0);
+        rounds.commits.length = 0;
+        return;
+      }
       let sensors;
       try {
         sensors = await stopSensors(true);
@@ -155,7 +164,11 @@ export default function VerifyRounds() {
         return;
       }
       settled = true;
-      if (!mountedRef.current) return;
+      if (!isActive() || rounds.walletId !== walletRef.current) {
+        for (const commit of rounds.commits) commit.segment.fill(0);
+        rounds.commits.length = 0;
+        return;
+      }
       // Hand the session to the processing screen. The buffer holds it for one
       // read and clears.
       setPairedSession({ rounds, motion: sensors.motion, touch: sensors.touch });
@@ -166,6 +179,8 @@ export default function VerifyRounds() {
       {
         startRecorder: (onFrame, onFailure) => startContinuousRecording({ onFrame, onFailure }),
         open: (wallet, signal) => openPairedSession(wallet, { signal }),
+        cue: (open, reveal, wallet, deadline, signal) =>
+          requestPairedCue(open, reveal, wallet, deadline, { signal }),
         commit: (commit, deadlineMs, signal) => commitPairedRound(commit, deadlineMs, { signal }),
         now: () => performance.now(),
         randomBytes,
@@ -180,15 +195,26 @@ export default function VerifyRounds() {
       {
         reveal: (view) => {
           roundRef.current = view;
-          if (!mountedRef.current) return;
+          if (!isActive()) return;
           setRound(view);
           setReached(0);
         },
+        cue: (cue) => {
+          const previous = roundRef.current;
+          if (!previous || !isActive()) return;
+          const next = {
+            ...previous,
+            waypoints: [...previous.waypoints, cue.point],
+            expiresAtMs: cue.expiresAtMs,
+          };
+          roundRef.current = next;
+          setRound(next);
+        },
         phase: (next) => {
-          if (mountedRef.current) setPhase(next);
+          if (isActive()) setPhase(next);
         },
         continueAvailable: (available) => {
-          if (mountedRef.current) setCanContinue(available);
+          if (isActive()) setCanContinue(available);
         },
         level: (rms) => {
           voiceLevel.current = Math.max(0, Math.min(1, rms * 4));
@@ -203,12 +229,21 @@ export default function VerifyRounds() {
       },
     );
     sessionRef.current = session;
+    const cancelCapture = () => {
+      if (cancelled) return;
+      cancelled = true;
+      settled = true;
+      void session.abort();
+      void stopSensors(false);
+    };
+    cancelCaptureRef.current = cancelCapture;
 
     void (async () => {
       try {
         // A returning user can reach this screen without the onboarding
         // prompt, and the recorder fails without the permission.
         const granted = (await audioPermissionGranted()) || (await requestAudioPermission());
+        if (!isActive()) return;
         if (!granted) {
           throw new Error(
             "Microphone access is required to verify. Grant it in System Settings → Apps → Entros → Permissions, then try again.",
@@ -220,7 +255,7 @@ export default function VerifyRounds() {
           // around it is what the bars show.
           motionLevel.current = Math.max(0, Math.min(1, (magnitude - 9.0) / 4));
         });
-        if (!mountedRef.current || settled) {
+        if (!isActive() || settled) {
           await motion.cancel();
           return;
         }
@@ -238,11 +273,17 @@ export default function VerifyRounds() {
 
     return () => {
       mountedRef.current = false;
-      void session.abort();
-      void stopSensors(false);
+      cancelCapture();
+      if (cancelCaptureRef.current === cancelCapture) cancelCaptureRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!captureWalletRef.current || captureWalletRef.current === connection.address) return;
+    cancelCaptureRef.current?.();
+    router.replace(connection.address ? "/verify/intro" : "/connect");
+  }, [connection.address, router]);
 
   // Samples arrive on the JS thread from the gesture worklet.
   const handleSample = useCallback(
@@ -267,15 +308,27 @@ export default function VerifyRounds() {
     [canvasSize],
   );
 
+  useEffect(() => {
+    if (!round || (phase !== "round" && phase !== "cue_loading" && phase !== "cue")) return;
+    const tick = () => setRemainingMs(Math.max(0, round.expiresAtMs - performance.now()));
+    tick();
+    const timer = setInterval(tick, 100);
+    return () => clearInterval(timer);
+  }, [phase, round]);
+
   const lastRound = round !== null && round.roundIndex >= round.rounds;
   const caption =
     phase === "committing"
       ? lastRound
         ? "Finishing"
         : "Next round"
-      : canContinue
-        ? "Say the word and trace through every point in order. If you already did, continue."
-        : "Say the word and trace through the points in order. The next round starts on its own.";
+      : phase === "cue_loading"
+        ? "Loading the final point…"
+        : phase === "cue"
+          ? "Trace to the new final point."
+          : canContinue
+            ? "Say the word, then continue if it does not advance."
+            : "Say the word and trace the points in either order.";
 
   return (
     <Screen padded={false}>
@@ -298,7 +351,7 @@ export default function VerifyRounds() {
                   {
                     color: palette.text,
                     fontFamily: fontFamily.bold,
-                    opacity: phase === "round" ? 1 : 0.45,
+                    opacity: phase === "round" || phase === "cue" ? 1 : 0.45,
                   },
                 ]}
               >
@@ -309,7 +362,7 @@ export default function VerifyRounds() {
               size={canvasSize}
               waypoints={round.waypoints}
               reached={reached}
-              active={phase === "round"}
+              active={phase === "round" || phase === "cue"}
               strokeKey={round.roundIndex}
               onSample={handleSample}
             />
@@ -317,9 +370,15 @@ export default function VerifyRounds() {
               <Text variant="caption" tone="muted" align="center">
                 {caption}
               </Text>
+              {(phase === "round" || phase === "cue_loading" || phase === "cue") && (
+                <Text
+                  variant="caption"
+                  tone="muted"
+                >{`${Math.ceil(remainingMs / 1000)}s remaining`}</Text>
+              )}
               {canContinue && phase === "round" ? (
                 <Button
-                  label="Continue"
+                  label="I spoke · Continue"
                   variant="ghost"
                   size="sm"
                   onPress={() => {
