@@ -319,7 +319,7 @@ export function createPairedSession(
       throw new Error("The paired session lost its state before a commit.");
     }
     const mark = active.sampleIndexAt(endedAtMs);
-    const window: SampleWindow = { start: active.sampleIndexAt(roundStartedAtMs), end: mark };
+    const window: SampleWindow = { start: refinedRoundStart(), end: mark };
     if (window.start >= mark || mark - window.start > MAX_ROUND_SAMPLES)
       throw new PairedServiceError({ reason: "evidence_bounds_invalid" });
     const segment = encodePcm16(active.slice(window.start, window.end));
@@ -391,15 +391,34 @@ export function createPairedSession(
     });
   };
 
+  /**
+   * The round start as far as the recorder's clock bound has refined it, but
+   * never past the round's first voiced frame (with one frame of onset
+   * margin). The bound is only an arrival estimate: it converges as buffers
+   * arrive, including mid-round after a stall, and moving the start past
+   * speech the person already produced would cut the word from the tracker
+   * and from the committed audio alike.
+   */
+  const refinedRoundStart = (): number => {
+    const refined = recorder!.sampleIndexAt(roundStartedAtMs);
+    const voiced = tracker.firstVoicedFrame();
+    if (voiced === null) return refined;
+    return Math.min(refined, trackerStart + Math.max(0, voiced - 1) * FRAME_SAMPLES);
+  };
+
   const onFrame = (level: number, endSample: number): void => {
     if (controller.signal.aborted) return;
     const active = phase === "round" || phase === "cue_loading" || phase === "cue";
     if (active && recorder) {
-      roundStart = recorder.sampleIndexAt(roundStartedAtMs);
+      roundStart = refinedRoundStart();
       const start = Math.ceil(roundStart / FRAME_SAMPLES) * FRAME_SAMPLES;
-      if (phase === "round" && start > trackerStart)
+      // trackerStart moves only with a discard, so the tracker's frame zero
+      // always aligns with it — including through the cue phase, where no
+      // round frames are scored or dropped.
+      if (phase === "round" && start > trackerStart) {
         tracker.discardPrefix((start - trackerStart) / FRAME_SAMPLES);
-      trackerStart = start;
+        trackerStart = start;
+      }
     }
     if (active && endSample - roundStart > MAX_ROUND_SAMPLES) {
       end(() => listener.failure({ reason: "evidence_bounds_invalid" }));

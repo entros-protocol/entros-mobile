@@ -55,6 +55,12 @@ export interface RoundTracker {
   /** Reports the latest round frame against the same bar used for completion. */
   speechActive(): boolean;
   speechReady(): boolean;
+  /**
+   * The round's first frame at the speech bar, or null. A refined recording
+   * boundary may move forward up to this frame but not past it: everything
+   * from here on is speech the person produced during the round.
+   */
+  firstVoicedFrame(): number | null;
   discardPrefix(frames: number): void;
 }
 
@@ -268,6 +274,15 @@ export function createRoundTracker(): RoundTracker {
     },
 
     speechReady: () => round?.speechReady ?? false,
+
+    firstVoicedFrame() {
+      if (!round) return null;
+      const bar = history.speechBar();
+      for (let index = 0; index < round.levels.length; index++) {
+        if (round.levels[index]! >= bar) return index;
+      }
+      return null;
+    },
 
     discardPrefix(frames) {
       const state = requireRound();
