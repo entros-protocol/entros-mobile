@@ -13,7 +13,7 @@ export const PAIRED_ROUND_VECTORS_PATH = resolve(
   "paired-round-vectors.json",
 );
 export const EXPECTED_PAIRED_ROUND_VECTORS_SHA256 =
-  "cb88f752aed0e29a0f2321e85a2ff3006e3c1f65a933d2c729c069574445e63d";
+  "a1926388062f2dad25fa476b9ab2c3cb194ba0f5d042dccd14dc343ba94d31eb";
 
 type Pair = [number, number];
 

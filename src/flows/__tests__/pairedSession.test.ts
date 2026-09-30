@@ -703,9 +703,9 @@ describe("paired session deadlines", () => {
 test("delivers the current frame classification to the meter", async () => {
   const run = harness();
   await run.session.start(WALLET);
-  run.recorder().frames([...Array<number>(20).fill(0.001), 0.009, 0.02]);
+  run.recorder().frames([...Array<number>(20).fill(0.001), 0.003, 0.02]);
   expect(run.levels.slice(-2)).toEqual([
-    [0.009, false],
+    [0.003, false],
     [0.02, true],
   ]);
   await run.session.abort();

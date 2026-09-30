@@ -204,9 +204,9 @@ test("reports activity against the current floor and clears it for a new round",
   const tracker = createRoundTracker();
   for (let index = 0; index < 60; index++) tracker.observe(0.001);
   tracker.begin([], false);
-  tracker.frame(0.009);
+  tracker.frame(0.003);
   expect(tracker.speechActive()).toBe(false);
-  tracker.frame(0.01);
+  tracker.frame(0.004);
   expect(tracker.speechActive()).toBe(true);
   tracker.begin([], false);
   expect(tracker.speechActive()).toBe(false);

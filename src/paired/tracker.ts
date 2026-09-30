@@ -24,8 +24,14 @@ export const FLOOR_RATIO = 4;
 export const FLOOR_PERCENTILE = 0.1;
 /** Levels kept for the noise floor, and frames kept for one round. Bounds per-frame work. */
 export const HISTORY_FRAMES = 2_400;
-export const MIN_SPEECH_RMS = 0.01;
-export const MIN_FLOOR_RMS = 0.002;
+/**
+ * No frame below this counts as speech, however quiet the room. Calibrated
+ * against the validator's normalized hearing: owner acceptance showed a quiet
+ * but clearly transcribed word at ~0.005-0.01 raw frame RMS, so the floor
+ * must sit below it.
+ */
+export const MIN_SPEECH_RMS = 0.004;
+export const MIN_FLOOR_RMS = 0.001;
 
 export type RoundDecision = "open" | "complete" | "stalled";
 
