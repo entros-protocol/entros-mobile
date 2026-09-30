@@ -255,3 +255,17 @@ test("keeps a later completed speech witness after the recording boundary advanc
   expect(tracker.frame(0.04)).toBe("complete");
   expect(tracker.speechReady()).toBe(true);
 });
+
+test("firstVoicedFrame locates the round's first frame at the speech bar", () => {
+  const tracker = createRoundTracker();
+  for (let frame = 0; frame < 2; frame++) tracker.observe(0.001);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+  tracker.begin([], false);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+  for (let frame = 0; frame < 3; frame++) tracker.frame(0.001);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+  for (let frame = 0; frame < 4; frame++) tracker.frame(0.05);
+  expect(tracker.firstVoicedFrame()).toBe(3);
+  tracker.discardPrefix(2);
+  expect(tracker.firstVoicedFrame()).toBe(1);
+});

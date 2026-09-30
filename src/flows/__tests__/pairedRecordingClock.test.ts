@@ -191,3 +191,116 @@ test("fails the round instead of committing a wrong window when the wall clock s
   expect(stopped).toBe(1);
   await session.abort();
 });
+
+test("keeps speech readiness when a delayed clock bound refines across the spoken word", async () => {
+  let wall = 10_296;
+  let emit: NativePcmStreamOptions["onChunk"] = () => undefined;
+  let recorder: PairedRecorder | undefined;
+  const commits: PairedRoundCommit[] = [];
+  const deferred: (() => void)[] = [];
+  const slice = jest.fn();
+  let cues = 0;
+  const session = createPairedSession(
+    {
+      startRecorder: async (onFrame) => {
+        recorder = await startContinuousRecording({
+          onFrame,
+          now: () => wall,
+          openStream: async (options) => {
+            options.onConfigured?.(16_000);
+            emit = options.onChunk;
+            return { sampleRate: 16_000, failure: () => null, stop: async () => undefined };
+          },
+        });
+        const original = recorder.slice.bind(recorder);
+        recorder.slice = (start, end) => {
+          slice(start, end);
+          return original(start, end);
+        };
+        return recorder;
+      },
+      open: async () => {
+        wall = 10_300;
+        return { open: parseOpenResponse(openJson()), startedAtMs: 0 };
+      },
+      cue: async () => {
+        cues++;
+        const [x, y] = roundEntry(1).cuePoint;
+        return { point: { x, y }, expiresInMs: 6000, startedAtMs: 0 };
+      },
+      commit: async (commit) => {
+        commits.push(commit);
+        return { ...accept(commit), startedAtMs: 0 };
+      },
+      now: () => 0,
+      randomBytes: (length) => new Uint8Array(length).fill(9),
+      defer: (task) => deferred.push(task),
+      setTimer: () => () => undefined,
+    },
+    {
+      reveal: () => undefined,
+      cue: () => undefined,
+      phase: () => undefined,
+      continueAvailable: () => undefined,
+      level: () => undefined,
+      failure: (failure) => {
+        throw new Error(JSON.stringify(failure));
+      },
+      unavailable: () => undefined,
+      complete: () => undefined,
+    },
+  );
+  const started = session.start(WALLET);
+  await settle();
+  emit(new Int16Array(4096));
+  await started;
+  // The word, spoken right at the reveal: four full frames above the floor.
+  wall = 10_522;
+  const word = new Int16Array(4096);
+  word.fill(1600, 704, 3904);
+  emit(word);
+  // Quiet chunks while speech plus its quiet interval latches readiness.
+  wall = 10_778;
+  emit(new Int16Array(4096));
+  wall = 11_034;
+  emit(new Int16Array(4096));
+  // A stalled pipeline now catches up: each chunk still carries 256 ms of
+  // audio, but the clock advances far less, so every arrival bound moves the
+  // recording origin further back — across the spoken word.
+  wall = 11_090;
+  emit(new Int16Array(4096));
+  wall = 11_150;
+  emit(new Int16Array(4096));
+  wall = 11_210;
+  emit(new Int16Array(4096));
+  // The round still completes on its own: the refined boundary stopped at the
+  // word, so readiness survived and the cue request fires without Continue.
+  wall = 11_300;
+  const reveal = parseOpenResponse(openJson()).reveal;
+  for (const point of reveal.waypoints)
+    session.trace({ ...point, t: wall }, { width: 1000, height: 1000 });
+  emit(new Int16Array(4096));
+  await settle();
+  expect(cues).toBe(1);
+  wall = 11_340;
+  const [x, y] = roundEntry(1).cuePoint;
+  session.trace({ x, y, t: wall }, { width: 1000, height: 1000 });
+  wall = 11_360;
+  emit(new Int16Array(4096));
+  expect(deferred).toHaveLength(1);
+  deferred.shift()!();
+  await settle();
+  expect(commits).toHaveLength(1);
+  // The committed segment starts at the clamped boundary and keeps the word.
+  expect(slice.mock.calls[0]).toEqual([4800, 36_800]);
+  const pcm = commits[0]!.segment;
+  const source = new Float32Array(9 * 4096);
+  source.set(
+    Float32Array.from(word, (value) => value / 32768),
+    4096,
+  );
+  const canonical = await resampleTo(source, 16_000, 16_000);
+  expect(pcm).toEqual(encodePcm16(canonical.subarray(4_800, 36_800)));
+  expect(pcm.subarray(0, 3_200).some((value) => value !== 0)).toBe(true);
+  await session.abort();
+});
