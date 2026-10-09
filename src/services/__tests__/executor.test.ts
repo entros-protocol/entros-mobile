@@ -288,6 +288,21 @@ describe("validateFeatures: 413 is fatal", () => {
   });
 });
 
+describe("validateFeatures: legacy baseline retirement", () => {
+  test.each([400, 409])(
+    "preserves the paired-required update guidance on HTTP %s",
+    async (status) => {
+      respondWith(status, { error: "Paired capture required", reason: "paired_required" });
+      expect(await run()).toEqual({ kind: "hard-reject", reason: "paired_required" });
+    },
+  );
+
+  test("keeps unrelated conflict labels out of the fatal reason surface", async () => {
+    respondWith(409, { reason: "some_future_reason" });
+    expect(await run()).toMatchObject({ kind: "unknown", status: 409 });
+  });
+});
+
 describe("validateFeatures: cooldowns are distinct from hard failures", () => {
   it("reads retry_after from the 429 body", async () => {
     // Deliberately the body, not the Retry-After header: a browser cannot read

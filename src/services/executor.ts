@@ -93,7 +93,7 @@ export type ValidateOutcome =
     }
   | { kind: "soft-reject"; reason: VerificationReason }
   | { kind: "rate-limited"; retryAfterSec: number }
-  | { kind: "hard-reject" }
+  | { kind: "hard-reject"; reason?: "paired_required" }
   | { kind: "payload-too-large" }
   | { kind: "quota-exhausted" }
   | { kind: "unauthorized" }
@@ -290,6 +290,9 @@ export async function validateFeaturesRequest(
   const retryAfterSec =
     typeof parsed.retry_after === "number" && parsed.retry_after > 0 ? parsed.retry_after : 60;
 
+  if ((response.status === 400 || response.status === 409) && parsed.reason === "paired_required") {
+    return { kind: "hard-reject", reason: "paired_required" };
+  }
   if (response.status === 400) {
     // Classify by disposition, not by membership of a list kept here. The
     // `wait` branch is defensive, since the executor sends cooldowns as 429
