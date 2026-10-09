@@ -6,12 +6,19 @@ import { WALLET } from "./pairedFixtures";
 
 const mockOriginalWallet = WALLET;
 let mockAddress: string | null = WALLET;
+let mockIntent: "verify" | "reset" = "verify";
+let mockPaired = true;
 let mockContext: PairedVerificationContext;
 let mockResolve: (value: unknown) => void;
 const mockReplace = jest.fn();
 const mockVerify = jest.fn();
 const mockRelease = jest.fn();
 const mockRun = jest.fn();
+const mockPrepareSingle = jest.fn();
+const mockFail = jest.fn();
+const mockSetFlowIntent = jest.fn();
+const mockRecordAnchorRetry = jest.fn();
+const mockResetComplete = jest.fn();
 const mockSegment = new Uint8Array([1, 2, 3]);
 jest.mock("expo-router", () => ({ useRouter: () => ({ replace: mockReplace }) }));
 jest.mock("react-native", () => ({
@@ -27,12 +34,13 @@ jest.mock("@/state/AppState", () => ({
   useAppState: () => ({
     connection: { address: mockAddress, wallet: "phantom", authToken: "token" },
     dev: {},
-    flow: { intent: "verify" },
+    flow: { intent: mockIntent },
     verify: mockVerify,
-    resetComplete: jest.fn(),
-    fail: jest.fn(),
+    resetComplete: mockResetComplete,
+    fail: mockFail,
     setForceOutcome: jest.fn(),
-    setFlowIntent: jest.fn(),
+    setFlowIntent: mockSetFlowIntent,
+    recordAnchorRetry: mockRecordAnchorRetry,
     updateAuthToken: jest.fn(),
   }),
 }));
@@ -51,19 +59,35 @@ jest.mock("@/flows/pairedVerification", () => ({
 jest.mock("@/flows/verificationPipeline", () => ({
   WalletSession: class {},
   runVerificationPipeline: (input: unknown) => mockRun(input),
-  prepareSingleCapture: jest.fn(),
+  prepareSingleCapture: (...args: unknown[]) => mockPrepareSingle(...args),
 }));
 jest.mock("@/state/pairedSessionBuffer", () => ({
-  takePairedSession: () => ({
-    rounds: {
-      walletId: mockOriginalWallet,
-      sessionEndsAtMs: performance.now() + 10000,
-      commits: [{ segment: mockSegment }],
-    },
-    motion: { samples: [] },
-    touch: { samples: [], curveTrace: [] },
-  }),
+  takePairedSession: () =>
+    mockPaired
+      ? {
+          rounds: {
+            walletId: mockOriginalWallet,
+            sessionEndsAtMs: performance.now() + 10000,
+            commits: [{ segment: mockSegment }],
+          },
+          motion: { samples: [] },
+          touch: { samples: [], curveTrace: [] },
+        }
+      : null,
   clearPairedSession: jest.fn(),
+}));
+jest.mock("@/state/captureBuffer", () => ({
+  takeCapture: () => ({ audio: { pcm: new Float32Array(16_000) } }),
+  clearCapture: jest.fn(),
+}));
+jest.mock("@/state/challengeBuffer", () => ({
+  peekChallenge: () => ({
+    projectionVersion: 1,
+    expiresAtMs: Number.POSITIVE_INFINITY,
+    nonce: new Uint8Array(32),
+  }),
+  takeChallenge: jest.fn(),
+  clearChallenge: jest.fn(),
 }));
 jest.mock("@/services/playIntegrity", () => ({ tokenFor: jest.fn() }));
 jest.mock("@/lib/log", () => ({ devWarn: jest.fn() }));
@@ -71,8 +95,12 @@ jest.mock("@/lib/log", () => ({ devWarn: jest.fn() }));
 beforeEach(() => {
   jest.clearAllMocks();
   mockAddress = WALLET;
+  mockIntent = "verify";
+  mockPaired = true;
+  mockRecordAnchorRetry.mockReturnValue(2);
   mockSegment.set([1, 2, 3]);
   mockRun.mockResolvedValue({ kind: "success", txSignature: "stale" });
+  mockPrepareSingle.mockResolvedValue({ extracted: {}, release: mockRelease, validate: jest.fn() });
 });
 
 test.each(["SysvarRent111111111111111111111111111111111", null])(
@@ -101,3 +129,75 @@ test.each(["SysvarRent111111111111111111111111111111111", null])(
     });
   },
 );
+
+test.each([2, 1, 0])(
+  "routes a reset quality retry with %s attempts left and no failed history",
+  async (remaining) => {
+    mockIntent = "reset";
+    mockRecordAnchorRetry.mockReturnValue(remaining);
+    mockRun.mockResolvedValue({ kind: "validation-failed", failure: { reason: "anchor_retry" } });
+    const tree = createRoot();
+    await act(async () => tree.render(<Processing />));
+    await act(async () => mockResolve({ kind: "ready", extracted: {}, release: mockRelease }));
+    expect(mockContext.flowIntent).toBe("reset");
+    expect(mockRecordAnchorRetry).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith({
+      pathname: "/verify/failure",
+      params: { bucket: "soft", reason: "anchor_retry", attemptsRemaining: String(remaining) },
+    });
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(mockSetFlowIntent).not.toHaveBeenCalled();
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockResetComplete).not.toHaveBeenCalled();
+    expect(mockSegment).toEqual(new Uint8Array(3));
+    await act(async () => tree.unmount());
+  },
+);
+
+test("unmount clears session expiry and aborts pending paired work", async () => {
+  jest.useFakeTimers();
+  const timeoutSpy = jest.spyOn(global, "setTimeout");
+  const clearSpy = jest.spyOn(global, "clearTimeout");
+  const tree = createRoot();
+  try {
+    await act(async () => tree.render(<Processing />));
+    const expiryIndex = timeoutSpy.mock.calls.findIndex(([, delay]) => delay === 10_000);
+    expect(expiryIndex).toBeGreaterThanOrEqual(0);
+    const expiryTimer = timeoutSpy.mock.results[expiryIndex]!.value;
+    await act(async () => tree.unmount());
+    expect(clearSpy).toHaveBeenCalledWith(expiryTimer);
+    expect(mockContext.signal?.aborted).toBe(true);
+    await act(async () => mockResolve({ kind: "ready", extracted: {}, release: mockRelease }));
+    jest.advanceTimersByTime(10_000);
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+    expect(mockSegment).toEqual(new Uint8Array(3));
+  } finally {
+    clearSpy.mockRestore();
+    timeoutSpy.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+test("legacy baseline refusal reaches the fatal paired-required surface", async () => {
+  mockPaired = false;
+  mockRun.mockResolvedValue({
+    kind: "validation-failed",
+    failure: { kind: "hard-reject", reason: "paired_required" },
+  });
+  const tree = createRoot();
+  await act(async () => tree.render(<Processing />));
+  expect(mockPrepareSingle).toHaveBeenCalledTimes(1);
+  expect(mockReplace).toHaveBeenCalledWith({
+    pathname: "/verify/failure",
+    params: {
+      bucket: "session-error",
+      reason: "paired_required",
+      message: "paired_required",
+    },
+  });
+  expect(mockRecordAnchorRetry).not.toHaveBeenCalled();
+  expect(mockVerify).not.toHaveBeenCalled();
+  await act(async () => tree.unmount());
+});

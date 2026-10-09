@@ -10,6 +10,11 @@ import {
 } from "react";
 
 import { config, getConnection } from "@/config";
+import {
+  chargeAnchorRetry,
+  EMPTY_ANCHOR_RETRY_BUDGET,
+  MAX_ANCHOR_QUALITY_ATTEMPTS,
+} from "@/flows/anchorRetry";
 import { wipeBaseline } from "@/identity/baseline";
 import { devWarn } from "@/lib/log";
 import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
@@ -381,6 +386,8 @@ interface AppStateContextValue extends AppState {
   openWalletMenu: () => void;
   closeWalletMenu: () => void;
   setFlowIntent: (intent: VerifyIntent) => void;
+  recordAnchorRetry: () => number;
+  clearAnchorRetries: () => void;
   setForceOutcome: (outcome: "success" | FailureBucket | null) => void;
   /** Refreshes the in-memory `identity` slice from the on-chain
    *  `IdentityState` PDA. Idempotent and fire-and-forget safe — callers
@@ -404,9 +411,32 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
 
   // Stable callbacks read the last committed state without subscribing to it.
   const stateRef = useRef(state);
+  const anchorRetriesRef = useRef({ ...EMPTY_ANCHOR_RETRY_BUDGET });
+  const clearAnchorRetries = useCallback(() => {
+    anchorRetriesRef.current = { ...EMPTY_ANCHOR_RETRY_BUDGET };
+  }, []);
+  const setFlowIntent = useCallback(
+    (intent: VerifyIntent) => {
+      clearAnchorRetries();
+      dispatch({ type: "setFlowIntent", intent });
+    },
+    [clearAnchorRetries],
+  );
+  const recordAnchorRetry = useCallback(() => {
+    const current = stateRef.current;
+    anchorRetriesRef.current = chargeAnchorRetry(
+      anchorRetriesRef.current,
+      current.connection.address,
+      current.flow.intent,
+    );
+    return MAX_ANCHOR_QUALITY_ATTEMPTS - anchorRetriesRef.current.used;
+  }, []);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  useEffect(() => {
+    clearAnchorRetries();
+  }, [state.connection.address, clearAnchorRetries]);
 
   // Single in-flight hydrate guard. Connect → dashboard focus and verify
   // success → dashboard focus both fire hydrateIdentity within a few
@@ -649,8 +679,14 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       connect,
       disconnect,
       updateAuthToken,
-      verify: (trustDelta, txSignature) => dispatch({ type: "verify", trustDelta, txSignature }),
-      resetComplete: (txSignature) => dispatch({ type: "resetComplete", txSignature }),
+      verify: (trustDelta, txSignature) => {
+        clearAnchorRetries();
+        dispatch({ type: "verify", trustDelta, txSignature });
+      },
+      resetComplete: (txSignature) => {
+        clearAnchorRetries();
+        dispatch({ type: "resetComplete", txSignature });
+      },
       fail: (bucket) => dispatch({ type: "fail", bucket }),
       resetBaseline: () => {
         // Fire-and-forget the secure-store wipe. The reducer state change is
@@ -667,11 +703,22 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       },
       openWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: true }),
       closeWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: false }),
-      setFlowIntent: (intent) => dispatch({ type: "setFlowIntent", intent }),
+      setFlowIntent,
+      recordAnchorRetry,
+      clearAnchorRetries,
       setForceOutcome: (outcome) => dispatch({ type: "setForceOutcome", outcome }),
       hydrateIdentity,
     }),
-    [state, connect, disconnect, hydrateIdentity, updateAuthToken],
+    [
+      state,
+      connect,
+      disconnect,
+      hydrateIdentity,
+      updateAuthToken,
+      clearAnchorRetries,
+      recordAnchorRetry,
+      setFlowIntent,
+    ],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

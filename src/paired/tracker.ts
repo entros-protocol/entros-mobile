@@ -9,6 +9,7 @@
 // frames arrive.
 
 import type { GridPoint } from "./transcript";
+import { captureNormalizationGain } from "../sensor/audioNormalization";
 
 export const FRAME_SAMPLES = 800;
 /** Grid units. A trace point within this distance of a waypoint reaches it. */
@@ -25,10 +26,7 @@ export const FLOOR_PERCENTILE = 0.1;
 /** Levels kept for the noise floor, and frames kept for one round. Bounds per-frame work. */
 export const HISTORY_FRAMES = 2_400;
 /**
- * No frame below this counts as speech, however quiet the room. Calibrated
- * against the validator's normalized hearing: owner acceptance showed a quiet
- * but clearly transcribed word at ~0.005-0.01 raw frame RMS, so the floor
- * must sit below it.
+ * Absolute speech floor in the common-gain domain. Committed samples stay raw.
  */
 export const MIN_SPEECH_RMS = 0.004;
 export const MIN_FLOOR_RMS = 0.001;
@@ -62,8 +60,8 @@ export interface RoundTracker {
   speechActive(): boolean;
   speechReady(): boolean;
   /**
-   * The round's first frame at the speech bar, or null. A refined recording
-   * boundary may move forward up to this frame but not past it: everything
+   * The first frame at the speech bar, preserving latched speech, or null.
+   * A refined recording boundary may move forward up to this frame but not past it: everything
    * from here on is speech the person produced during the round.
    */
   firstVoicedFrame(): number | null;
@@ -110,8 +108,15 @@ class LevelHistory {
       this.size === 0
         ? MIN_FLOOR_RMS
         : this.sorted[Math.floor(FLOOR_PERCENTILE * (this.size - 1))]!;
-    const floor = Math.max(MIN_FLOOR_RMS, percentile);
-    return Math.max(MIN_SPEECH_RMS, floor * FLOOR_RATIO);
+    let energy = 0;
+    for (let index = 0; index < this.size; index++) {
+      const level = this.ring[(this.head + index) % HISTORY_FRAMES]!;
+      energy += level * level;
+    }
+    const rms = this.size === 0 ? 0 : Math.sqrt(energy / this.size);
+    const gain = captureNormalizationGain(rms);
+    const floor = Math.max(MIN_FLOOR_RMS / gain, percentile);
+    return Math.max(MIN_SPEECH_RMS / gain, floor * FLOOR_RATIO);
   }
 
   private lowerBound(value: number, length: number): number {
@@ -142,6 +147,22 @@ interface RoundState {
   reported: boolean;
   speechReady: boolean;
   readyFrom: number | null;
+  readyFirst: number | null;
+}
+
+function discardRoundPrefix(state: RoundState, frames: number): void {
+  const removed = Math.min(frames, state.levels.length);
+  state.levels.splice(0, removed);
+  if (state.readyFirst !== null) state.readyFirst = Math.max(0, state.readyFirst - removed);
+  if (state.readyFrom !== null) {
+    state.readyFrom -= removed;
+    if (state.readyFrom < 0) {
+      state.readyFrom = state.readyFirst = null;
+      state.speechReady = false;
+      state.reported = false;
+    }
+  }
+  if (state.tracedAt !== null) state.tracedAt = Math.max(0, state.tracedAt - removed);
 }
 
 /**
@@ -164,7 +185,8 @@ export function advanceReached(
 }
 
 function assertLevel(level: number): void {
-  if (!Number.isFinite(level)) throw new RangeError("A frame level must be finite.");
+  if (!Number.isFinite(level) || level < 0)
+    throw new RangeError("A frame level must be finite and non-negative.");
 }
 
 function voicedRuns(levels: readonly number[], bar: number): VoicedRun[] {
@@ -238,6 +260,7 @@ export function createRoundTracker(): RoundTracker {
         reported: false,
         speechReady: false,
         readyFrom: null,
+        readyFirst: null,
       };
     },
 
@@ -250,7 +273,7 @@ export function createRoundTracker(): RoundTracker {
       const state = requireRound();
       observe(level);
       state.levels.push(level);
-      if (state.levels.length > HISTORY_FRAMES) state.levels.shift();
+      if (state.levels.length > HISTORY_FRAMES) discardRoundPrefix(state, 1);
       const now = state.levels.length - 1;
 
       const traced =
@@ -264,6 +287,7 @@ export function createRoundTracker(): RoundTracker {
       if (spoken && lastVoiced !== null && now - lastVoiced >= QUIET_FRAMES) {
         state.speechReady = true;
         state.readyFrom = Math.max(state.readyFrom ?? 0, spoken.startFrame);
+        state.readyFirst ??= state.levels.findIndex((value) => value >= bar);
       }
       if (!traced) return now >= OPEN_STALL_FRAMES ? "stalled" : "open";
       state.tracedAt ??= now;
@@ -285,24 +309,14 @@ export function createRoundTracker(): RoundTracker {
       if (!round) return null;
       const bar = history.speechBar();
       for (let index = 0; index < round.levels.length; index++) {
-        if (round.levels[index]! >= bar) return index;
+        if (round.levels[index]! >= bar)
+          return round.readyFirst === null ? index : Math.min(round.readyFirst, index);
       }
-      return null;
+      return round.readyFirst;
     },
 
     discardPrefix(frames) {
-      const state = requireRound();
-      const removed = Math.min(frames, state.levels.length);
-      state.levels.splice(0, removed);
-      if (state.readyFrom !== null) {
-        state.readyFrom -= removed;
-        if (state.readyFrom < 0) {
-          state.readyFrom = null;
-          state.speechReady = false;
-          state.reported = false;
-        }
-      }
-      if (state.tracedAt !== null) state.tracedAt = Math.max(0, state.tracedAt - removed);
+      discardRoundPrefix(requireRound(), frames);
     },
 
     speechActive() {

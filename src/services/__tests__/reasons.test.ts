@@ -192,6 +192,7 @@ describe("derived sets", () => {
   it("RETRYABLE_REASONS holds exactly the retry-disposition labels", () => {
     expect([...RETRYABLE_REASONS].sort()).toEqual(
       [
+        "anchor_retry",
         "audio_evidence_insufficient",
         "captcha_required",
         "entropy_bounds",

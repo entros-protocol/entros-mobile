@@ -30,6 +30,8 @@ const PAIRED_REASONS: VerificationReason[] = [
   "phrase_content_mismatch",
   "trace_incomplete",
   "audio_evidence_insufficient",
+  "anchor_retry",
+  "paired_required",
   "captcha_required",
   "rate_limited",
   "ip_rate_limited",

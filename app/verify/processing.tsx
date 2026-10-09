@@ -62,6 +62,7 @@ export default function Processing() {
     fail,
     setForceOutcome,
     setFlowIntent,
+    recordAnchorRetry,
     updateAuthToken,
   } = useAppState();
   const [ctx, dispatch] = useReducer(reduce, { ...initialContext, state: "extracting" });
@@ -124,11 +125,12 @@ export default function Processing() {
       updateAuthToken,
       isCancelled,
     );
-    cancelRef.current = () => {
+    const cancelProcessing = () => {
       cancelled = true;
       stopSessionExpiry();
       validationController.abort();
     };
+    cancelRef.current = cancelProcessing;
     const flowIntent = flow.intent;
 
     const failOut = (bucket: FailureBucket, message?: string) => {
@@ -205,9 +207,15 @@ export default function Processing() {
           devWarn("[Entros] /validate-features rejected (payload-too-large)");
           failOut("report-bug", "payload_too_large");
           return;
+        case "hard-reject":
+          if (outcome.reason === "paired_required") {
+            routePairedFailure({ reason: "paired_required" });
+          } else {
+            failOut("generic");
+          }
+          return;
         case "quota-exhausted":
         case "unauthorized":
-        case "hard-reject":
         case "unknown":
           devWarn(`[Entros] /validate-features rejected (${outcome.kind})`);
           failOut("generic");
@@ -221,6 +229,9 @@ export default function Processing() {
         `[Entros] paired session failed reason=${failure.reason ?? "none"} status=${failure.status ?? "none"}`,
       );
       const screen = pairedFailureScreen(failure);
+      if (failure.reason === "anchor_retry") {
+        screen.params.attemptsRemaining = String(recordAnchorRetry());
+      }
       if (screen.record) fail(screen.record);
       setForceOutcome(null);
       router.replace({ pathname: "/verify/failure", params: screen.params });
@@ -446,7 +457,7 @@ export default function Processing() {
     if (pairedSession) void runPaired(pairedSession);
     else void runVerify();
     return () => {
-      cancelRef.current?.();
+      cancelProcessing();
       cancelRef.current = null;
       // Defence-in-depth: clear every handoff slot if the screen unmounts
       // mid-flow (back nav, app suspend, etc.). The next verify cycle starts
