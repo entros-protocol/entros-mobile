@@ -115,4 +115,62 @@ describe("wallet-scoped auth token persistence", () => {
     expect(stored.get("wallet_auth_token")).toBe("token-b");
     await act(async () => tree.unmount());
   });
+
+  test("bounds quality retries, keeps reset intent and records no failed history", async () => {
+    let context: Context | null = null;
+    const Consumer = () => {
+      context = useAppState();
+      return null;
+    };
+    const tree = createRoot();
+    await act(async () => {
+      tree.render(
+        <AppStateProvider>
+          <Consumer />
+        </AppStateProvider>,
+      );
+    });
+    await act(async () => context!.setFlowIntent("reset"));
+    expect(context!.recordAnchorRetry()).toBe(2);
+    expect(context!.recordAnchorRetry()).toBe(1);
+    expect(context!.recordAnchorRetry()).toBe(0);
+    expect(context!.recordAnchorRetry()).toBe(0);
+    expect(context!.flow.intent).toBe("reset");
+    expect(context!.history).toEqual([]);
+    context!.clearAnchorRetries();
+    expect(context!.recordAnchorRetry()).toBe(2);
+    await act(async () => tree.unmount());
+  });
+
+  test("clears quality retries on wallet changes, success and an explicit intent change", async () => {
+    let context: Context | null = null;
+    const Consumer = () => {
+      context = useAppState();
+      return null;
+    };
+    mockConnect.mockResolvedValue({ address: "wallet-a", authToken: "token", wallet: "phantom" });
+    const tree = createRoot();
+    await act(async () =>
+      tree.render(
+        <AppStateProvider>
+          <Consumer />
+        </AppStateProvider>,
+      ),
+    );
+    await act(async () => context!.connect("phantom"));
+    expect(context!.recordAnchorRetry()).toBe(2);
+    expect(context!.recordAnchorRetry()).toBe(1);
+    mockConnect.mockResolvedValue({ address: "wallet-b", authToken: "token", wallet: "phantom" });
+    await act(async () => context!.connect("phantom"));
+    mockConnect.mockResolvedValue({ address: "wallet-a", authToken: "token", wallet: "phantom" });
+    await act(async () => context!.connect("phantom"));
+    expect(context!.recordAnchorRetry()).toBe(2);
+    await act(async () => context!.verify(2, "verified"));
+    expect(context!.recordAnchorRetry()).toBe(2);
+    await act(async () => context!.setFlowIntent("reset"));
+    expect(context!.recordAnchorRetry()).toBe(2);
+    await act(async () => context!.resetComplete("reset"));
+    expect(context!.recordAnchorRetry()).toBe(2);
+    await act(async () => tree.unmount());
+  });
 });

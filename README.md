@@ -32,6 +32,15 @@ A re-verification generates a native Groth16 proof. The proof establishes Poseid
 
 The circuit does not prove capture provenance or human presence by itself. The private validator applies the current liveness and risk policy.
 
+## Paired capture
+
+The current source includes an independent paired protocol version 2 client under the paired feature flag.
+It requires compatible services. Each round accepts one word and a visible trace in either order,
+then verifies a server cue before the final trace step. Continue is available after a valid visible
+outline when speech readiness does not trigger. It retains the same server evidence checks.
+The interface uses controller readiness and deadlines. Wallet changes cancel the active attempt.
+Physical-device acceptance remains required before release.
+
 ## Privacy boundary
 
 Raw motion samples and full-resolution touch samples stay in application memory. The client clears them after processing.
@@ -42,7 +51,7 @@ The local baseline contains the fingerprint, salt, commitment, and timestamp. Th
 
 Protocol transactions persist commitments, proofs on re-verification, and account state. They do not contain raw sensor streams.
 
-The network request implementation lives in `src/services/executor.ts`. Sensor record types live in `src/sensor/types.ts`.
+The network request implementations live in `src/services/executor.ts` and `src/services/pairedExecutor.ts`. Sensor record types live in `src/sensor/types.ts`.
 
 ## Stack
 

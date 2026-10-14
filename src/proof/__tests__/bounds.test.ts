@@ -16,7 +16,7 @@ describe("classifyHammingDistance: accept band [minDistance, threshold)", () => 
   it("drift_too_high at the threshold (LessThan is strict)", () => {
     expect(classifyHammingDistance(96, T, M)).toBe("drift_too_high");
   });
-  it("drift_too_high above the threshold (the dist=111 incident)", () => {
+  it("drift_too_high well above the threshold", () => {
     expect(classifyHammingDistance(111, T, M)).toBe("drift_too_high");
   });
   it("in_bounds at exactly minDistance (GreaterEqThan is inclusive)", () => {

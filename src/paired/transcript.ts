@@ -20,7 +20,7 @@ export const PAIRED_ROUND_DOMAINS = {
   attestation: "entros/attestation/v1\0",
 } as const;
 
-export const PAIRED_PROTOCOL_VERSION = 1;
+export const PAIRED_PROTOCOL_VERSION = 2;
 export const PAIRED_ROUNDS = 3;
 /** The only audio format. The label enters the audio digest, so a second format cannot
  *  reuse a digest computed for the first. */
@@ -162,6 +162,54 @@ export function attemptBindingDigest(
   challengeNonce: Uint8Array,
 ): Uint8Array {
   return digest([DOMAIN_BYTES.attempt, serverAttemptId, challengeNonce]);
+}
+
+export function cueCommitment(
+  nonce: Uint8Array,
+  index: number,
+  roundNonce: Uint8Array,
+  salt: Uint8Array,
+  endpoint: GridPoint,
+): Uint8Array {
+  if (
+    salt.length !== DIGEST_BYTES ||
+    endpoint.x < 150 ||
+    endpoint.x > 850 ||
+    endpoint.y < 150 ||
+    endpoint.y > 850
+  )
+    throw new PairedEncodingError("malformed");
+  const point = new Uint8Array(4);
+  point.set(u16be(endpoint.x), 0);
+  point.set(u16be(endpoint.y), 2);
+  return digest([
+    domainBytes("entros/paired-round/v2/cue\0"),
+    nonce,
+    u32be(index),
+    roundNonce,
+    salt,
+    point,
+  ]);
+}
+
+export function challengeDigestV2(
+  nonce: Uint8Array,
+  index: number,
+  roundNonce: Uint8Array,
+  word: string,
+  visible: Uint8Array,
+  cue: Uint8Array,
+): Uint8Array {
+  if (cue.length !== DIGEST_BYTES) throw new PairedEncodingError("malformed");
+  return digest([
+    domainBytes("entros/paired-round/v2/challenge\0"),
+    nonce,
+    u32be(index),
+    roundNonce,
+    textEncoder.encode(word),
+    visible,
+    cue,
+  ]);
 }
 
 export function challengeDigest(

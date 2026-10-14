@@ -31,6 +31,10 @@ const SOFT_HINT: Record<RetryableReason, string> = {
   entropy_bounds: "Your gestures and speech were a bit too uniform. Try varying both naturally.",
   temporal_coupling_low: "Speak and move at the same time—they were a bit out of sync.",
   phrase_content_mismatch: "Read the phrase clearly at a normal pace, exactly as shown.",
+  audio_evidence_insufficient:
+    "The service could not assess the recorded speech. Start a new verification and speak at your normal volume.",
+  anchor_retry:
+    "We couldn’t read that capture. Try again to set your baseline. Say each word once.",
   trace_incomplete:
     "Your trace missed a point or reached them out of order. Trace through each numbered point, from the first to the last.",
   captcha_required:
@@ -71,6 +75,13 @@ const SESSION_REASON_COPY: ReadonlyMap<string, SessionReasonCopy> = new Map<
   VerificationReason,
   SessionReasonCopy
 >([
+  [
+    "paired_required",
+    {
+      title: "Paired capture required",
+      body: "Update Entros to set or replace your baseline with paired capture.",
+    },
+  ],
   [
     "session_active",
     {
@@ -265,8 +276,14 @@ export default function VerifyFailure() {
     reason?: string;
     retryAfter?: string;
     message?: string;
+    attemptsRemaining?: string;
   }>();
-  const { setFlowIntent } = useAppState();
+  const { setFlowIntent, clearAnchorRetries } = useAppState();
+  const cancel = () => {
+    clearAnchorRetries();
+    setFlowIntent("verify");
+    router.dismissAll();
+  };
 
   // Re-enables the primary CTA from "OK" → "Try again" once the countdown
   // hits zero. Only meaningful for the retry branch; ignored elsewhere.
@@ -296,7 +313,14 @@ export default function VerifyFailure() {
     // checked, before it reaches a Text node.
     const reason = typeof params.reason === "string" ? params.reason : "";
     const rawHint = (SOFT_HINT as Record<string, unknown>)[reason];
-    const hint = typeof rawHint === "string" ? rawHint : SOFT_HINT_FALLBACK;
+    const remaining = Number(params.attemptsRemaining);
+    const qualityExhausted =
+      reason === "anchor_retry" && (!Number.isFinite(remaining) || remaining <= 0);
+    const hint = qualityExhausted
+      ? "We couldn’t read those captures. Check your microphone, then start again to set your baseline. Say each word once."
+      : typeof rawHint === "string"
+        ? rawHint
+        : SOFT_HINT_FALLBACK;
     return (
       <Screen>
         <View style={styles.wrap}>
@@ -318,8 +342,14 @@ export default function VerifyFailure() {
             </Text>
           </View>
           <View style={styles.footer}>
-            <Button label="Try again" onPress={() => router.replace("/verify/intro")} />
-            <Button label="Cancel" variant="ghost" onPress={() => router.dismissAll()} />
+            {qualityExhausted ? (
+              <Button label="OK" onPress={cancel} />
+            ) : (
+              <>
+                <Button label="Try again" onPress={() => router.replace("/verify/intro")} />
+                <Button label="Cancel" variant="ghost" onPress={cancel} />
+              </>
+            )}
           </View>
         </View>
       </Screen>
@@ -394,10 +424,10 @@ export default function VerifyFailure() {
             {showTryAgain ? (
               <>
                 <Button label="Try again" onPress={() => router.replace("/verify/intro")} />
-                <Button label="Cancel" variant="ghost" onPress={() => router.dismissAll()} />
+                <Button label="Cancel" variant="ghost" onPress={cancel} />
               </>
             ) : (
-              <Button label="OK" onPress={() => router.dismissAll()} />
+              <Button label="OK" onPress={cancel} />
             )}
           </View>
         </View>
@@ -470,9 +500,11 @@ export default function VerifyFailure() {
               {reasonCopy?.title ?? "This session didn't go through"}
             </Text>
             <Text variant="body" tone="muted" align="center">
-              {reasonCopy
-                ? `${reasonCopy.body} If it happens again, copy the code below and share it with the team.`
-                : "The verification service could not accept this session. Start a new session. If it happens again, copy the code below and share it with the team."}
+              {params.reason === "paired_required"
+                ? reasonCopy?.body
+                : reasonCopy
+                  ? `${reasonCopy.body} If it happens again, copy the code below and share it with the team.`
+                  : "The verification service could not accept this session. Start a new session. If it happens again, copy the code below and share it with the team."}
             </Text>
             {codeFromMessage ? (
               <Text variant="body" align="center" tone="muted">
@@ -481,8 +513,14 @@ export default function VerifyFailure() {
             ) : null}
           </View>
           <View style={styles.footer}>
-            <Button label="Start again" onPress={() => router.replace("/verify/intro")} />
-            <Button label="Copy diagnostics" variant="ghost" onPress={handleCopyDiagnostics} />
+            {params.reason === "paired_required" ? (
+              <Button label="OK" onPress={cancel} />
+            ) : (
+              <>
+                <Button label="Start again" onPress={() => router.replace("/verify/intro")} />
+                <Button label="Copy diagnostics" variant="ghost" onPress={handleCopyDiagnostics} />
+              </>
+            )}
           </View>
         </View>
       </Screen>
@@ -535,7 +573,7 @@ export default function VerifyFailure() {
             onPress={handlePrimary}
           />
           {copy.secondary ? (
-            <Button label={copy.secondary} variant="ghost" onPress={() => router.dismissAll()} />
+            <Button label={copy.secondary} variant="ghost" onPress={cancel} />
           ) : null}
         </View>
       </View>

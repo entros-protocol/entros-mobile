@@ -1,9 +1,13 @@
 import { Stack } from "expo-router";
+import { useEffect } from "react";
 
+import { useAppState } from "@/state/AppState";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export default function VerifyLayout() {
   const { palette } = useTheme();
+  const { setFlowIntent } = useAppState();
+  useEffect(() => () => setFlowIntent("verify"), [setFlowIntent]);
   return (
     <Stack
       screenOptions={{

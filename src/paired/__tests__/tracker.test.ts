@@ -20,6 +20,7 @@ import {
 } from "../tracker";
 
 import { points, vectors } from "./vectors";
+import { captureNormalizationGain } from "../../sensor/audioNormalization";
 
 function expand(levels: readonly [number, number][]): number[] {
   return levels.flatMap(([level, count]) => Array.from({ length: count }, () => level));
@@ -79,6 +80,8 @@ describe("round tracker sequences", () => {
       const completed = decisions.indexOf("complete");
       expect(completed === -1 ? null : completed).toBe(vector.completedAtFrame);
       expect(tracker.runs()).toEqual(vector.finalRuns);
+      expect(tracker.speechReady()).toBe(vector.speechReady);
+      expect(tracker.firstVoicedFrame()).toBe(vector.firstVoicedFrame);
     },
   );
 });
@@ -171,11 +174,13 @@ describe("round tracker behaviour", () => {
       if (frame % 397 !== 0) continue;
       const recent = levels.slice(-HISTORY_FRAMES);
       const ordered = [...recent].sort((left, right) => left - right);
+      const rms = Math.sqrt(recent.reduce((sum, value) => sum + value * value, 0) / recent.length);
+      const gain = captureNormalizationGain(rms);
       const floor = Math.max(
-        MIN_FLOOR_RMS,
+        MIN_FLOOR_RMS / gain,
         ordered[Math.floor(FLOOR_PERCENTILE * (ordered.length - 1))]!,
       );
-      const bar = Math.max(MIN_SPEECH_RMS, floor * FLOOR_RATIO);
+      const bar = Math.max(MIN_SPEECH_RMS / gain, floor * FLOOR_RATIO);
       const voiced = recent.filter((value) => value >= bar).length;
       const counted = tracker.runs().reduce((sum, run) => sum + run.voicedFrames, 0);
       expect(counted).toBe(voiced);
@@ -198,4 +203,131 @@ describe("round tracker behaviour", () => {
     expect(frameRms(new Float32Array(FRAME_SAMPLES))).toBe(0);
     expect(() => frameRms(new Float32Array(FRAME_SAMPLES - 1))).toThrow(RangeError);
   });
+});
+
+test("matches the independent refined-boundary witnesses", () => {
+  for (const vector of vectors.trackerRefinements) {
+    const tracker = createRoundTracker();
+    for (const level of expand(vector.priorLevels)) tracker.observe(level);
+    tracker.begin([{ x: 200, y: 200 }], true);
+    for (const level of expand(vector.levels)) tracker.frame(level);
+    tracker.discardPrefix(vector.discardPrefix);
+    tracker.reach(200, 200);
+    expect(tracker.frame(0.0003)).toBe(vector.decision);
+    expect(tracker.speechReady()).toBe(vector.speechReady);
+    expect(tracker.firstVoicedFrame()).toBe(vector.firstVoicedFrame);
+  }
+});
+
+test.each([0.002, 0.003, 0.0039, 0.004, 0.03])("completes a word at raw RMS %s", (speech) => {
+  const tracker = createRoundTracker();
+  for (let index = 0; index < 20; index++) tracker.observe(0.0003);
+  tracker.begin([], false);
+  const levels = [
+    ...Array<number>(6).fill(0.0003),
+    ...Array<number>(10).fill(speech),
+    ...Array<number>(12).fill(0.0003),
+  ];
+  expect(levels.map((level) => tracker.frame(level)).indexOf("complete")).toBe(27);
+  expect(tracker.firstVoicedFrame()).toBe(6);
+});
+
+test("shares the capture gain boundaries", () => {
+  expect(captureNormalizationGain(0)).toBe(1);
+  expect(captureNormalizationGain(0.000099)).toBe(1);
+  expect(captureNormalizationGain(0.0001)).toBe(50);
+  expect(captureNormalizationGain(0.001)).toBe(50);
+  expect(captureNormalizationGain(0.5)).toBe(0.1);
+});
+
+test("keeps latched speech before a loud transient during boundary refinement", () => {
+  const tracker = createRoundTracker();
+  for (let index = 0; index < 20; index++) tracker.observe(0.0003);
+  tracker.begin([{ x: 200, y: 200 }], true);
+  for (const level of [
+    ...Array<number>(6).fill(0.0003),
+    ...Array<number>(10).fill(0.005),
+    ...Array<number>(12).fill(0.0003),
+  ])
+    tracker.frame(level);
+  expect(tracker.speechReady()).toBe(true);
+  tracker.frame(0.5);
+  expect(tracker.firstVoicedFrame()).toBe(6);
+  tracker.discardPrefix(Math.min(20, tracker.firstVoicedFrame()!));
+  expect(tracker.firstVoicedFrame()).toBe(0);
+  expect(tracker.speechReady()).toBe(true);
+  tracker.reach(200, 200);
+  expect(tracker.frame(0.0003)).toBe("complete");
+  tracker.begin([], false);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+});
+
+test("reports activity against the current floor and clears it for a new round", () => {
+  const tracker = createRoundTracker();
+  for (let index = 0; index < 60; index++) tracker.observe(0.001);
+  tracker.begin([], false);
+  tracker.frame(0.003);
+  expect(tracker.speechActive()).toBe(false);
+  tracker.frame(0.004);
+  expect(tracker.speechActive()).toBe(true);
+  tracker.begin([], false);
+  expect(tracker.speechActive()).toBe(false);
+  for (let index = 0; index < HISTORY_FRAMES; index++) tracker.observe(0.02);
+  tracker.frame(0.05);
+  expect(tracker.speechActive()).toBe(false);
+  tracker.frame(0.08);
+  expect(tracker.speechActive()).toBe(true);
+});
+
+test("speech readiness survives new room noise before the trace", () => {
+  const tracker = createRoundTracker();
+  for (let frame = 0; frame < 2; frame++) tracker.observe(0.001);
+  const path = [
+    { x: 150, y: 150 },
+    { x: 150, y: 700 },
+    { x: 750, y: 700 },
+  ];
+  tracker.begin(path, true);
+  for (const [level, count] of [
+    [0.05, 6],
+    [0.001, 12],
+    [0.04, 160],
+  ]) {
+    for (let frame = 0; frame < count!; frame++) tracker.frame(level!);
+  }
+  for (const point of path) tracker.reach(point.x, point.y);
+  expect(tracker.frame(0.04)).toBe("complete");
+});
+
+test("keeps a later completed speech witness after the recording boundary advances", () => {
+  const tracker = createRoundTracker();
+  tracker.observe(0.001);
+  tracker.observe(0.001);
+  tracker.begin([{ x: 200, y: 200 }], true);
+  for (const level of [
+    ...Array(6).fill(0.05),
+    ...Array(12).fill(0.001),
+    ...Array(6).fill(0.05),
+    ...Array(12).fill(0.001),
+  ])
+    tracker.frame(level);
+  expect(tracker.speechReady()).toBe(true);
+  tracker.discardPrefix(1);
+  tracker.reach(200, 200);
+  expect(tracker.frame(0.04)).toBe("complete");
+  expect(tracker.speechReady()).toBe(true);
+});
+
+test("firstVoicedFrame locates the round's first frame at the speech bar", () => {
+  const tracker = createRoundTracker();
+  for (let frame = 0; frame < 2; frame++) tracker.observe(0.001);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+  tracker.begin([], false);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+  for (let frame = 0; frame < 3; frame++) tracker.frame(0.001);
+  expect(tracker.firstVoicedFrame()).toBeNull();
+  for (let frame = 0; frame < 4; frame++) tracker.frame(0.05);
+  expect(tracker.firstVoicedFrame()).toBe(3);
+  tracker.discardPrefix(2);
+  expect(tracker.firstVoicedFrame()).toBe(1);
 });

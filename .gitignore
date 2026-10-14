@@ -60,7 +60,7 @@ coverage/
 # EAS
 .easignore
 
-# Internal sprint notes stay local.
+# Local notes stay out of the repo.
 docs/
 README.md
 !/README.md

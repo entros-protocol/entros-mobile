@@ -1,12 +1,10 @@
 // Extraction entry point. Adapts mobile sensor capture types to the
 // pulse-sdk-shaped types expected by the ported extractors, then runs the
 // same 308-element feature pipeline as the web SDK (170 audio + 81 motion +
-// 57 touch). This said 134 until 2026-08-01, long after the v3 port landed,
-// and the stale figure was read back as fact when deciding whether a defect
-// in this file could reach the validator.
+// 57 touch).
 //
-// Cross-platform reproducibility requires identical inputs on web and
-// mobile must produce identical raw feature vectors. The adapter sets
+// Cross-platform reproducibility requires that identical inputs on web and
+// mobile produce identical raw feature vectors. The adapter sets
 // touch width/height = 1 by default (mobile gesture handler does not
 // expose contact area), so the area block in extractTouchFeatures
 // degenerates to a constant — consistent across platforms when the

@@ -39,13 +39,11 @@ const MIN_WINDOW_COVERAGE = 0.9;
  * Mirrors `extractAccelerationMagnitude` in `@entros/pulse-sdk`, including the
  * required `window` argument and the coverage floor.
  *
- * This used to map motion's array index proportionally onto audio's frame
- * count, which is correct only while both streams happen to cover the same
- * window. `pulse-sdk@4.0.0` diverged them on web by trimming the pre-prompt
- * lead-in out of the audio alone, and cross-modal coupling fell from r=0.31 to
- * r=0.03 until it was found by hand. Mobile never shipped that trim, so the
- * same code was correct here by luck rather than by construction. A required
- * parameter turns the next divergence into a compile error instead.
+ * Mapping motion's array index proportionally onto audio's frame count is
+ * correct only while both streams happen to cover the same window. Trimming a
+ * lead-in from the audio alone breaks that mapping and decorrelates the
+ * contours. A required `window` parameter turns such a divergence into a
+ * compile error.
  *
  * `window` and {@link MotionSample.timestamp} are both in the `Date.now()`
  * domain, so they compare directly.
@@ -187,7 +185,7 @@ function computeMotionV2(
 ): number[] {
   const out: number[] = [];
 
-  // 1. Cross-axis covariance — 6 selected pairs (per blueprint §2.2).
+  // 1. Cross-axis covariance: 6 selected pairs, in the same order as the web SDK.
   const covPairs: [number[], number[]][] = [
     [axes.ax, axes.gy],
     [axes.ay, axes.gx],

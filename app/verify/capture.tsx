@@ -1,6 +1,6 @@
 // Verification capture screen.
 //
-// PRIVACY CONTRACT (paper §6.8 + AUDIT.md):
+// PRIVACY CONTRACT:
 // - Audio PCM, motion samples, and touch coordinates stay in memory through
 //   capture and feature extraction.
 // - The processing screen sends transient phrase PCM for phrase matching.

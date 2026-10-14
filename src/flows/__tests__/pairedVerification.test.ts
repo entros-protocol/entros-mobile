@@ -16,7 +16,7 @@ import {
   type PairedReveal,
   type PairedRoundCommit,
 } from "@/paired";
-import { bytes, traceSession, vectors } from "@/paired/__tests__/vectors";
+import { bytes, traceSessionV2 as traceSession, vectorsV2 } from "@/paired/__tests__/vectorsV2";
 import { finalizePairedSession, type PairedFinalizeOutcome } from "@/services/pairedExecutor";
 import type { MotionCapture, SensorData, TouchCapture } from "@/sensor/types";
 import type { PairedSessionHandoff } from "@/state/pairedSessionBuffer";
@@ -62,6 +62,7 @@ function revealFor(index: number): PairedReveal {
     pathTarget: bytes(round.pathTargetHex),
     waypoints: [],
     challengeDigest: bytes(round.challengeDigestHex),
+    cueCommitment: bytes(round.cueCommitmentHex),
     expiresInMs: 120_000,
   };
 }
@@ -114,8 +115,8 @@ function handoff(commits?: PairedRoundCommit[]): PairedSessionHandoff {
       sessionEndsAtMs: 90_000,
       nativeSampleRate: 48_000,
     },
-    motion,
-    touch,
+    motion: structuredClone(motion),
+    touch: structuredClone(touch),
   };
 }
 
@@ -178,7 +179,7 @@ describe("paired finalize", () => {
     );
     expect(prepared.kind).toBe("no-voice");
     expect(bytesToHex(computeFinalDigest(open, commits))).toBe(session.finalDigestHex);
-    expect(attestationToken).toHaveBeenCalledWith(vectors.attestation[0]!.requestHash);
+    expect(attestationToken).toHaveBeenCalledWith(vectorsV2.attestationDigestHex);
   });
 
   test("extracts features from the levelled join of the committed bytes", async () => {
@@ -190,8 +191,8 @@ describe("paired finalize", () => {
     expect(sensorData.audio.sampleRate).toBe(16_000);
     expect(sensorData.audio.startedAt).toBe(2_000);
     expect(sensorData.audio.durationMs).toBe(3_000);
-    expect(sensorData.motion).toBe(motion);
-    expect(sensorData.touch).toBe(touch);
+    expect(sensorData.motion).toEqual(motion);
+    expect(sensorData.touch).toEqual(touch);
     expect(extractMock.mock.calls[0]![1]).toBe(1);
   });
 
@@ -365,7 +366,7 @@ describe("paired finalize", () => {
     await preparePairedVerification(session, context({ attestationToken }));
     const { open, commits } = session.rounds;
     const expected = attestationDigest({
-      protocolVersion: 1,
+      protocolVersion: 2,
       sessionNonce: open.sessionNonce,
       attemptBinding: open.attemptBinding,
       finalDigest: computeFinalDigest(open, commits),
@@ -373,4 +374,23 @@ describe("paired finalize", () => {
     });
     expect(attestationToken).toHaveBeenCalledWith(bytesToHex(expected));
   });
+});
+
+test("clears committed audio when extraction fails", async () => {
+  const session = handoff();
+  extractMock.mockRejectedValueOnce(new Error("extract failed"));
+  await expect(preparePairedVerification(session, context())).rejects.toThrow("extract failed");
+  expect(
+    session.rounds.commits.every((commit) => commit.segment.every((value) => value === 0)),
+  ).toBe(true);
+});
+
+test("refuses a handoff captured for another wallet before extraction", async () => {
+  const session = handoff();
+  session.rounds.walletId = "SysvarRent111111111111111111111111111111111";
+  await expect(preparePairedVerification(session, context())).rejects.toThrow("wallet");
+  expect(extractMock).not.toHaveBeenCalled();
+  expect(
+    session.rounds.commits.every((commit) => commit.segment.every((value) => value === 0)),
+  ).toBe(true);
 });

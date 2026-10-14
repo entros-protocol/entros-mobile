@@ -4,6 +4,7 @@ export {
   encodeCoarsePath,
   PAIRED_PROTOCOL_VERSION,
   PAIRED_ROUNDS,
+  MAX_ROUND_SAMPLES,
   PAIRED_SAMPLE_RATE,
   type GridPoint,
 } from "./transcript";
@@ -23,6 +24,9 @@ export { analysisSignal, encodePcm16, roundWindow, type SampleWindow } from "./s
 
 export {
   buildCommitBody,
+  buildCueBody,
+  parseCueResponse,
+  type PairedCue,
   buildFinalizeBody,
   checkFinalizeSuccess,
   commitWithRetry,

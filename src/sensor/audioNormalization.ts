@@ -2,6 +2,13 @@ const TARGET_CAPTURE_RMS = 0.05;
 const MIN_RMS_FOR_NORMALIZATION = 1e-4;
 const MAX_NORMALIZATION_GAIN = 50;
 
+/** One capture-level gain for normalization and paired pacing. */
+export function captureNormalizationGain(rms: number): number {
+  return rms < MIN_RMS_FOR_NORMALIZATION
+    ? 1
+    : Math.min(TARGET_CAPTURE_RMS / rms, MAX_NORMALIZATION_GAIN);
+}
+
 /** Match Pulse's capture-level normalization before feature extraction. */
 export function normalizeCaptureRMS(samples: Float32Array): Float32Array {
   if (samples.length === 0) return samples;
@@ -12,7 +19,7 @@ export function normalizeCaptureRMS(samples: Float32Array): Float32Array {
   const rms = Math.sqrt(sumSquares / samples.length);
   if (rms < MIN_RMS_FOR_NORMALIZATION) return samples;
 
-  const gain = Math.min(TARGET_CAPTURE_RMS / rms, MAX_NORMALIZATION_GAIN);
+  const gain = captureNormalizationGain(rms);
   const normalized = new Float32Array(samples.length);
   for (let index = 0; index < samples.length; index++) {
     normalized[index] = Math.max(-1, Math.min(1, samples[index]! * gain));
@@ -46,7 +53,7 @@ export function describeCaptureLevel(samples: Float32Array): CaptureLevel {
   return {
     rms,
     peak,
-    gain: Math.min(wanted, MAX_NORMALIZATION_GAIN),
+    gain: captureNormalizationGain(rms),
     gainClipped: wanted > MAX_NORMALIZATION_GAIN,
   };
 }

@@ -13,7 +13,7 @@ export const PAIRED_ROUND_VECTORS_PATH = resolve(
   "paired-round-vectors.json",
 );
 export const EXPECTED_PAIRED_ROUND_VECTORS_SHA256 =
-  "cb88f752aed0e29a0f2321e85a2ff3006e3c1f65a933d2c729c069574445e63d";
+  "917f232591b380b6565b09a0c2d29a48caaaae78a3d31fcc1441b09c127042e5";
 
 type Pair = [number, number];
 
@@ -115,6 +115,17 @@ export interface TrackerSequenceVector {
   decisions: [string, number][];
   completedAtFrame: number | null;
   finalRuns: TrackerRunVector[];
+  speechReady: boolean;
+  firstVoicedFrame: number | null;
+}
+
+export interface TrackerRefinementVector {
+  priorLevels: [number, number][];
+  levels: [number, number][];
+  discardPrefix: number;
+  decision: string;
+  speechReady: boolean;
+  firstVoicedFrame: number | null;
 }
 
 export interface CoarsePathVector {
@@ -177,6 +188,7 @@ export interface PairedRoundVectors {
   pcm16: { samples: number[]; pcm16Hex: string; decoded: number[] };
   analysisSignal: AnalysisSignalVector[];
   trackerSequences: TrackerSequenceVector[];
+  trackerRefinements: TrackerRefinementVector[];
   coarsePaths: CoarsePathVector[];
   pathScoring: PathScoringVector[];
   attestation: AttestationVector[];

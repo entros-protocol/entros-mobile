@@ -65,6 +65,7 @@ interface SubmitBase {
   authToken: string;
   walletKind: WalletKind;
   onAuthTokenRotated?: mwa.AuthTokenRotationHandler;
+  assertActive?(): void;
 }
 
 const requireProgramMethods = <MethodName extends string>(
@@ -192,6 +193,7 @@ export async function submitProofIdentityUpgrade(args: SubmitBase): Promise<Subm
     .instruction();
   const connection = getConnection();
   const transaction = await sealTransaction(connection, ctx.walletPubkey, [instruction]);
+  args.assertActive?.();
   const result = await mwa.signAndSendTransaction(
     args.authToken,
     transaction,
@@ -275,6 +277,7 @@ export async function submitVerify(
   }
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
+  args.assertActive?.();
   const result = await mwa.signAndSendTransaction(
     args.authToken,
     tx,
@@ -329,6 +332,7 @@ export async function submitReset(
   ];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
+  args.assertActive?.();
   const result = await mwa.signAndSendTransaction(
     args.authToken,
     tx,
@@ -369,6 +373,7 @@ export async function submitRebaseline(
   const ixs = [buildComputeBudgetIx(COMPUTE_UNITS_REBASELINE), receiptIx, rebaselineIx];
 
   const tx = await sealTransaction(connection, ctx.walletPubkey, ixs);
+  args.assertActive?.();
   const result = await mwa.signAndSendTransaction(
     args.authToken,
     tx,
