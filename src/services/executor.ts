@@ -41,8 +41,8 @@ const MAX_CHALLENGE_LIFETIME_SEC = 300;
 
 export interface ChallengeResponse {
   /** 32-byte server-issued nonce. Bound to the wallet in the executor's
-   *  ChallengeNonceRegistry; consumed by the on-chain create_challenge
-   *  instruction during on-chain submission. */
+   *  ChallengeNonceRegistry; used as the verification nonce during on-chain
+   *  proof submission. */
   nonce: Uint8Array;
   /** 5-word phrase drawn from the executor's curated dictionary. The
    *  validation service looks this up by wallet+ttl during phrase binding;
@@ -66,9 +66,8 @@ export interface ChallengeResponse {
  *    When the validator has a signing key, `signedReceipt` carries the Ed25519
  *    receipt and `commitmentHex`/`saltHex` carry the SERVER-derived commitment
  *    + salt the client must adopt and mint (C2 — the client no longer chooses
- *    its own commitment). The first-verify path bundles the receipt as an
- *    Ed25519 prefix before `mint_anchor`; re-verify ignores the receipt
- *    (update_anchor binds via the VerificationResult PDA instead).
+ *    its own commitment). Both first-verify and re-verify bundle the validator
+ *    receipt as an Ed25519 prefix before the anchor instruction.
  *  - `soft-reject`: a `retry` reason; surface hint + Try Again
  *  - `rate-limited`: a cooldown is in force (executor 429, or a `wait` reason
  *    on any status); surface the countdown

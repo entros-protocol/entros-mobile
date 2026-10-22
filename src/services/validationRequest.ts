@@ -16,7 +16,7 @@ export interface ValidateInput {
   audioSampleRateHz?: number;
   /** Lowercase 64-character hex of the 32-byte Poseidon commitment. */
   commitmentNewHex?: string;
-  receiptPurpose?: "mint" | "rebaseline" | "reset";
+  receiptPurpose?: "mint" | "rebaseline" | "reset" | "update";
   compatibilityEvidence?: ProjectionCompatibilityEvidence;
   walletAuthorization?: WalletAuthorization;
   curveTrace?: CurveTraceOutline;
@@ -28,7 +28,7 @@ export interface ValidateFeaturesRequestBody extends ValidationDigestRequest {
   wallet_authorization?: WalletAuthorization;
   commitment_new_hex?: string;
   request_receipt: boolean;
-  receipt_purpose?: "mint" | "rebaseline" | "reset";
+  receipt_purpose?: "mint" | "rebaseline" | "reset" | "update";
   curve_trace?: CurveTraceOutline;
 }
 

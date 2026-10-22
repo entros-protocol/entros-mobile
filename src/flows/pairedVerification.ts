@@ -31,6 +31,7 @@ import {
   PAIRED_PROTOCOL_VERSION,
   PAIRED_SAMPLE_RATE,
   type PairedCaptureTiming,
+  type SupportedPairedProjectionVersion,
 } from "@/paired";
 import { describeCaptureLevel } from "@/sensor/audioNormalization";
 import type { MotionCapture, SensorData } from "@/sensor/types";
@@ -54,6 +55,7 @@ export interface PairedVerificationContext {
   wallet: WalletSession;
   flowIntent: VerifyIntent;
   receiptPurpose: ReceiptPurposeName | undefined;
+  projectionVersion?: SupportedPairedProjectionVersion;
   isCancelled(): boolean;
   signal: AbortSignal;
   /** A Play Integrity token over a lowercase hex digest. Resolves null on any failure. */
@@ -146,6 +148,7 @@ async function preparePairedVerificationInner(
 ): Promise<PreparedPairedVerification> {
   const { rounds, motion, touch } = handoff;
   const { open, commits } = rounds;
+  const projectionVersion = context.projectionVersion ?? PAIRED_PROJECTION_VERSION;
   const now = context.now ?? (() => performance.now());
   const fetchProofNonce =
     context.fetchProofNonce ?? (async (address: string) => (await fetchChallenge(address)).nonce);
@@ -158,7 +161,7 @@ async function preparePairedVerificationInner(
       sessionNonce: open.sessionNonce,
       attemptBinding: open.attemptBinding,
       finalDigest,
-      projectionVersion: PAIRED_PROJECTION_VERSION,
+      projectionVersion,
     }),
   );
   const tokenRequest = context.attestationToken(requestHash).catch(() => null);
@@ -184,7 +187,7 @@ async function preparePairedVerificationInner(
   const captureTiming = describePairedCaptureTiming(joined, motion, audioWindowMs);
   let extracted: ExtractedFeatures;
   try {
-    extracted = await extractFeatures(sensorData, PAIRED_PROJECTION_VERSION);
+    extracted = await extractFeatures(sensorData, projectionVersion);
   } catch (error) {
     pcm.fill(0);
     joined.fill(0);
@@ -211,6 +214,7 @@ async function preparePairedVerificationInner(
       captureTiming,
       clientSignals: NATIVE_CLIENT_SIGNALS,
       baselineReset: context.flowIntent === "reset",
+      projectionVersion,
       ...(token ? { attestationToken: token } : {}),
     });
     context.onFinalize?.();
@@ -228,7 +232,10 @@ async function preparePairedVerificationInner(
     if (outcome.kind === "rejected") return { kind: "failed", failure: outcome.failure };
 
     const checked = checkFinalizeSuccess(outcome.body, {
-      purpose: context.receiptPurpose,
+      purpose:
+        context.receiptPurpose ??
+        (outcome.body.signed_receipt !== undefined ? "update" : undefined),
+      projectionVersion,
       wallet: walletBytes,
       finalDigest,
     });

@@ -60,7 +60,7 @@ import { setCommitment, takeCommitment } from "@/state/commitmentBuffer";
 import { setProof, takeProof } from "@/state/proofBuffer";
 import type { FailureBucket, VerifyIntent, WalletKind } from "@/state/types";
 
-export type ReceiptPurposeName = "mint" | "rebaseline" | "reset";
+export type ReceiptPurposeName = "mint" | "rebaseline" | "reset" | "update";
 export type ValidatedOutcome = Extract<ValidateOutcome, { kind: "ok" }>;
 
 /** The wallet a verification signs with. Tracks the MWA token as it rotates. */
@@ -269,7 +269,7 @@ export async function runVerificationPipeline<F>(
       // deploys). When it does, we swap in the server's salt + commitment
       // below; the fingerprint stays ours either way.
       let tbh = await generateTBH(fingerprint);
-      const commitmentNewHex = Array.from(tbh.commitmentBytes)
+      let commitmentNewHex = Array.from(tbh.commitmentBytes)
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
@@ -289,7 +289,7 @@ export async function runVerificationPipeline<F>(
       const outcome = validation.outcome;
 
       // Adopt the validator-derived commitment and salt.
-      // `mint_anchor` enforces the commitment computed from these features.
+      // `mint_anchor` and `update_anchor` enforce the commitment computed from these features.
       // Every later consumer reads this replacement value.
       if (outcome.commitmentHex && outcome.saltHex) {
         const serverCommitment = BigInt("0x" + outcome.commitmentHex);
@@ -300,6 +300,9 @@ export async function runVerificationPipeline<F>(
           commitment: serverCommitment,
           commitmentBytes: bigintToBytes32(serverCommitment),
         };
+        commitmentNewHex = Array.from(tbh.commitmentBytes)
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
         if (__DEV__) {
           // A mismatch means the installed app and validator have drifted.
           // Future rotation proofs would fail to open.
@@ -505,6 +508,13 @@ export async function runVerificationPipeline<F>(
         () => input.onAdvance(),
       );
     } else {
+      if (!signedReceipt) {
+        throw new Error(
+          firstVerify
+            ? "First verification requires a validator-signed receipt."
+            : "Returning verification requires a validator-signed update receipt.",
+        );
+      }
       submitted = await submitVerify(
         {
           walletAddress: wallet.address,
@@ -514,12 +524,10 @@ export async function runVerificationPipeline<F>(
           isFirstVerify: firstVerify,
           proof: proofBuf ?? undefined,
           nonce: nonce ? Array.from(nonce) : undefined,
-          // First-verify only. submit.ts ignores it on the re-verify
-          // branch. Receipt is the validator's Ed25519-signed binding
-          // to (wallet, commitment, validated_at).
-          // The first-verification path requires this receipt.
-          // Re-verification ignores it.
-          signedReceipt: signedReceipt ?? undefined,
+          // First-verify passes a v2/v3 mint receipt; re-verify passes a
+          // v4 update receipt whose 32-byte SHA-256 digest is verified via
+          // the Instructions sysvar before `update_anchor*`.
+          signedReceipt,
           onAuthTokenRotated: wallet.acceptRotated,
           assertActive: wallet.assertActive,
         },
@@ -576,7 +584,7 @@ export async function prepareSingleCapture(
   const { projectionVersion, receiptPurpose, wallet, challenge } = context;
   const result = await extractFeatures(captured, projectionVersion);
   let compatibilityEvidence =
-    projectionVersion === 2 && receiptPurpose !== undefined
+    projectionVersion === 2 && receiptPurpose !== undefined && receiptPurpose !== "update"
       ? {
           projection_version: 1,
           feature_schema_version: 4,

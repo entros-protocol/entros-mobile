@@ -8,6 +8,58 @@
   },
   "instructions": [
     {
+      "name": "accept_authority",
+      "docs": [
+        "Accept a proposed protocol authority transfer. Must be signed by `pending_authority`."
+      ],
+      "discriminator": [
+        107,
+        86,
+        198,
+        91,
+        33,
+        12,
+        107,
+        160
+      ],
+      "accounts": [
+        {
+          "name": "pending_authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "compute_trust_score",
       "docs": [
         "Compute progressive trust score from verification history and account age.",
@@ -231,6 +283,67 @@
       "args": []
     },
     {
+      "name": "propose_authority",
+      "docs": [
+        "Propose a new protocol authority in a two-step authority transfer."
+      ],
+      "discriminator": [
+        20,
+        148,
+        236,
+        198,
+        76,
+        119,
+        99,
+        142
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "register_validator",
       "docs": [
         "Register as a validator by staking SOL."
@@ -331,6 +444,72 @@
         {
           "name": "stake_amount",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "rotate_validator_pubkey",
+      "docs": [
+        "Rotate the validator signing pubkey while optionally retaining the",
+        "previous key in a bounded grace window (up to 86,400 seconds)."
+      ],
+      "discriminator": [
+        10,
+        66,
+        43,
+        92,
+        163,
+        236,
+        236,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_validator_pubkey",
+          "type": "pubkey"
+        },
+        {
+          "name": "grace_period_secs",
+          "type": "i64"
         }
       ]
     },
@@ -757,6 +936,32 @@
       ]
     },
     {
+      "name": "AuthorityTransferAccepted",
+      "discriminator": [
+        149,
+        165,
+        140,
+        221,
+        104,
+        203,
+        239,
+        121
+      ]
+    },
+    {
+      "name": "AuthorityTransferProposed",
+      "discriminator": [
+        103,
+        244,
+        27,
+        116,
+        177,
+        4,
+        100,
+        119
+      ]
+    },
+    {
       "name": "ProjectionVersionsSet",
       "discriminator": [
         150,
@@ -806,6 +1011,19 @@
         214,
         230,
         91
+      ]
+    },
+    {
+      "name": "ValidatorPubkeyRotated",
+      "discriminator": [
+        26,
+        231,
+        109,
+        84,
+        232,
+        95,
+        47,
+        167
       ]
     },
     {
@@ -913,6 +1131,21 @@
       "code": 6012,
       "name": "MinimumProjectionVersionRollback",
       "msg": "Minimum supported projection version cannot decrease"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidPendingAuthority",
+      "msg": "Proposed authority must be non-zero"
+    },
+    {
+      "code": 6014,
+      "name": "NoPendingAuthority",
+      "msg": "No pending authority transfer to accept"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidValidatorGracePeriod",
+      "msg": "Validator rotation grace period must be between 0 and 86400 seconds"
     }
   ],
   "types": [
@@ -927,6 +1160,38 @@
           },
           {
             "name": "new_admin",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityTransferAccepted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_admin",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityTransferProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "current_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_authority",
             "type": "pubkey"
           }
         ]
@@ -974,7 +1239,7 @@
           {
             "name": "challenge_expiry",
             "docs": [
-              "Seconds until a challenge nonce expires"
+              "Legacy challenge expiry window in seconds (retained for ProtocolConfig layout stability)"
             ],
             "type": "i64"
           },
@@ -1036,6 +1301,27 @@
               "Oldest projection version accepted by normal verification updates."
             ],
             "type": "u16"
+          },
+          {
+            "name": "pending_authority",
+            "docs": [
+              "Pending authority proposed by the current admin in a two-step transfer."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "secondary_validator_pubkey",
+            "docs": [
+              "Previous validator pubkey accepted during grace-window key rollover."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "secondary_validator_valid_until",
+            "docs": [
+              "Unix timestamp through which `secondary_validator_pubkey` remains valid."
+            ],
+            "type": "i64"
           }
         ]
       }
@@ -1088,6 +1374,30 @@
           {
             "name": "trust_score",
             "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ValidatorPubkeyRotated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_validator_pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "secondary_validator_pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "secondary_validator_valid_until",
+            "type": "i64"
           }
         ]
       }

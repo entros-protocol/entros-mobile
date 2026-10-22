@@ -9,7 +9,7 @@
 // Anchor 0.32 BorshCoder requires Buffer (not Uint8Array) for Vec<u8>
 // fields — the Buffer global is provided by `src/polyfills.ts`.
 
-import type { Idl, Program } from "@coral-xyz/anchor";
+import { BN, type Idl, type Program } from "@coral-xyz/anchor";
 import {
   type AccountMeta,
   ComputeBudgetProgram,
@@ -25,7 +25,6 @@ import {
   deriveToken2022AssociatedAddress,
 } from "./associatedToken";
 import {
-  findChallengePda,
   findIdentityPda,
   findMintAuthorityPda,
   findMintPda,
@@ -34,6 +33,12 @@ import {
   findVerificationPda,
 } from "./pdas";
 import { proofRequestStateAddress } from "./proofRequest";
+
+export interface UpdateReceiptArgs {
+  validatedAt: BN;
+  assuranceTier: number;
+  sessionFinalDigest: number[] | null;
+}
 
 interface AnchorInstructionBuilder {
   accounts(accounts: Record<string, PublicKey>): AnchorInstructionBuilder;
@@ -51,14 +56,13 @@ export type RuntimeProgram<MethodName extends string> = Omit<Program<Idl>, "meth
 export type AnchorProgram = RuntimeProgram<
   "mintAnchor" | "rebaselineAnchor" | "resetIdentityState" | "updateAnchor"
 >;
-export type VerifierProgram = RuntimeProgram<"createChallenge" | "verifyProof">;
+export type VerifierProgram = RuntimeProgram<"verifyProof">;
 
 export interface BuildContext {
   /** entros_anchor program — owns IdentityState, mint_anchor, update_anchor,
    *  reset_identity_state. */
   anchorProgram: AnchorProgram;
-  /** entros_verifier program — owns Challenge, VerificationResult,
-   *  create_challenge, verify_proof. */
+  /** entros_verifier program — owns VerificationResult, verify_proof. */
   verifierProgram: VerifierProgram;
   /** entros_registry program ID — read-only PDAs (protocol_config + treasury). */
   registryProgramId: PublicKey;
@@ -104,37 +108,12 @@ export async function buildMintAnchorIx(
   return builder.instruction();
 }
 
-export async function buildCreateChallengeIx(
-  ctx: BuildContext,
-  nonce: number[],
-): Promise<TransactionInstruction> {
-  const challengePda = findChallengePda(
-    ctx.walletPubkey,
-    new Uint8Array(nonce),
-    ctx.verifierProgram.programId,
-  );
-
-  return ctx.verifierProgram.methods
-    .createChallenge(nonce)
-    .accounts({
-      challenger: ctx.walletPubkey,
-      challenge: challengePda,
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction();
-}
-
 export async function buildVerifyProofIx(
   ctx: BuildContext,
   proofBytes: Uint8Array,
   publicInputs: Uint8Array[],
   nonce: number[],
 ): Promise<TransactionInstruction> {
-  const challengePda = findChallengePda(
-    ctx.walletPubkey,
-    new Uint8Array(nonce),
-    ctx.verifierProgram.programId,
-  );
   const verificationPda = findVerificationPda(
     ctx.walletPubkey,
     new Uint8Array(nonce),
@@ -149,7 +128,6 @@ export async function buildVerifyProofIx(
     )
     .accounts({
       verifier: ctx.walletPubkey,
-      challenge: challengePda,
       verificationResult: verificationPda,
       systemProgram: SystemProgram.programId,
     })
@@ -160,6 +138,11 @@ export async function buildUpdateAnchorIx(
   ctx: BuildContext,
   newCommitment: Uint8Array,
   nonce: number[],
+  receipt: UpdateReceiptArgs = {
+    validatedAt: new BN(0),
+    assuranceTier: 0,
+    sessionFinalDigest: null,
+  },
 ): Promise<TransactionInstruction> {
   const anchorProgramId = ctx.anchorProgram.programId;
   const identityPda = findIdentityPda(ctx.walletPubkey, anchorProgramId);
@@ -172,7 +155,7 @@ export async function buildUpdateAnchorIx(
   const treasuryPda = findTreasuryPda(ctx.registryProgramId);
 
   return ctx.anchorProgram.methods
-    .updateAnchor(Array.from(newCommitment), nonce)
+    .updateAnchor(Array.from(newCommitment), receipt)
     .accounts({
       authority: ctx.walletPubkey,
       identityState: identityPda,
@@ -180,6 +163,8 @@ export async function buildUpdateAnchorIx(
       protocolConfig: protocolConfigPda,
       treasury: treasuryPda,
       systemProgram: SystemProgram.programId,
+      instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+      verifierProgram: ctx.verifierProgram.programId,
     })
     .instruction();
 }
@@ -203,18 +188,15 @@ export async function buildResetIdentityStateIx(
       treasury: treasuryPda,
       systemProgram: SystemProgram.programId,
     });
-  const remaining: AccountMeta[] =
-    projectionVersion >= 1
-      ? [
-          {
-            pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
-            isSigner: false,
-            isWritable: false,
-          },
-        ]
-      : [];
+  const remaining: AccountMeta[] = [
+    {
+      pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+      isSigner: false,
+      isWritable: false,
+    },
+  ];
   if (ctx.requestBound) remaining.push(requestStateMeta(ctx));
-  if (remaining.length > 0) resetBuilder = resetBuilder.remainingAccounts(remaining);
+  resetBuilder = resetBuilder.remainingAccounts(remaining);
   return resetBuilder.instruction();
 }
 

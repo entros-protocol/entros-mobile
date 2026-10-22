@@ -31,7 +31,7 @@ import {
 } from "@/flows/verificationPipeline";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import { devWarn } from "@/lib/log";
-import { PAIRED_PROJECTION_VERSION } from "@/paired";
+import { isSupportedPairedProjectionVersion } from "@/paired";
 import { ValidateOutcome } from "@/services/executor";
 import type { PairedFailure } from "@/services/pairedErrors";
 import { tokenFor } from "@/services/playIntegrity";
@@ -401,7 +401,7 @@ export default function Processing() {
         const chain = await readChain();
         if (!chain) return;
         const { projectionVersion } = chain;
-        if (projectionVersion !== PAIRED_PROJECTION_VERSION) {
+        if (!isSupportedPairedProjectionVersion(projectionVersion)) {
           routePairedFailure({ reason: "projection_not_supported" });
           return;
         }
@@ -410,6 +410,7 @@ export default function Processing() {
           wallet,
           flowIntent,
           receiptPurpose: chain.receiptPurpose,
+          projectionVersion,
           isCancelled,
           signal: validationController.signal,
           attestationToken: (requestHashHex) => tokenFor(requestHashHex),

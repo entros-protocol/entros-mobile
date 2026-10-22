@@ -26,7 +26,7 @@ import {
   fetchProtocolConfig,
   formatLamportsAsSol,
 } from "@/protocol/protocolConfig";
-import { PAIRED_PROJECTION_VERSION } from "@/paired";
+import { isSupportedPairedProjectionVersion } from "@/paired";
 import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
 import { useAppState } from "@/state/AppState";
 import { spacing } from "@/theme/tokens";
@@ -178,9 +178,11 @@ export default function VerifyIntro() {
       }
 
       const usePaired =
-        config.pairedVerify && projectionPolicy.current === PAIRED_PROJECTION_VERSION;
+        config.pairedVerify && isSupportedPairedProjectionVersion(projectionPolicy.current);
       if (config.pairedVerify && !usePaired) {
-        devWarn(`[Entros] paired rounds need projection 1, current=${projectionPolicy.current}`);
+        devWarn(
+          `[Entros] paired rounds need projection 1 or 2, current=${projectionPolicy.current}`,
+        );
       }
       setPaired(usePaired);
 

@@ -1,5 +1,10 @@
 import { BN } from "@coral-xyz/anchor";
-import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
+import {
+  PublicKey,
+  SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+  type TransactionInstruction,
+} from "@solana/web3.js";
 
 import {
   canonicalScalar,
@@ -10,9 +15,15 @@ import {
 } from "@/proof/request";
 import type { SolanaProof } from "@/proof/types";
 
-import { type BuildContext, type RuntimeProgram, buildCreateChallengeIx } from "./instructions";
-import { findChallengePda, findProtocolConfigPda, findTreasuryPda } from "./pdas";
+import { type BuildContext, type RuntimeProgram, type UpdateReceiptArgs } from "./instructions";
+import { findProtocolConfigPda, findTreasuryPda } from "./pdas";
 import { proofRequestStateAddress } from "./proofRequest";
+import {
+  buildEd25519ReceiptIx,
+  decodeSignedReceipt,
+  receiptMatchesBinding,
+  type SignedReceiptDto,
+} from "./receipt";
 
 export interface BoundPrograms {
   anchor: RuntimeProgram<"prepareProofRequest" | "updateAnchorBound" | "upgradeIdentityLayout">;
@@ -26,6 +37,7 @@ export async function buildBoundProofInstructions(
   proof: SolanaProof,
   commitment: Uint8Array,
   nonce: readonly number[],
+  signedReceipt?: SignedReceiptDto,
 ): Promise<TransactionInstruction[]> {
   if (!proof.preparedRequest) throw new Error("The proof request is missing.");
   const prepared = validatePreparedNativeProofRequest(proof.preparedRequest);
@@ -61,6 +73,31 @@ export async function buildBoundProofInstructions(
   ) {
     throw new Error("The submission commitment differs from the proof request.");
   }
+  if (!signedReceipt) {
+    throw new Error("Returning verification requires a validator-signed update receipt.");
+  }
+  const decoded = decodeSignedReceipt(signedReceipt);
+  if (
+    !decoded ||
+    decoded.version !== 4 ||
+    !receiptMatchesBinding(signedReceipt, {
+      purpose: 4,
+      projectionVersion: prepared.action.projectionVersion,
+      wallet: ctx.walletPubkey.toBytes(),
+      commitment: commitmentBytes,
+    })
+  ) {
+    throw new Error("The validator-signed update receipt is malformed.");
+  }
+  const receiptIx = buildEd25519ReceiptIx(signedReceipt);
+  if (!receiptIx) {
+    throw new Error("The validator-signed update receipt is malformed.");
+  }
+  const receiptArgs: UpdateReceiptArgs = {
+    validatedAt: new BN(decoded.validatedAt.toString()),
+    assuranceTier: decoded.assuranceTier ?? 0,
+    sessionFinalDigest: decoded.sessionFinalDigest,
+  };
   const state = proofRequestStateAddress(ctx.walletPubkey, ctx.anchorProgram.programId);
   const result = PublicKey.findProgramAddressSync(
     [Buffer.from("verification_bound"), ctx.walletPubkey.toBytes(), nonceBytes],
@@ -74,7 +111,6 @@ export async function buildBoundProofInstructions(
       systemProgram: SystemProgram.programId,
     })
     .instruction();
-  const create = await buildCreateChallengeIx(ctx, [...nonce]);
   const verify = await programs.verifier.methods
     .verifyProofBound(
       Array.from(nonceBytes),
@@ -87,7 +123,6 @@ export async function buildBoundProofInstructions(
     )
     .accounts({
       verifier: ctx.walletPubkey,
-      challenge: findChallengePda(ctx.walletPubkey, nonceBytes, ctx.verifierProgram.programId),
       verificationResult: result,
       identityState: new PublicKey(prepared.action.identity),
       proofRequestState: state,
@@ -95,7 +130,7 @@ export async function buildBoundProofInstructions(
     })
     .instruction();
   const update = await programs.anchor.methods
-    .updateAnchorBound(Array.from(nonceBytes))
+    .updateAnchorBound(receiptArgs)
     .accounts({
       authority: ctx.walletPubkey,
       identityState: new PublicKey(prepared.action.identity),
@@ -104,7 +139,9 @@ export async function buildBoundProofInstructions(
       protocolConfig: findProtocolConfigPda(ctx.registryProgramId),
       treasury: findTreasuryPda(ctx.registryProgramId),
       systemProgram: SystemProgram.programId,
+      instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+      verifierProgram: ctx.verifierProgram.programId,
     })
     .instruction();
-  return [prepare, create, verify, update];
+  return [prepare, verify, receiptIx, update];
 }

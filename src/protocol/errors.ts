@@ -102,7 +102,13 @@ const RECEIPT_ERRORS = [
 /** entros-anchor errors for a proof or receipt whose timestamp sits outside
  *  the cluster clock's window. A fresh attempt carries fresh timestamps, so
  *  these retry rather than report a validator that rotated its key. */
-const CLOCK_ERRORS = ["ProofExpired", "ProofFromFuture", "ReceiptExpired", "ReceiptFromFuture"];
+const CLOCK_ERRORS = [
+  "ProofExpired",
+  "ProofFromFuture",
+  "ReceiptExpired",
+  "ReceiptFromFuture",
+  "ReceiptAlreadyUsed",
+];
 
 const RECEIPT_CODES = anchorCodes(RECEIPT_ERRORS);
 const CLOCK_CODES = anchorCodes(CLOCK_ERRORS);

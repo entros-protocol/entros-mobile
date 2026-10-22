@@ -41,6 +41,13 @@ import {
 } from "./transcript";
 
 export const PAIRED_PROJECTION_VERSION = 1;
+export type SupportedPairedProjectionVersion = 1 | 2;
+
+export function isSupportedPairedProjectionVersion(
+  version: number,
+): version is SupportedPairedProjectionVersion {
+  return version === 1 || version === 2;
+}
 
 const DIGEST_BYTES = 32;
 const NONCE_BYTES = 32;
@@ -192,7 +199,7 @@ export interface PairedFinalizeSegment {
 export interface PairedFinalizeBody {
   capture_protocol: "paired";
   wallet_id: string;
-  projection_version: typeof PAIRED_PROJECTION_VERSION;
+  projection_version: SupportedPairedProjectionVersion;
   session_id: string;
   final_digest: string;
   segments: PairedFinalizeSegment[];
@@ -721,6 +728,7 @@ export interface FinalizeInput {
   captureTiming: PairedCaptureTiming;
   clientSignals: ClientSignals;
   baselineReset: boolean;
+  projectionVersion?: SupportedPairedProjectionVersion;
   /** A Play Integrity token over the attestation digest. */
   attestationToken?: string;
 }
@@ -744,7 +752,7 @@ export function buildFinalizeBody(input: FinalizeInput): PairedFinalizeBody {
   const body: PairedFinalizeBody = {
     capture_protocol: "paired",
     wallet_id: walletId,
-    projection_version: PAIRED_PROJECTION_VERSION,
+    projection_version: input.projectionVersion ?? PAIRED_PROJECTION_VERSION,
     session_id: open.sessionId,
     final_digest: bytesToHex(computeFinalDigest(open, ordered)),
     segments: ordered.map((commit) => ({
@@ -765,11 +773,12 @@ export function buildFinalizeBody(input: FinalizeInput): PairedFinalizeBody {
   return body;
 }
 
-export type FinalizeReceiptPurpose = "mint" | "rebaseline" | "reset";
+export type FinalizeReceiptPurpose = "mint" | "rebaseline" | "reset" | "update";
 
 export interface FinalizeBinding {
-  /** The transition the receipt must authorise. Absent for an update, which needs none. */
+  /** The transition or update the receipt must authorise. */
   purpose?: FinalizeReceiptPurpose;
+  projectionVersion?: SupportedPairedProjectionVersion;
   /** The wallet's 32 public key bytes. */
   wallet: Uint8Array;
   finalDigest: Uint8Array;
@@ -789,7 +798,7 @@ export interface FinalizeSuccess {
 /** Why a finalize success body was refused. Each is a diagnostic code, never a server value. */
 export type FinalizeRefusal = "receipt_missing" | "receipt_mismatch" | "commitment_malformed";
 
-const RECEIPT_PURPOSES = { mint: 1, rebaseline: 2, reset: 3 } as const;
+const RECEIPT_PURPOSES = { mint: 1, rebaseline: 2, reset: 3, update: 4 } as const;
 
 /** A 32-byte lowercase hex field: the string, null when absent, or undefined when malformed. */
 function digestHexField(value: unknown): string | null | undefined {
@@ -799,10 +808,9 @@ function digestHexField(value: unknown): string | null | undefined {
 
 /**
  * Checks a finalize success body before anything asks the wallet to sign. A transition needs
- * a version 3 receipt whose fields are strings and that binds this session's final digest,
- * this wallet, the transition, projection 1 and the returned commitment, which comes with its
- * salt. The tier is read from the signed receipt, never from the body. An update needs no
- * receipt and must not carry one.
+ * a version 3 receipt (or version 4 for an update) whose fields are strings and that binds
+ * this session's final digest, this wallet, the purpose, projection 1 and the returned
+ * commitment and salt. The tier is read from the signed receipt, never from the body.
  */
 export function checkFinalizeSuccess(
   body: JsonRecord,
@@ -819,8 +827,9 @@ export function checkFinalizeSuccess(
     return { remainingQuota, signedReceipt: null, commitmentHex, saltHex, assuranceTier: null };
   }
   const commitment = commitmentHex === null ? null : lowerHexBytes(commitmentHex, DIGEST_BYTES);
+  const purpose = binding.purpose;
   if (
-    !binding.purpose ||
+    !purpose ||
     !isRecord(receipt) ||
     typeof receipt.validator_pubkey_hex !== "string" ||
     typeof receipt.message_hex !== "string" ||
@@ -836,13 +845,14 @@ export function checkFinalizeSuccess(
     signature_hex: receipt.signature_hex,
   };
   const decoded = decodeSignedReceipt(signedReceipt);
+  const expectedVersion = purpose === "update" ? 4 : 3;
   if (
     !decoded ||
-    decoded.version !== 3 ||
+    decoded.version !== expectedVersion ||
     decoded.assuranceTier === null ||
     !receiptMatchesBinding(signedReceipt, {
-      purpose: RECEIPT_PURPOSES[binding.purpose],
-      projectionVersion: PAIRED_PROJECTION_VERSION,
+      purpose: RECEIPT_PURPOSES[purpose],
+      projectionVersion: binding.projectionVersion ?? PAIRED_PROJECTION_VERSION,
       wallet: binding.wallet,
       commitment,
       finalDigest: binding.finalDigest,

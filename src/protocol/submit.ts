@@ -1,8 +1,8 @@
 // Wraps Anchor instruction builders and MWA signing into two flows:
 //
-//   - submitVerify({ commitment, isFirstVerify, proof?, nonce? })
-//       First verify  → mintAnchor (single ix)
-//       Re-verify     → ComputeBudget + createChallenge + verifyProof + updateAnchor (4 ix in one tx)
+//   - submitVerify({ commitment, isFirstVerify, proof?, nonce?, signedReceipt? })
+//       First verify  → Ed25519 receipt + mintAnchor
+//       Re-verify     → ComputeBudget + verifyProof + Ed25519 v4 receipt digest + updateAnchor
 //
 //   - submitReset({ commitment }) uses a receipt before versioned resets.
 //
@@ -15,7 +15,7 @@
 // - The wallet's auth_token rotates per MWA call; persist the new token
 //   back to secure storage immediately after success.
 
-import { AnchorProvider, Idl, Program } from "@coral-xyz/anchor";
+import { AnchorProvider, BN, Idl, Program } from "@coral-xyz/anchor";
 import {
   Connection,
   PublicKey,
@@ -35,7 +35,6 @@ import entrosAnchorIdl from "./idl/entros_anchor.json";
 import entrosVerifierIdl from "./idl/entros_verifier.json";
 import {
   buildComputeBudgetIx,
-  buildCreateChallengeIx,
   buildMintAnchorIx,
   buildRebaselineAnchorIx,
   buildResetIdentityStateIx,
@@ -47,9 +46,16 @@ import {
   type AnchorProgram,
   type BuildContext,
   type RuntimeProgram,
+  type UpdateReceiptArgs,
   type VerifierProgram,
 } from "./instructions";
-import { receiptMatchesBinding, requireEd25519ReceiptIx, type SignedReceiptDto } from "./receipt";
+import {
+  buildEd25519ReceiptIx,
+  decodeSignedReceipt,
+  receiptMatchesBinding,
+  requireEd25519ReceiptIx,
+  type SignedReceiptDto,
+} from "./receipt";
 
 /** Result of a successful on-chain submission. */
 export interface SubmitResult {
@@ -113,7 +119,6 @@ const buildContext = async (
     "updateAnchor",
   ] as const);
   const verifierProgram: VerifierProgram = requireProgramMethods(verifierRuntime, [
-    "createChallenge",
     "verifyProof",
   ] as const);
 
@@ -257,20 +262,49 @@ export async function submitVerify(
           args.proof,
           args.commitment,
           args.nonce,
+          args.signedReceipt,
         )),
       ];
     } else {
       if (args.proof.preparedRequest)
         throw new Error("A bound proof requires its configured deployment.");
-      const [createChallengeIx, verifyProofIx, updateAnchorIx] = await Promise.all([
-        buildCreateChallengeIx(ctx, args.nonce),
+      if (!args.signedReceipt) {
+        throw new Error("Returning verification requires a validator-signed update receipt.");
+      }
+      const decoded = decodeSignedReceipt(args.signedReceipt);
+      if (
+        !decoded ||
+        decoded.version !== 4 ||
+        !receiptMatchesBinding(args.signedReceipt, {
+          purpose: 4,
+          projectionVersion: new DataView(
+            decoded.message.buffer,
+            decoded.message.byteOffset,
+            decoded.message.byteLength,
+          ).getUint16(29, true),
+          wallet: ctx.walletPubkey.toBytes(),
+          commitment: args.commitment,
+        })
+      ) {
+        throw new Error("The validator-signed update receipt is malformed.");
+      }
+      const receiptIx = buildEd25519ReceiptIx(args.signedReceipt);
+      if (!receiptIx) {
+        throw new Error("The validator-signed update receipt is malformed.");
+      }
+      const receiptArgs: UpdateReceiptArgs = {
+        validatedAt: new BN(decoded.validatedAt.toString()),
+        assuranceTier: decoded.assuranceTier ?? 0,
+        sessionFinalDigest: decoded.sessionFinalDigest,
+      };
+      const [verifyProofIx, updateAnchorIx] = await Promise.all([
         buildVerifyProofIx(ctx, args.proof.proofBytes, args.proof.publicInputs, args.nonce),
-        buildUpdateAnchorIx(ctx, args.commitment, args.nonce),
+        buildUpdateAnchorIx(ctx, args.commitment, args.nonce, receiptArgs),
       ]);
       ixs = [
         buildComputeBudgetIx(COMPUTE_UNITS_REVERIFY),
-        createChallengeIx,
         verifyProofIx,
+        receiptIx,
         updateAnchorIx,
       ];
     }
@@ -308,21 +342,18 @@ export async function submitReset(
   const ctx = await buildContext(args.walletAddress);
   const connection = getConnection();
 
-  const receiptIxs: TransactionInstruction[] = [];
-  if (args.projectionVersion >= 1) {
-    if (
-      !args.signedReceipt ||
-      !receiptMatchesBinding(args.signedReceipt, {
-        purpose: 3,
-        projectionVersion: args.projectionVersion,
-        wallet: ctx.walletPubkey.toBytes(),
-        commitment: args.commitment,
-      })
-    ) {
-      throw new Error("Baseline reset requires a matching validator-signed receipt.");
-    }
-    receiptIxs.push(requireEd25519ReceiptIx(args.signedReceipt));
+  if (
+    !args.signedReceipt ||
+    !receiptMatchesBinding(args.signedReceipt, {
+      purpose: 3,
+      projectionVersion: args.projectionVersion,
+      wallet: ctx.walletPubkey.toBytes(),
+      commitment: args.commitment,
+    })
+  ) {
+    throw new Error("Baseline reset requires a matching validator-signed receipt.");
   }
+  const receiptIxs: TransactionInstruction[] = [requireEd25519ReceiptIx(args.signedReceipt)];
 
   const resetIx = await buildResetIdentityStateIx(ctx, args.commitment, args.projectionVersion);
   const ixs: TransactionInstruction[] = [

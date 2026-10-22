@@ -16,7 +16,7 @@ export interface ChainContext {
   chainIdentity: OnChainIdentity | null;
   /** The identity predates the current projection and must move to it. */
   rebaselineRequired: boolean;
-  /** The receipt the transition needs. An update needs none. */
+  /** The receipt the transition needs. */
   receiptPurpose: ReceiptPurposeName | undefined;
 }
 
@@ -29,14 +29,14 @@ export type ChainContextResult =
 /** The receipt a transition needs, from the intent and the on-chain identity. */
 function receiptPurposeFor(
   flowIntent: VerifyIntent,
-  projectionVersion: number,
+  _projectionVersion: number,
   hasIdentity: boolean,
   rebaselineRequired: boolean,
 ): ReceiptPurposeName | undefined {
-  if (flowIntent === "reset") return projectionVersion >= 1 ? "reset" : undefined;
+  if (flowIntent === "reset") return "reset";
   if (flowIntent !== "verify") return undefined;
   if (!hasIdentity) return "mint";
-  return rebaselineRequired ? "rebaseline" : undefined;
+  return rebaselineRequired ? "rebaseline" : "update";
 }
 
 /** Reads the projection policy and the wallet's identity together. */

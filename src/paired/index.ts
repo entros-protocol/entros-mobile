@@ -33,6 +33,7 @@ export {
   computeFinalDigest,
   finalizeRetryAfterMs,
   initialCommitment,
+  isSupportedPairedProjectionVersion,
   isTransientStatus,
   PAIRED_PROJECTION_VERSION,
   PairedClientError,
@@ -48,4 +49,5 @@ export {
   type PairedReveal,
   type PairedRoundCommit,
   type RetryClock,
+  type SupportedPairedProjectionVersion,
 } from "./client";
