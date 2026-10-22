@@ -28,7 +28,12 @@ import {
   extractMouseDynamics,
   extractAccelerationMagnitude,
 } from "./kinematic";
-import { fuseFeatures, fuseRawFeatures } from "./statistics";
+import {
+  fuseFeatures,
+  fuseFeaturesForProjection,
+  fuseRawFeatures,
+  normalizeFeaturesForProjection,
+} from "./statistics";
 import { yieldToMainThread } from "../lib/yield";
 import type { AudioCapture, MotionSample, TouchSample, ExtractedFeatures } from "./types";
 
@@ -137,7 +142,12 @@ export async function extractFeatures(
 
   return {
     raw: fuseRawFeatures(audioFeatures, motionFeatures, touchFeatures),
-    normalized: fuseFeatures(audioFeatures, motionFeatures, touchFeatures),
+    normalized: fuseFeaturesForProjection(
+      audioFeatures,
+      motionFeatures,
+      touchFeatures,
+      projectionVersion,
+    ),
     f0Contour,
     accelMagnitude,
   };
@@ -178,6 +188,8 @@ export {
   extractMouseDynamics,
   extractAccelerationMagnitude,
   fuseFeatures,
+  fuseFeaturesForProjection,
   fuseRawFeatures,
+  normalizeFeaturesForProjection,
 };
 export type { ExtractedFeatures, AudioCapture, MotionSample, TouchSample } from "./types";

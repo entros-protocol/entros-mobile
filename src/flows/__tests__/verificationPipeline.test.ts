@@ -107,7 +107,10 @@ function wallet(): WalletSession {
   return new WalletSession(WALLET, "phantom", "token-1", async () => true);
 }
 
-const context = (projectionVersion: number, receiptPurpose?: "mint" | "rebaseline" | "reset") => ({
+const context = (
+  projectionVersion: number,
+  receiptPurpose?: "mint" | "rebaseline" | "reset" | "update",
+) => ({
   wallet: wallet(),
   projectionVersion,
   receiptPurpose,
@@ -228,6 +231,33 @@ describe("single capture validation step", () => {
     ).resolves.toEqual({ kind: "drift", bucket: "retry-now" });
   });
 
+  test("omits compatibility evidence for a projection 2 update while requesting an update receipt", async () => {
+    const context2 = context(2, "update");
+    let signed: Record<string, unknown> = {};
+    authorizeMock.mockImplementation(async (args) => {
+      signed = JSON.parse(JSON.stringify(args.requestBody));
+      return { kind: "sent", outcome: ok, authToken: "token-2" };
+    });
+    const single = await prepareSingleCapture(capture(), context2);
+    const features = extracted();
+    await expect(
+      single.validate({
+        features: features.raw,
+        f0Contour: features.f0Contour,
+        accelMagnitude: features.accelMagnitude,
+        commitmentNewHex: "cd".repeat(32),
+      }),
+    ).resolves.toEqual({ kind: "ok", outcome: ok });
+    expect(extractProjectionOneCompatibilityFeatures).not.toHaveBeenCalled();
+    expect(signed).toMatchObject({
+      projection_version: 2,
+      request_receipt: true,
+      receipt_purpose: "update",
+      baseline_reset: false,
+    });
+    expect(signed).not.toHaveProperty("compatibility_evidence");
+  });
+
   test("passes a rejection through for the screen to route", async () => {
     validateMock.mockResolvedValueOnce({ kind: "soft-reject", reason: "variance_floor" });
     const single = await prepareSingleCapture(capture(), context(1));
@@ -290,7 +320,7 @@ describe("verification pipeline", () => {
     expect(features.raw.every((value) => value === 0)).toBe(true);
   });
 
-  test("an update proves and submits against the nonce the input supplies", async () => {
+  test("an update proves and submits against the nonce and receipt the input supplies", async () => {
     const features = extracted();
     const fingerprint = simhash(features.normalized, 1);
     const previous = fingerprint.map((bit, index) => (index < 5 ? 1 - bit : bit));
@@ -312,7 +342,7 @@ describe("verification pipeline", () => {
         proofNonce,
         validate: async (): Promise<ValidationStepResult<never>> => ({
           kind: "ok",
-          outcome: { ...ok, signedReceipt: null },
+          outcome: ok,
         }),
       }),
     );
@@ -321,7 +351,40 @@ describe("verification pipeline", () => {
     const [args] = submitVerifyMock.mock.calls[0]!;
     expect(args.isFirstVerify).toBe(false);
     expect(args.proof).toBe(proof);
+    expect(args.signedReceipt).toBe(ok.signedReceipt);
     expect(args.nonce).toEqual(Array.from(new Uint8Array(32).fill(7)));
+  });
+
+  test("refuses an update before submission when the validator omits the signed receipt", async () => {
+    const features = extracted();
+    const fingerprint = simhash(features.normalized, 1);
+    const previous = fingerprint.map((bit, index) => (index < 5 ? 1 - bit : bit));
+    jest.mocked(loadBaseline).mockResolvedValue({
+      fingerprint: previous,
+      salt: "5",
+      commitment: "123456789",
+      timestamp: 1,
+      projectionVersion: 1,
+    });
+    const proof = { proofBytes: new Uint8Array(256), publicInputs: [] };
+    jest.mocked(generateSolanaProof).mockResolvedValue(proof);
+    const proofNonce = jest.fn(async () => new Uint8Array(32).fill(7));
+    const outcome = await runVerificationPipeline(
+      pipelineInput({
+        chainIdentity: { projectionVersion: 1 },
+        extracted: features,
+        proofNonce,
+        validate: async (): Promise<ValidationStepResult<never>> => ({
+          kind: "ok",
+          outcome: { ...ok, signedReceipt: null },
+        }),
+      }),
+    );
+    expect(outcome).toMatchObject({
+      kind: "failed",
+      bucket: "generic",
+    });
+    expect(submitVerifyMock).not.toHaveBeenCalled();
   });
 
   test("routes a validation failure without signing and a wallet refusal silently", async () => {

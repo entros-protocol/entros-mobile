@@ -170,7 +170,13 @@ describe("parseSubmitError — Anchor numeric codes", () => {
       "ReceiptProjectionVersionMismatch",
       "InvalidAssuranceTier",
     ];
-    const clocks = ["ProofExpired", "ProofFromFuture", "ReceiptExpired", "ReceiptFromFuture"];
+    const clocks = [
+      "ProofExpired",
+      "ProofFromFuture",
+      "ReceiptExpired",
+      "ReceiptFromFuture",
+      "ReceiptAlreadyUsed",
+    ];
     for (const [names, kind] of [
       [receipts, "receipt-rejected"],
       [clocks, "clock-drift"],

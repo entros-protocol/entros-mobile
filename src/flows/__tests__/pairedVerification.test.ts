@@ -297,7 +297,48 @@ describe("paired finalize", () => {
     });
   });
 
-  test("an update needs no receipt and refuses one it was not asked for", async () => {
+  test("checks an update v4 receipt binds the session before any wallet prompt", async () => {
+    const session = handoff();
+    const finalDigest = computeFinalDigest(session.rounds.open, session.rounds.commits);
+    const receiptV4 = (digest: Uint8Array, purpose = 4) => {
+      const message = Buffer.alloc(136);
+      Buffer.from("entros-validator-receipt-v4\0", "ascii").copy(message, 0);
+      message[28] = purpose;
+      message.writeUInt16LE(1, 29);
+      new PublicKey(WALLET).toBuffer().copy(message, 31);
+      Buffer.from("11".repeat(32), "hex").copy(message, 63);
+      message.writeBigInt64LE(1_790_000_000n, 95);
+      Buffer.from(digest).copy(message, 103);
+      message[135] = 2;
+      return {
+        validator_pubkey_hex: "8c".repeat(32),
+        signature_hex: "ab".repeat(64),
+        message_hex: message.toString("hex"),
+      };
+    };
+    const prepared = await preparePairedVerification(session, context({ receiptPurpose: "update" }));
+    if (prepared.kind !== "ready") throw new Error("expected a prepared session");
+
+    finalizeMock.mockResolvedValueOnce(okOutcome({ signed_receipt: receiptV4(finalDigest) }));
+    await expect(prepared.validate(request)).resolves.toEqual({
+      kind: "ok",
+      outcome: {
+        kind: "ok",
+        remainingQuota: 3,
+        signedReceipt: receiptV4(finalDigest),
+        commitmentHex: "11".repeat(32),
+        saltHex: "22".repeat(32),
+        compositeRiskScore: null,
+      },
+    });
+    finalizeMock.mockResolvedValueOnce(okOutcome());
+    await expect(prepared.validate(request)).resolves.toEqual({
+      kind: "failed",
+      failure: { detail: "receipt_missing" },
+    });
+  });
+
+  test("a purpose-free finalize needs no receipt and refuses one it was not asked for", async () => {
     const prepared = await preparePairedVerification(handoff(), context());
     if (prepared.kind !== "ready") throw new Error("expected a prepared session");
     finalizeMock.mockResolvedValueOnce(okOutcome());

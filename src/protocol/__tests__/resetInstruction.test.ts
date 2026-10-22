@@ -53,11 +53,17 @@ function context() {
 }
 
 describe("reset identity instruction", () => {
-  test("keeps the version 0 account layout unchanged", async () => {
+  test("passes the instructions sysvar at projection version 0", async () => {
     const { ctx } = context();
     const instruction = await buildResetIdentityStateIx(ctx, new Uint8Array(32), 0);
 
-    expect(instruction.keys).toEqual([]);
+    expect(instruction.keys).toEqual([
+      {
+        pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+        isSigner: false,
+        isWritable: false,
+      },
+    ]);
   });
 
   test("passes the instructions sysvar as the sole versioned remaining account", async () => {

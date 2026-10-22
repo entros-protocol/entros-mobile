@@ -2,7 +2,7 @@
 // before projection. The web SDK test pins the same input and outputs.
 
 import { bigintToBytes32, computeCommitment, generateTBH, packBits, simhash } from "../";
-import { fuseFeatures } from "../../extraction/statistics";
+import { fuseFeatures, fuseFeaturesForProjection } from "../../extraction/statistics";
 
 const RAW_FIXTURE_FEATURES = Array.from({ length: 308 }, (_, i) => (((i * 37) % 211) - 105) / 64);
 const FIXTURE_FEATURES = fuseFeatures(
@@ -108,17 +108,23 @@ describe("hashing parity with projection version 1", () => {
 
 describe("hashing parity with projection version 2", () => {
   test("pins the full transcript without changing projection 1 bytes", async () => {
-    const fp = simhash(FIXTURE_FEATURES, 2);
+    const fused = fuseFeaturesForProjection(
+      RAW_FIXTURE_FEATURES.slice(0, 170),
+      RAW_FIXTURE_FEATURES.slice(170, 251),
+      RAW_FIXTURE_FEATURES.slice(251),
+      2,
+    );
+    const fp = simhash(fused, 2);
     const { lo, hi } = packBits(fp);
     const commitment = await computeCommitment(fp, FIXED_SALT);
 
     expect(bytesToHex(packFingerprintBytes(fp))).toBe(
-      "171739965959892d2bfec818b1009923c870b6f105678bc5f0f931f49e6ae582",
+      "47931d625548b93b8dcfdca89301e99aca7ab2a1a755db8632f934b75b23f596",
     );
-    expect(lo).toBe(47317415302883274880799270694016325399n);
-    expect(hi).toBe(173990837961685963407535389837236793544n);
+    expect(lo).toBe(205910948500125577978619551950382666567n);
+    expect(hi).toBe(200657029248877128052315591129303251658n);
     expect(bytesToHex(bigintToBytes32(commitment))).toBe(
-      "01a4d28e4832e357f7aac96ac793a97fec1cba126ce4720877a320e0c4ad957e",
+      "07c592a5a50730f610e8853b7e9597d3f6f7d66a1e4214c6b6c4762428759a5d",
     );
   });
 });

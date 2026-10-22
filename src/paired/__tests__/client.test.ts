@@ -726,7 +726,7 @@ describe("finalize success check", () => {
 
   function receipt(
     overrides: {
-      version?: 2 | 3;
+      version?: 2 | 3 | 4;
       purpose?: number;
       projection?: number;
       walletBytes?: Uint8Array;
@@ -736,14 +736,14 @@ describe("finalize success check", () => {
     } = {},
   ) {
     const version = overrides.version ?? 3;
-    const message = Buffer.alloc(version === 3 ? 136 : 103);
+    const message = Buffer.alloc(version === 3 || version === 4 ? 136 : 103);
     Buffer.from(`entros-validator-receipt-v${version}\0`, "ascii").copy(message, 0);
     message[28] = overrides.purpose ?? 1;
     message.writeUInt16LE(overrides.projection ?? 1, 29);
     Buffer.from(overrides.walletBytes ?? wallet).copy(message, 31);
     Buffer.from(overrides.commitment ?? commitmentHex, "hex").copy(message, 63);
     message.writeBigInt64LE(1_790_000_000n, 95);
-    if (version === 3) {
+    if (version === 3 || version === 4) {
       Buffer.from(overrides.digest ?? finalDigest).copy(message, 103);
       message[135] = overrides.tier ?? 1;
     }
@@ -821,23 +821,44 @@ describe("finalize success check", () => {
     }
   });
 
-  test("an update needs no receipt and must not carry one", () => {
-    const update: FinalizeBinding = { wallet, finalDigest };
-    expect(checkFinalizeSuccess(body({ signed_receipt: undefined }), update)).toEqual({
+  test("requires a v4 receipt when purpose is update", () => {
+    const update: FinalizeBinding = { purpose: "update", wallet, finalDigest };
+    const v4 = receipt({ version: 4, purpose: 4, tier: 2 });
+    expect(checkFinalizeSuccess(body({ signed_receipt: v4 }), update)).toEqual({
+      remainingQuota: 4,
+      signedReceipt: v4,
+      commitmentHex,
+      saltHex,
+      assuranceTier: 2,
+    });
+    expect(checkFinalizeSuccess(body({ signed_receipt: undefined }), update)).toBe(
+      "receipt_missing",
+    );
+    expect(checkFinalizeSuccess(body({ signed_receipt: v4, salt_hex: undefined }), update)).toBe(
+      "receipt_mismatch",
+    );
+    expect(checkFinalizeSuccess(body({ signed_receipt: receipt({ purpose: 4 }) }), update)).toBe(
+      "receipt_mismatch",
+    );
+  });
+
+  test("a purpose-free binding needs no receipt and must not carry one", () => {
+    const unbound: FinalizeBinding = { wallet, finalDigest };
+    expect(checkFinalizeSuccess(body({ signed_receipt: undefined }), unbound)).toEqual({
       remainingQuota: 4,
       signedReceipt: null,
       commitmentHex,
       saltHex,
       assuranceTier: null,
     });
-    expect(checkFinalizeSuccess({ valid: true }, update)).toEqual({
+    expect(checkFinalizeSuccess({ valid: true }, unbound)).toEqual({
       remainingQuota: null,
       signedReceipt: null,
       commitmentHex: null,
       saltHex: null,
       assuranceTier: null,
     });
-    expect(checkFinalizeSuccess(body(), update)).toBe("receipt_mismatch");
+    expect(checkFinalizeSuccess(body(), unbound)).toBe("receipt_mismatch");
   });
 });
 

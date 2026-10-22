@@ -203,15 +203,18 @@ describe("mobile Node source-path fingerprint architecture measurement", () => {
     }
   });
 
-  test("isolates projection 2 drift to normalized touch processing", () => {
+  test("preserves raw audio and motion while applying projection 2 normalization", () => {
     const projectionOne = manifest.projections[1]!;
     const projectionTwo = manifest.projections[2]!;
 
     expect(projectionTwo.rawFeaturesF64Hex.slice(0, 251)).toEqual(
       projectionOne.rawFeaturesF64Hex.slice(0, 251),
     );
-    expect(projectionTwo.normalizedFeaturesF64Hex.slice(0, 251)).toEqual(
-      projectionOne.normalizedFeaturesF64Hex.slice(0, 251),
+    expect(projectionTwo.normalizedFeaturesF64Hex.slice(0, 170)).not.toEqual(
+      projectionOne.normalizedFeaturesF64Hex.slice(0, 170),
+    );
+    expect(projectionTwo.normalizedFeaturesF64Hex.slice(170, 251)).not.toEqual(
+      projectionOne.normalizedFeaturesF64Hex.slice(170, 251),
     );
     expect(projectionTwo.rawFeaturesF64Hex.slice(251)).not.toEqual(
       projectionOne.rawFeaturesF64Hex.slice(251),

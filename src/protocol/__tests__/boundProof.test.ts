@@ -218,20 +218,45 @@ describe("native bound proof preparation and transaction", () => {
       preparedRequest: request,
     };
     const { ctx, bound } = programs();
-    const instructions = await buildBoundProofInstructions(
+    await expect(
+      buildBoundProofInstructions(
+        ctx,
+        bound,
+        manifest,
+        proof,
+        Buffer.from(commitments.commitmentNew, "hex"),
+        [...nonce],
+      ),
+    ).rejects.toThrow("validator-signed update receipt");
+    const v4Message = Buffer.alloc(136);
+    Buffer.from("entros-validator-receipt-v4\0", "ascii").copy(v4Message, 0);
+    v4Message[28] = 4;
+    v4Message.writeUInt16LE(1, 29);
+    wallet.publicKey.toBuffer().copy(v4Message, 31);
+    Buffer.from(commitments.commitmentNew, "hex").copy(v4Message, 63);
+    v4Message.writeBigInt64LE(1_790_000_000n, 95);
+    Buffer.alloc(32, 9).copy(v4Message, 103);
+    v4Message[135] = 1;
+    const withReceipt = await buildBoundProofInstructions(
       ctx,
       bound,
       manifest,
       proof,
       Buffer.from(commitments.commitmentNew, "hex"),
       [...nonce],
+      {
+        validator_pubkey_hex: "8c".repeat(32),
+        signature_hex: "ab".repeat(64),
+        message_hex: v4Message.toString("hex"),
+      },
     );
-    expect(instructions).toHaveLength(4);
-    expect(instructions[2]!.keys[0]!.pubkey.equals(wallet.publicKey)).toBe(true);
+    expect(withReceipt).toHaveLength(4);
+    expect(withReceipt[1]!.keys[0]!.pubkey.equals(wallet.publicKey)).toBe(true);
     expect(
-      instructions[3]!.keys[2]!.pubkey.equals(proofRequestStateAddress(wallet.publicKey, anchor)),
+      withReceipt[3]!.keys[2]!.pubkey.equals(proofRequestStateAddress(wallet.publicKey, anchor)),
     ).toBe(true);
-    expect(instructions[2]!.data.subarray(-8).readBigUInt64LE()).toBe(request.action.validUntil);
+    expect(withReceipt[1]!.data.subarray(-8).readBigUInt64LE()).toBe(request.action.validUntil);
+    expect(withReceipt[2]!.data.length).toBe(16 + 32 + 64 + 32);
     const changed = {
       ...proof,
       publicInputs: [
