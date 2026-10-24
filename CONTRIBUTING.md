@@ -4,7 +4,7 @@ Thanks for your interest. This document covers the contribution flow and the non
 
 ## Getting set up
 
-1. Install Node 24.19.0 from `.nvmrc`.
+1. Install Node 24.22.1 from `.nvmrc`.
 2. `cp .env.example .env` and fill in values.
 3. `npm ci`.
 4. `npm run start`.
