@@ -21,16 +21,29 @@ import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 import * as mwa from "@/wallet/mwa";
 
+import { dropPairedAuthorization } from "./pairedAuthorizationBuffer";
 import { presets } from "./presets";
 import {
   ConnectionState,
   FailureBucket,
+  FailureScreen,
   IdentityState,
   MockPreset,
   VerificationEvent,
   VerifyIntent,
   WalletKind,
 } from "./types";
+
+const COMMITMENT_HEX = /^0x([0-9a-fA-F]{64})$/;
+
+/** The 32 commitment bytes of the identity's `0x` hex, or null when it holds none. */
+function chainCommitmentBytes(commitment: string | null): Uint8Array | null {
+  const hex = commitment === null ? undefined : COMMITMENT_HEX.exec(commitment)?.[1];
+  if (!hex) return null;
+  return Uint8Array.from({ length: 32 }, (_, index) =>
+    Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16),
+  );
+}
 
 /**
  * Width of one Trust Score activity bin, mirroring `BIN_SIZE_SECS` in
@@ -68,6 +81,8 @@ interface AppState {
      *  failure screen flips to "reset" when the user taps Reset baseline. */
     intent: VerifyIntent;
   };
+  /** What the failure screen shows next. Set by the screen that routes there. */
+  failureScreen: FailureScreen | null;
   dev: {
     forceOutcome: "success" | FailureBucket | null;
     /** Currently-active demo preset, or null when the app is showing real
@@ -117,6 +132,7 @@ type Action =
   | { type: "resetBaseline" }
   | { type: "setWalletMenuOpen"; open: boolean }
   | { type: "setFlowIntent"; intent: VerifyIntent }
+  | { type: "setFailureScreen"; screen: FailureScreen }
   | { type: "setForceOutcome"; outcome: "success" | FailureBucket | null }
   | { type: "hydrateIdentity"; identity: IdentityState }
   | { type: "hydrateIdentityCold" };
@@ -130,6 +146,7 @@ const initialState: AppState = {
   history: [],
   ui: { walletMenuOpen: false },
   flow: { intent: "verify" },
+  failureScreen: null,
   dev: { forceOutcome: null, activePreset: null, snapshot: null },
 };
 
@@ -350,6 +367,8 @@ const reducer = (state: AppState, action: Action): AppState => {
       return { ...state, ui: { ...state.ui, walletMenuOpen: action.open } };
     case "setFlowIntent":
       return { ...state, flow: { intent: action.intent } };
+    case "setFailureScreen":
+      return { ...state, failureScreen: action.screen };
     case "setForceOutcome":
       return { ...state, dev: { ...state.dev, forceOutcome: action.outcome } };
     case "hydrateIdentity":
@@ -386,6 +405,8 @@ interface AppStateContextValue extends AppState {
   openWalletMenu: () => void;
   closeWalletMenu: () => void;
   setFlowIntent: (intent: VerifyIntent) => void;
+  /** Sets what the failure screen shows. Call it before routing there. */
+  setFailureScreen: (screen: FailureScreen) => void;
   recordAnchorRetry: () => number;
   clearAnchorRetries: () => void;
   setForceOutcome: (outcome: "success" | FailureBucket | null) => void;
@@ -635,6 +656,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       await mwa.disconnect(state.connection.authToken, state.connection.wallet);
     }
     await clearStored();
+    dropPairedAuthorization();
     dispatch({ type: "disconnected" });
   }, [clearStored, state.connection.authToken, state.connection.wallet]);
 
@@ -694,8 +716,18 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
         // parallel and clears both the AES envelope and the key. A real I/O
         // failure here is unusual but worth surfacing in dev — the next
         // loadBaseline tolerates orphan state (returns null, treats user as
-        // first-time) so the user is never blocked.
-        void wipeBaseline().catch((err: unknown) => {
+        // first-time) so the user is never blocked. Baselines are stored per
+        // wallet. The entry an earlier build kept for every wallet goes with
+        // a connected wallet only when it matches that wallet's chain
+        // commitment, and goes outright when no wallet is connected.
+        const wallet = state.connection.address;
+        const wipe = wallet
+          ? wipeBaseline(
+              { cluster: config.cluster, wallet },
+              chainCommitmentBytes(state.identity.commitment),
+            )
+          : wipeBaseline(null);
+        void wipe.catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           devWarn(`[Entros] wipeBaseline failed: ${message}`);
         });
@@ -704,6 +736,7 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
       openWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: true }),
       closeWalletMenu: () => dispatch({ type: "setWalletMenuOpen", open: false }),
       setFlowIntent,
+      setFailureScreen: (screen) => dispatch({ type: "setFailureScreen", screen }),
       recordAnchorRetry,
       clearAnchorRetries,
       setForceOutcome: (outcome) => dispatch({ type: "setForceOutcome", outcome }),

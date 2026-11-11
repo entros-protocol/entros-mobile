@@ -15,6 +15,10 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 export const findIdentityPda = (wallet: PublicKey, anchorProgramId: PublicKey): PublicKey =>
   PublicKey.findProgramAddressSync([enc("identity"), wallet.toBuffer()], anchorProgramId)[0];
 
+/** migration PDA: the record an identity migration writes for the wallet it moved to. */
+export const findMigrationPda = (wallet: PublicKey, anchorProgramId: PublicKey): PublicKey =>
+  PublicKey.findProgramAddressSync([enc("migration"), wallet.toBuffer()], anchorProgramId)[0];
+
 /** mint PDA — the wallet-bound non-transferable Token-2022 mint. */
 export const findMintPda = (wallet: PublicKey, anchorProgramId: PublicKey): PublicKey =>
   PublicKey.findProgramAddressSync([enc("mint"), wallet.toBuffer()], anchorProgramId)[0];

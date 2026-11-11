@@ -21,10 +21,15 @@
 //   auth token already operates under.
 // - JSON.stringify of the plaintext is a transient string; GC reclaims it
 //   after the encrypt call returns.
+//
+// Each wallet on each cluster has its own envelope and key, so a second
+// wallet on the same phone never replaces the first wallet's baseline.
 
 import { gcm } from "@noble/ciphers/aes.js";
 import { bytesToHex, hexToBytes, randomBytes } from "@noble/ciphers/utils.js";
 
+import { bigintToBytes32 } from "@/hashing";
+import { devWarn } from "@/lib/log";
 import { deleteSecure, getSecure, SecureKeys, setSecure } from "@/storage/secure";
 
 const ENVELOPE_VERSION = 1;
@@ -55,25 +60,87 @@ export interface StoredBaseline {
   projectionVersion: number;
 }
 
+/** The wallet and cluster a baseline belongs to. */
+export interface BaselineScope {
+  cluster: string;
+  wallet: string;
+}
+
 export interface PreparedBaseline {
+  scope: BaselineScope;
   serializedEnvelope: string;
 }
 
-const getOrCreateAesKey = async (): Promise<Uint8Array> => {
-  const existing = await getSecure(SecureKeys.BASELINE_KEY);
+interface EntryKeys {
+  envelope: string;
+  key: string;
+  /**
+   * Set by a reset of a wallet's baseline, cleared when the wallet stores a
+   * new one. Holds the lowercase hex of the chain commitment at the reset, or
+   * "*" when it was unknown. Only a wallet's own entry has one.
+   */
+  erased?: string;
+}
+
+const ERASED_ANY = "*";
+
+const LEGACY_ENTRY: EntryKeys = {
+  envelope: SecureKeys.LEGACY_BASELINE_ENVELOPE,
+  key: SecureKeys.LEGACY_BASELINE_KEY,
+};
+
+// Secure-store keys accept letters, digits, ".", "-" and "_" alone.
+const CLUSTER_PATTERN = /^[A-Za-z0-9-]{1,32}$/;
+const WALLET_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+const entryFor = (scope: BaselineScope): EntryKeys => {
+  if (!CLUSTER_PATTERN.test(scope.cluster) || !WALLET_PATTERN.test(scope.wallet)) {
+    throw new Error("A baseline scope needs a cluster name and a base58 wallet address.");
+  }
+  const prefix = `baseline.${scope.cluster}.${scope.wallet}`;
+  return { envelope: `${prefix}.envelope`, key: `${prefix}.key`, erased: `${prefix}.erased` };
+};
+
+export interface PrepareBaselineOptions {
+  /**
+   * Treat a key entry the store cannot read as absent and write a new key.
+   * Only for a caller that needs nothing from the stored envelope: the new key
+   * replaces the old one at once, while the envelope it opens stays until
+   * {@link persistPreparedBaseline} runs.
+   */
+  replaceUnreadableKey?: boolean;
+}
+
+const getOrCreateAesKey = async (
+  entry: EntryKeys,
+  replaceUnreadableKey: boolean,
+): Promise<Uint8Array> => {
+  let existing: string | null;
+  try {
+    existing = await getSecure(entry.key);
+  } catch (err) {
+    if (!replaceUnreadableKey) throw err;
+    // An entry that cannot be read can open nothing.
+    existing = null;
+  }
   if (existing) return hexToBytes(existing);
   const key = randomBytes(AES_KEY_BYTES);
-  await setSecure(SecureKeys.BASELINE_KEY, bytesToHex(key));
+  await setSecure(entry.key, bytesToHex(key));
   return key;
 };
 
 /**
- * Encrypt and persist a baseline. Replaces any prior envelope under the
- * same secure-store key. Throws on secure-store I/O failure (caller decides
- * whether to fail the verify flow or log + continue).
+ * Encrypt a baseline for one wallet and cluster. Nothing replaces the stored
+ * envelope until {@link persistPreparedBaseline} runs. Throws on secure-store
+ * I/O failure or on a scope that cannot name a secure-store entry. A key that
+ * reads back is always reused.
  */
-export const prepareBaseline = async (baseline: StoredBaseline): Promise<PreparedBaseline> => {
-  const key = await getOrCreateAesKey();
+export const prepareBaseline = async (
+  scope: BaselineScope,
+  baseline: StoredBaseline,
+  { replaceUnreadableKey = false }: PrepareBaselineOptions = {},
+): Promise<PreparedBaseline> => {
+  const key = await getOrCreateAesKey(entryFor(scope), replaceUnreadableKey);
   const iv = randomBytes(IV_BYTES);
   const plaintext = new TextEncoder().encode(JSON.stringify(baseline));
   const ct = gcm(key, iv).encrypt(plaintext);
@@ -82,30 +149,37 @@ export const prepareBaseline = async (baseline: StoredBaseline): Promise<Prepare
     iv: bytesToHex(iv),
     ct: bytesToHex(ct),
   };
-  return { serializedEnvelope: JSON.stringify(envelope) };
+  return { scope: { ...scope }, serializedEnvelope: JSON.stringify(envelope) };
 };
 
 export const persistPreparedBaseline = async (prepared: PreparedBaseline): Promise<void> => {
-  await setSecure(SecureKeys.BASELINE_ENVELOPE, prepared.serializedEnvelope);
+  const entry = entryFor(prepared.scope);
+  await setSecure(entry.envelope, prepared.serializedEnvelope);
+  if (!entry.erased) return;
+  try {
+    await deleteSecure(entry.erased);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    devWarn(`[Entros] baseline reset marker kept: ${message}`);
+  }
 };
 
-export const storeBaseline = async (baseline: StoredBaseline): Promise<void> => {
-  await persistPreparedBaseline(await prepareBaseline(baseline));
+export const storeBaseline = async (
+  scope: BaselineScope,
+  baseline: StoredBaseline,
+): Promise<void> => {
+  await persistPreparedBaseline(await prepareBaseline(scope, baseline));
 };
 
-/**
- * Load and decrypt the persisted baseline. Returns null when:
- * - No envelope is stored (first-time user).
- * - Envelope JSON is malformed (corrupt secure-store value).
- * - Envelope version is unrecognised (forward-compat downgrade).
- * - AES key is missing despite envelope being present (mismatched wipe).
- * - Decryption fails (key/IV/ciphertext mismatch — treat as corrupt).
- *
- * In every null case, the verify flow treats the user as first-time and
- * mints a fresh anchor on the next cycle.
- */
-export const loadBaseline = async (): Promise<StoredBaseline | null> => {
-  const raw = await getSecure(SecureKeys.BASELINE_ENVELOPE);
+interface ReadEntry {
+  baseline: StoredBaseline;
+  serializedEnvelope: string;
+  keyHex: string;
+}
+
+/** Decrypts one entry. Null when it is absent, malformed or does not decrypt. */
+const readEntry = async (entry: EntryKeys): Promise<ReadEntry | null> => {
+  const raw = await getSecure(entry.envelope);
   if (!raw) return null;
 
   let envelope: Envelope;
@@ -116,7 +190,7 @@ export const loadBaseline = async (): Promise<StoredBaseline | null> => {
   }
   if (envelope.v !== ENVELOPE_VERSION) return null;
 
-  const keyHex = await getSecure(SecureKeys.BASELINE_KEY);
+  const keyHex = await getSecure(entry.key);
   if (!keyHex) return null;
 
   try {
@@ -133,28 +207,168 @@ export const loadBaseline = async (): Promise<StoredBaseline | null> => {
       return null;
     }
     return {
-      fingerprint: decoded.fingerprint,
-      salt: decoded.salt,
-      commitment: decoded.commitment,
-      timestamp: decoded.timestamp,
-      projectionVersion:
-        typeof decoded.projectionVersion === "number" ? decoded.projectionVersion : 0,
+      baseline: {
+        fingerprint: decoded.fingerprint,
+        salt: decoded.salt,
+        commitment: decoded.commitment,
+        timestamp: decoded.timestamp,
+        projectionVersion:
+          typeof decoded.projectionVersion === "number" ? decoded.projectionVersion : 0,
+      },
+      serializedEnvelope: raw,
+      keyHex,
     };
   } catch {
     return null;
   }
 };
 
+const DECIMAL = /^[0-9]{1,78}$/;
+
+/** Whether the stored commitment equals the 32-byte big-endian chain value. */
+const matchesChain = (baseline: StoredBaseline, chainCommitment: Uint8Array): boolean => {
+  if (!DECIMAL.test(baseline.commitment) || chainCommitment.length !== 32) return false;
+  const value = BigInt(baseline.commitment);
+  if (value >> BigInt(256) !== BigInt(0)) return false;
+  const stored = bigintToBytes32(value);
+  return stored.every((byte, index) => byte === chainCommitment[index]);
+};
+
 /**
- * Wipe both the envelope and the AES key after a confirmed identity reset.
- *
- * Both deletes run in parallel. A partial failure leaves orphan state that
- * loadBaseline tolerates (returns null), so the next cycle still mints a
- * fresh anchor cleanly.
+ * Copies `read` from one entry to another, then deletes the source. The new
+ * key and envelope are written before anything is deleted, so a failure never
+ * leaves the baseline without a copy. A failed write keeps the source, and a
+ * failed delete leaves a stale source that no later load matches.
  */
-export const wipeBaseline = async (): Promise<void> => {
+const moveEntry = async (to: EntryKeys, from: EntryKeys, read: ReadEntry): Promise<void> => {
+  try {
+    await setSecure(to.key, read.keyHex);
+    await setSecure(to.envelope, read.serializedEnvelope);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    devWarn(`[Entros] baseline move failed: ${message}`);
+    return;
+  }
+  try {
+    await Promise.all([deleteSecure(from.envelope), deleteSecure(from.key)]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    devWarn(`[Entros] baseline move left its source: ${message}`);
+  }
+};
+
+/** Deletes an entry a reset already erased in intent. A failed delete is logged. */
+const discardEntry = async (entry: EntryKeys, read: ReadEntry): Promise<void> => {
+  read.baseline.fingerprint.fill(0);
+  try {
+    await Promise.all([deleteSecure(entry.envelope), deleteSecure(entry.key)]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    devWarn(`[Entros] erased baseline delete failed: ${message}`);
+  }
+};
+
+/** Whether a reset of `entry` covers `chainCommitment`. */
+const erasedFor = async (entry: EntryKeys, chainCommitment: Uint8Array): Promise<boolean> => {
+  if (!entry.erased) return false;
+  const marker = await getSecure(entry.erased);
+  return marker === ERASED_ANY || marker === bytesToHex(chainCommitment);
+};
+
+/**
+ * Loads the baseline for one wallet and cluster when its commitment equals
+ * the wallet's on-chain commitment. When the wallet's own entry is absent or
+ * stale, the wallet takes the unscoped entry an earlier build wrote, when that
+ * entry matches its chain commitment. An unscoped entry that matches no
+ * wallet stays in place.
+ *
+ * `previousWallet` names the wallet the identity migrated from, when the
+ * chain records one. With no matching own or unscoped entry, that wallet's
+ * entry on the same cluster moves to this wallet when it matches the chain
+ * commitment. One hop only: the earlier wallet's own history is not followed.
+ *
+ * After a reset of this wallet's baseline, the wallet adopts nothing until it
+ * stores a new baseline. A matching entry found then is the one the reset was
+ * meant to erase, so it is deleted.
+ *
+ * Returns null when no matching entry exists, or when the entry is
+ * malformed, has an unknown version, lacks its key, or fails to decrypt.
+ * The verify flow then routes the wallet to the baseline-missing screen.
+ */
+export const loadBaseline = async (
+  scope: BaselineScope,
+  chainCommitment: Uint8Array,
+  previousWallet?: string | null,
+): Promise<StoredBaseline | null> => {
+  const entry = entryFor(scope);
+  const own = await readEntry(entry);
+  if (own) {
+    if (matchesChain(own.baseline, chainCommitment)) return own.baseline;
+    // A stale own entry stays unless a matching entry below replaces it.
+    own.baseline.fingerprint.fill(0);
+  }
+  const erased = await erasedFor(entry, chainCommitment);
+
+  const legacy = await readEntry(LEGACY_ENTRY);
+  if (legacy && matchesChain(legacy.baseline, chainCommitment)) {
+    if (!erased) {
+      await moveEntry(entry, LEGACY_ENTRY, legacy);
+      return legacy.baseline;
+    }
+    await discardEntry(LEGACY_ENTRY, legacy);
+  }
+  legacy?.baseline.fingerprint.fill(0);
+
+  if (!previousWallet || previousWallet === scope.wallet) return null;
+  const previousEntry = entryFor({ cluster: scope.cluster, wallet: previousWallet });
+  const previous = await readEntry(previousEntry);
+  if (!previous) return null;
+  if (!matchesChain(previous.baseline, chainCommitment)) {
+    previous.baseline.fingerprint.fill(0);
+    return null;
+  }
+  if (erased) {
+    await discardEntry(previousEntry, previous);
+    return null;
+  }
+  await moveEntry(entry, previousEntry, previous);
+  return previous.baseline;
+};
+
+/**
+ * Erases the baseline the person asked to erase: the envelope and key of
+ * `scope`. The unscoped entry an earlier build wrote may belong to another
+ * wallet, so with a wallet connected it goes now only when it decrypts and
+ * its commitment equals `chainCommitment`, the wallet's commitment on chain.
+ * An unknown commitment or a mismatch leaves it for the wallet it belongs to.
+ * The wallet also gets a reset marker, so the next load adopts no other entry
+ * for that commitment and deletes any it finds. With no wallet connected,
+ * `scope` is null and the unscoped entry is all there is to name, so it goes.
+ *
+ * A partial failure leaves orphan state that loadBaseline tolerates (returns
+ * null), so the next cycle still routes to a fresh baseline.
+ */
+export const wipeBaseline = async (
+  scope: BaselineScope | null,
+  chainCommitment: Uint8Array | null = null,
+): Promise<void> => {
+  const entry = scope ? entryFor(scope) : null;
+  let wipeLegacy = entry === null;
+  if (entry && chainCommitment) {
+    // An unreadable unscoped entry cannot be matched, so it stays and the
+    // wallet's own entry is still erased.
+    const legacy = await readEntry(LEGACY_ENTRY).catch(() => null);
+    wipeLegacy = legacy !== null && matchesChain(legacy.baseline, chainCommitment);
+    legacy?.baseline.fingerprint.fill(0);
+  }
   await Promise.all([
-    deleteSecure(SecureKeys.BASELINE_ENVELOPE),
-    deleteSecure(SecureKeys.BASELINE_KEY),
+    ...(entry ? [deleteSecure(entry.envelope), deleteSecure(entry.key)] : []),
+    // Another entry that matches this wallet's chain may still be on the
+    // phone, under the wallet the identity migrated from or unscoped. The
+    // marker keeps the next load from adopting it.
+    ...(entry?.erased
+      ? [setSecure(entry.erased, chainCommitment ? bytesToHex(chainCommitment) : ERASED_ANY)]
+      : []),
+    ...(wipeLegacy ? [deleteSecure(LEGACY_ENTRY.envelope), deleteSecure(LEGACY_ENTRY.key)] : []),
   ]);
 };

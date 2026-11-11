@@ -1,6 +1,10 @@
 import { act } from "react";
 import { createRoot } from "test-renderer";
 
+import { wipeBaseline } from "@/identity/baseline";
+import { fetchIdentityState, toAppStateIdentity } from "@/protocol/identity";
+import type { OnChainIdentity } from "@/protocol/identity";
+
 import { AppStateProvider, useAppState } from "../AppState";
 
 const mockConnect = jest.fn();
@@ -9,7 +13,17 @@ const mockGetSecure = jest.fn();
 const mockSetSecure = jest.fn();
 const mockDeleteSecure = jest.fn();
 
-jest.mock("@/config", () => ({ config: { programs: {} }, getConnection: jest.fn() }));
+const mockPrograms: { entrosAnchor?: unknown } = {};
+
+jest.mock("@/config", () => ({
+  config: {
+    cluster: "devnet",
+    get programs() {
+      return mockPrograms;
+    },
+  },
+  getConnection: jest.fn(),
+}));
 jest.mock("@/identity/baseline", () => ({ wipeBaseline: jest.fn() }));
 jest.mock("@/lib/log", () => ({ devWarn: jest.fn() }));
 jest.mock("@/protocol/identity", () => ({
@@ -171,6 +185,102 @@ describe("wallet-scoped auth token persistence", () => {
     expect(context!.recordAnchorRetry()).toBe(2);
     await act(async () => context!.resetComplete("reset"));
     expect(context!.recordAnchorRetry()).toBe(2);
+    await act(async () => tree.unmount());
+  });
+
+  test("a settings reset wipes the connected wallet's baseline on this cluster", async () => {
+    const wallet = "SysvarRent111111111111111111111111111111111";
+    jest.mocked(wipeBaseline).mockReset().mockResolvedValue(undefined);
+    mockConnect.mockResolvedValue({ address: wallet, authToken: "token", wallet: "phantom" });
+    let context: Context | null = null;
+    const Consumer = () => {
+      context = useAppState();
+      return null;
+    };
+    const tree = createRoot();
+    await act(async () =>
+      tree.render(
+        <AppStateProvider>
+          <Consumer />
+        </AppStateProvider>,
+      ),
+    );
+    // Before a wallet connects, the wipe covers the entry earlier builds kept for every wallet.
+    await act(async () => context!.resetBaseline());
+    expect(wipeBaseline).toHaveBeenLastCalledWith(null);
+    await act(async () => context!.connect("phantom"));
+    await act(async () => context!.resetBaseline());
+    // With no chain commitment known, the unscoped entry cannot be matched to this wallet.
+    expect(wipeBaseline).toHaveBeenLastCalledWith({ cluster: "devnet", wallet }, null);
+    await act(async () => tree.unmount());
+  });
+
+  test("a settings reset names the wallet's chain commitment for the unscoped entry", async () => {
+    const wallet = "SysvarRent111111111111111111111111111111111";
+    jest.mocked(wipeBaseline).mockReset().mockResolvedValue(undefined);
+    mockConnect.mockResolvedValue({ address: wallet, authToken: "token", wallet: "phantom" });
+    mockPrograms.entrosAnchor = "anchor-program";
+    jest.mocked(fetchIdentityState).mockResolvedValue({} as OnChainIdentity);
+    jest.mocked(toAppStateIdentity).mockReturnValue({
+      hasAnchor: true,
+      trustScore: 1,
+      verifications: 1,
+      lastVerifiedAt: null,
+      commitment: `0x${"ab".repeat(32)}`,
+      mint: null,
+      createdAt: null,
+      recentTimestamps: [],
+      lastResetAt: null,
+    });
+    let context: Context | null = null;
+    const Consumer = () => {
+      context = useAppState();
+      return null;
+    };
+    const tree = createRoot();
+    try {
+      await act(async () =>
+        tree.render(
+          <AppStateProvider>
+            <Consumer />
+          </AppStateProvider>,
+        ),
+      );
+      await act(async () => context!.connect("phantom"));
+      await act(async () => {
+        await context!.hydrateIdentity({ force: true });
+      });
+      expect(context!.identity.commitment).toBe(`0x${"ab".repeat(32)}`);
+      await act(async () => context!.resetBaseline());
+      expect(wipeBaseline).toHaveBeenLastCalledWith(
+        { cluster: "devnet", wallet },
+        new Uint8Array(32).fill(0xab),
+      );
+    } finally {
+      delete mockPrograms.entrosAnchor;
+      await act(async () => tree.unmount());
+    }
+  });
+
+  test("holds what the failure screen shows until the next failure replaces it", async () => {
+    let context: Context | null = null;
+    const Consumer = () => {
+      context = useAppState();
+      return null;
+    };
+    const tree = createRoot();
+    await act(async () =>
+      tree.render(
+        <AppStateProvider>
+          <Consumer />
+        </AppStateProvider>,
+      ),
+    );
+    expect(context!.failureScreen).toBeNull();
+    await act(async () => context!.setFailureScreen({ bucket: "rate-limited", retryAfterSec: 30 }));
+    expect(context!.failureScreen).toEqual({ bucket: "rate-limited", retryAfterSec: 30 });
+    await act(async () => context!.setFailureScreen({ bucket: "generic" }));
+    expect(context!.failureScreen).toEqual({ bucket: "generic" });
     await act(async () => tree.unmount());
   });
 });

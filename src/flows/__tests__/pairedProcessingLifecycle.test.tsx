@@ -3,6 +3,11 @@ import { createRoot } from "test-renderer";
 import Processing from "../../../app/verify/processing";
 import type { PairedVerificationContext } from "../pairedVerification";
 import { WALLET } from "./pairedFixtures";
+import {
+  dropPairedAuthorization,
+  holdPairedAuthorization,
+  usablePairedAuthorization,
+} from "@/state/pairedAuthorizationBuffer";
 
 const mockOriginalWallet = WALLET;
 let mockAddress: string | null = WALLET;
@@ -17,6 +22,7 @@ const mockRun = jest.fn();
 const mockPrepareSingle = jest.fn();
 const mockFail = jest.fn();
 const mockSetFlowIntent = jest.fn();
+const mockSetFailureScreen = jest.fn();
 const mockRecordAnchorRetry = jest.fn();
 const mockResetComplete = jest.fn();
 const mockSegment = new Uint8Array([1, 2, 3]);
@@ -40,6 +46,7 @@ jest.mock("@/state/AppState", () => ({
     fail: mockFail,
     setForceOutcome: jest.fn(),
     setFlowIntent: mockSetFlowIntent,
+    setFailureScreen: mockSetFailureScreen,
     recordAnchorRetry: mockRecordAnchorRetry,
     updateAuthToken: jest.fn(),
   }),
@@ -72,6 +79,7 @@ jest.mock("@/state/pairedSessionBuffer", () => ({
           },
           motion: { samples: [] },
           touch: { samples: [], curveTrace: [] },
+          authorization: { wallet: mockOriginalWallet, challenge: "22".repeat(32) },
         }
       : null,
   clearPairedSession: jest.fn(),
@@ -141,15 +149,46 @@ test.each([2, 1, 0])(
     await act(async () => mockResolve({ kind: "ready", extracted: {}, release: mockRelease }));
     expect(mockContext.flowIntent).toBe("reset");
     expect(mockRecordAnchorRetry).toHaveBeenCalledTimes(1);
-    expect(mockReplace).toHaveBeenCalledWith({
-      pathname: "/verify/failure",
-      params: { bucket: "soft", reason: "anchor_retry", attemptsRemaining: String(remaining) },
+    expect(mockSetFailureScreen).toHaveBeenCalledWith({
+      bucket: "soft",
+      reason: "anchor_retry",
+      attemptsRemaining: remaining,
     });
+    expect(mockReplace).toHaveBeenCalledWith("/verify/failure");
     expect(mockFail).not.toHaveBeenCalled();
     expect(mockSetFlowIntent).not.toHaveBeenCalled();
     expect(mockVerify).not.toHaveBeenCalled();
     expect(mockResetComplete).not.toHaveBeenCalled();
     expect(mockSegment).toEqual(new Uint8Array(3));
+    await act(async () => tree.unmount());
+  },
+);
+
+test.each([
+  ["authorization_invalid", true],
+  ["session_consumed", false],
+])(
+  "a finalize the relayer refused with %s drops the held authorization: %s",
+  async (reason, dropped) => {
+    dropPairedAuthorization();
+    holdPairedAuthorization({
+      wallet: WALLET,
+      challenge: "22".repeat(32),
+      expiresAt: 1_800_000_000,
+      origin: "4b".repeat(16),
+      mac: "92".repeat(32),
+      signatureHex: "cb".repeat(64),
+      lifetimeMs: 900_000,
+      requestedAt: { monotonicMs: performance.now(), wallMs: Date.now() },
+    });
+    mockRun.mockResolvedValue({ kind: "validation-failed", failure: { reason, status: 401 } });
+    const tree = createRoot();
+    await act(async () => tree.render(<Processing />));
+    await act(async () => mockResolve({ kind: "ready", extracted: {}, release: mockRelease }));
+    // The next attempt signs again only when the relayer refused the authorization itself.
+    expect(usablePairedAuthorization(WALLET) === null).toBe(dropped);
+    expect(mockSetFailureScreen).toHaveBeenCalledWith({ bucket: "soft", reason });
+    expect(mockFail).not.toHaveBeenCalled();
     await act(async () => tree.unmount());
   },
 );
@@ -189,15 +228,27 @@ test("legacy baseline refusal reaches the fatal paired-required surface", async 
   const tree = createRoot();
   await act(async () => tree.render(<Processing />));
   expect(mockPrepareSingle).toHaveBeenCalledTimes(1);
-  expect(mockReplace).toHaveBeenCalledWith({
-    pathname: "/verify/failure",
-    params: {
-      bucket: "session-error",
-      reason: "paired_required",
-      message: "paired_required",
-    },
+  expect(mockSetFailureScreen).toHaveBeenCalledWith({
+    bucket: "session-error",
+    reason: "paired_required",
+    message: "paired_required",
   });
+  expect(mockReplace).toHaveBeenCalledWith("/verify/failure");
   expect(mockRecordAnchorRetry).not.toHaveBeenCalled();
   expect(mockVerify).not.toHaveBeenCalled();
+  await act(async () => tree.unmount());
+});
+
+test("a commitment parity failure records a report and shows its code", async () => {
+  mockPaired = false;
+  mockRun.mockResolvedValue({ kind: "failed", bucket: "report-bug", message: "commitment_parity" });
+  const tree = createRoot();
+  await act(async () => tree.render(<Processing />));
+  expect(mockFail).toHaveBeenCalledWith("report-bug");
+  expect(mockSetFailureScreen).toHaveBeenCalledWith({
+    bucket: "report-bug",
+    message: "commitment_parity",
+  });
+  expect(mockReplace).toHaveBeenCalledWith("/verify/failure");
   await act(async () => tree.unmount());
 });

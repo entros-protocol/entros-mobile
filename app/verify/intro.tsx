@@ -19,6 +19,7 @@ import { Screen } from "@/components/primitives/Screen";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
 import { config, getConnection } from "@/config";
+import { ensurePairedAuthorization } from "@/flows/pairedAuthorization";
 import { holdSingleCaptureChallenge } from "@/flows/singleCaptureChallenge";
 import { devWarn } from "@/lib/log";
 import {
@@ -31,6 +32,7 @@ import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
 import { useAppState } from "@/state/AppState";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
+import { WalletSession } from "@/wallet/session";
 
 interface Step {
   Icon: React.FC<{ size?: number; color?: string }>;
@@ -123,7 +125,7 @@ const PulseIcon = ({
 export default function VerifyIntro() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { connection } = useAppState();
+  const { connection, updateAuthToken } = useAppState();
   const [pending, setPending] = useState(false);
   const [feeLabel, setFeeLabel] = useState<string>(DEFAULT_FEE_LABEL);
   // Paired sessions run under projection 1 only. With the flag on and another
@@ -199,6 +201,47 @@ export default function VerifyIntro() {
       }
 
       if (usePaired) {
+        // The wallet authorizes its paired sessions here, before any recorder
+        // starts. One signature serves the visit, so a later attempt skips this.
+        const { wallet: walletKind, authToken } = connection;
+        if (!walletKind || !authToken) {
+          router.replace("/connect");
+          return;
+        }
+        const authorized = await ensurePairedAuthorization(
+          new WalletSession(wallet, walletKind, authToken, updateAuthToken),
+        );
+        switch (authorized.kind) {
+          case "declined":
+            Alert.alert(
+              "Wallet authorization needed",
+              "Approve the message in your wallet to start verification.",
+            );
+            return;
+          case "wallet-failed":
+            devWarn(`[Entros] paired authorization signing failed: ${authorized.message}`);
+            Alert.alert("Wallet couldn't sign", "Reconnect your wallet, then try again.");
+            return;
+          case "wallet-unresponsive":
+            Alert.alert("Wallet did not respond", "Open your wallet and try again.");
+            return;
+          case "expired":
+            Alert.alert(
+              "Authorization expired",
+              "The wallet prompt stayed open too long. Try again.",
+            );
+            return;
+          case "failed":
+            Alert.alert(
+              "Couldn't start verification",
+              authorized.failure.status === 429
+                ? "Too many requests. Wait a moment, then try again."
+                : "The verification service is unavailable. Check your network and try again.",
+            );
+            return;
+          case "ready":
+            break;
+        }
         // The rounds screen opens the session itself, so its first reveal
         // arrives only once the recorder is listening.
         router.replace("/verify/rounds");

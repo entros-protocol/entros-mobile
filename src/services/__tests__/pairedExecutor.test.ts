@@ -11,7 +11,12 @@ import {
 import { bytes, traceSessionV2 as traceSession } from "@/paired/__tests__/vectorsV2";
 
 import { PairedServiceError } from "../pairedErrors";
-import { commitPairedRound, finalizePairedSession, openPairedSession } from "../pairedExecutor";
+import {
+  commitPairedRound,
+  finalizePairedSession,
+  openPairedSession,
+  requestPairedAuthorizationGrant,
+} from "../pairedExecutor";
 import { postValidationJson, ValidationTransportError } from "../validationJsonTransport";
 
 jest.mock("@/config", () => ({
@@ -79,7 +84,90 @@ beforeEach(() => {
   postMock.mockReset();
 });
 
+const AUTHORIZATION = {
+  challenge: "22".repeat(32),
+  expires_at: 1_800_000_000,
+  origin: "4b".repeat(16),
+  mac: "92".repeat(32),
+  signature_hex: "cb".repeat(64),
+};
+
+describe("authorization grant", () => {
+  const grantJson = { ...AUTHORIZATION, expires_in: 900, signature_hex: undefined };
+
+  test("asks the executor origin for the wallet's grant with the API key", async () => {
+    respond(200, grantJson);
+    const requestedAt = { monotonicMs: 0, wallMs: 1_700_000_000_000 };
+    const granted = await requestPairedAuthorizationGrant(WALLET, {
+      readClock: () => requestedAt,
+    });
+    expect(granted).toEqual({
+      grant: {
+        challenge: AUTHORIZATION.challenge,
+        expiresAt: AUTHORIZATION.expires_at,
+        expiresInSecs: 900,
+        origin: AUTHORIZATION.origin,
+        mac: AUTHORIZATION.mac,
+      },
+      requestedAt,
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`https://executor.test/paired/authorization?wallet=${WALLET}`);
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+    expect(init.headers["X-API-Key"]).toBe("integrator-key");
+  });
+
+  test("names a relayer without the route by its 404", async () => {
+    respond(404, undefined);
+    expect(await failureOf(requestPairedAuthorizationGrant(WALLET))).toEqual({
+      reason: "unsupported_session",
+      status: 404,
+    });
+  });
+
+  test("reports a refusal, an unreachable relayer and a grant it cannot read", async () => {
+    respond(429, { reason: "ip_rate_limited", retry_after: 12 });
+    expect(await failureOf(requestPairedAuthorizationGrant(WALLET))).toEqual({
+      reason: "ip_rate_limited",
+      status: 429,
+      retryAfterSec: 12,
+    });
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    expect(await failureOf(requestPairedAuthorizationGrant(WALLET))).toEqual({
+      reason: "validation_unavailable",
+    });
+    respond(200, { ...grantJson, mac: "not-hex" });
+    expect((await failureOf(requestPairedAuthorizationGrant(WALLET))).reason).toBe(
+      "malformed_response",
+    );
+    // One request each. The person asks again.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("open", () => {
+  test("sends the wallet's authorization when the session has one", async () => {
+    respond(200, openJson());
+    await openPairedSession(WALLET, { ...clock(), authorization: AUTHORIZATION });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({
+      wallet: WALLET,
+      tier: "trace",
+      protocol_version: 2,
+      authorization: AUTHORIZATION,
+    });
+  });
+
+  test("reports a refused authorization without a retry", async () => {
+    respond(401, { reason: "authorization_invalid" });
+    const time = clock();
+    expect(
+      await failureOf(openPairedSession(WALLET, { ...time, authorization: AUTHORIZATION })),
+    ).toEqual({ reason: "authorization_invalid", status: 401 });
+    expect(time.sleeps).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   test("posts the wallet and tier to the executor origin with the API key", async () => {
     respond(200, openJson());
     const time = clock();

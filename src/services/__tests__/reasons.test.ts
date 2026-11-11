@@ -40,6 +40,8 @@ const PAIRED_RETRY: VerificationReason[] = [
   "session_not_ready",
   "round_not_outstanding",
   "session_busy",
+  "authorization_required",
+  "authorization_invalid",
 ];
 const PAIRED_WAIT: VerificationReason[] = [
   "finalize_in_progress",
@@ -226,6 +228,14 @@ describe("derived sets", () => {
     expect(isClientOriginReason("validation_timeout")).toBe(true);
     expect(isClientOriginReason("validation_unavailable")).toBe(true);
     expect(isClientOriginReason("session_active")).toBe(true);
+  });
+
+  it("offers a new attempt once the wallet signs again, and charges nothing", () => {
+    for (const reason of ["authorization_required", "authorization_invalid"]) {
+      expect(reasonDisposition(reason)).toBe("retry");
+      // The relayer refuses the request before it judges anything.
+      expect(isClientOriginReason(reason)).toBe(true);
+    }
   });
 
   it("does not treat a server verdict as client-origin", () => {

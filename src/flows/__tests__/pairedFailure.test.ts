@@ -49,6 +49,8 @@ const PAIRED_REASONS: VerificationReason[] = [
   "session_not_ready",
   "round_not_outstanding",
   "session_busy",
+  "authorization_required",
+  "authorization_invalid",
   "finalize_in_progress",
   "session_active",
   "session_budget_exhausted",
@@ -75,20 +77,29 @@ describe("paired failure routing", () => {
   test.each(PAIRED_REASONS)("%s reaches a screen with a way forward", (reason) => {
     expect(isVerificationReason(reason)).toBe(true);
     const screen = pairedFailureScreen({ reason, status: 409 });
-    expect(SCREEN_BUCKETS.has(screen.params.bucket!)).toBe(true);
-    if (screen.params.bucket === "soft") {
+    expect(SCREEN_BUCKETS.has(screen.screen.bucket!)).toBe(true);
+    if (screen.screen.bucket === "soft") {
       // The soft screen keys its hint on the retryable set, which the type
       // system forces the screen to cover.
       expect(RETRYABLE_REASONS.has(reason)).toBe(true);
-      expect(screen.params.reason).toBe(reason);
+      expect(screen.screen.reason).toBe(reason);
       expect(screen.record).toBeNull();
+    }
+  });
+
+  test("a refused wallet authorization opens the retry screen and records no failure", () => {
+    for (const reason of ["authorization_required", "authorization_invalid"]) {
+      expect(pairedFailureScreen({ reason, status: 401 })).toEqual({
+        screen: { bucket: "soft", reason },
+        record: null,
+      });
     }
   });
 
   test("session limits show a countdown and are not recorded as failures", () => {
     for (const reason of SESSION_LIMITS) {
       expect(pairedFailureScreen({ reason, retryAfterSec: 20 })).toEqual({
-        params: { bucket: "session-busy", reason, retryAfter: "20" },
+        screen: { bucket: "session-busy", reason, retryAfterSec: 20 },
         record: null,
       });
     }
@@ -98,7 +109,7 @@ describe("paired failure routing", () => {
     for (const reason of COOLDOWN_REASONS) {
       if (SESSION_LIMITS.includes(reason)) continue;
       expect(pairedFailureScreen({ reason })).toEqual({
-        params: { bucket: "rate-limited", reason, retryAfter: "60" },
+        screen: { bucket: "rate-limited", reason, retryAfterSec: 60 },
         record: "rate-limited",
       });
     }
@@ -106,18 +117,18 @@ describe("paired failure routing", () => {
 
   test("protocol disagreements carry their reason and code to the session error screen", () => {
     expect(pairedFailureScreen({ reason: "final_digest_mismatch" })).toEqual({
-      params: {
+      screen: {
         bucket: "session-error",
         reason: "final_digest_mismatch",
         message: "final_digest_mismatch",
       },
       record: "session-error",
     });
-    expect(pairedFailureScreen({ reason: "invalid_request" }).params.reason).toBe(
+    expect(pairedFailureScreen({ reason: "invalid_request" }).screen.reason).toBe(
       "invalid_request",
     );
     expect(pairedFailureScreen({ reason: "payload_too_large", status: 413 })).toEqual({
-      params: { bucket: "report-bug", message: "payload_too_large" },
+      screen: { bucket: "report-bug", message: "payload_too_large" },
       record: "report-bug",
     });
   });
@@ -126,7 +137,7 @@ describe("paired failure routing", () => {
     "a refused finalize answer, %s, reaches the session error screen",
     (detail) => {
       expect(pairedFailureScreen({ detail })).toEqual({
-        params: { bucket: "session-error", message: detail },
+        screen: { bucket: "session-error", message: detail },
         record: "session-error",
       });
     },
@@ -134,21 +145,21 @@ describe("paired failure routing", () => {
 
   test("unknown and absent reasons fall to a screen with a retry, never a dead end", () => {
     expect(pairedFailureScreen({ reason: "projection_update_required", status: 409 })).toEqual({
-      params: { bucket: "generic", message: "projection_update_required" },
+      screen: { bucket: "generic", message: "projection_update_required" },
       record: "generic",
     });
-    expect(pairedFailureScreen({ reason: "toString" }).params.bucket).toBe("generic");
-    expect(pairedFailureScreen({ reason: "audio_bounds_exceeded" }).params.bucket).toBe("generic");
+    expect(pairedFailureScreen({ reason: "toString" }).screen.bucket).toBe("generic");
+    expect(pairedFailureScreen({ reason: "audio_bounds_exceeded" }).screen.bucket).toBe("generic");
     expect(pairedFailureScreen({ status: 400 })).toEqual({
-      params: { bucket: "generic" },
+      screen: { bucket: "generic" },
       record: "generic",
     });
     expect(pairedFailureScreen({ status: 502 })).toEqual({
-      params: { bucket: "relayer-down" },
+      screen: { bucket: "relayer-down" },
       record: "relayer-down",
     });
     expect(pairedFailureScreen({ detail: "AudioRecord read failed (-3)" })).toEqual({
-      params: { bucket: "generic", message: "AudioRecord read failed (-3)" },
+      screen: { bucket: "generic", message: "AudioRecord read failed (-3)" },
       record: "generic",
     });
   });

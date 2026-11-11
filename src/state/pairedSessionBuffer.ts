@@ -12,12 +12,15 @@
 //   slot never survives into the next verification attempt.
 
 import type { CompletedPairedRounds } from "@/flows/pairedSession";
+import type { PairedAuthorization } from "@/paired";
 import type { MotionCapture, TouchCapture } from "@/sensor/types";
 
 export interface PairedSessionHandoff {
   rounds: CompletedPairedRounds;
   motion: MotionCapture;
   touch: TouchCapture;
+  /** The wallet authorization the session opened with, or null when it opened with none. */
+  authorization: PairedAuthorization | null;
 }
 
 let pending: PairedSessionHandoff | null = null;

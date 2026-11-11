@@ -1,8 +1,9 @@
 import { extractFeatures, extractProjectionOneCompatibilityFeatures } from "@/extraction";
-import { bigintToBytes32, simhash } from "@/hashing";
+import { bigintToBytes32, computeCommitment, simhash } from "@/hashing";
 import { loadBaseline, persistPreparedBaseline, prepareBaseline } from "@/identity/baseline";
 import { generateSolanaProof } from "@/proof/prover";
-import { submitVerify } from "@/protocol/submit";
+import { devWarn } from "@/lib/log";
+import { submitRebaseline, submitReset, submitVerify } from "@/protocol/submit";
 import { resampleCurveTrace } from "@/sensor/curve";
 import { encodeAudioAsBase64 } from "@/sensor/encode";
 import type { SensorData } from "@/sensor/types";
@@ -18,7 +19,12 @@ import {
 } from "../verificationPipeline";
 
 jest.mock("@/config", () => ({
-  config: { relayerUrl: "https://executor.test", relayerApiKey: null, proofManifest: undefined },
+  config: {
+    cluster: "devnet",
+    relayerUrl: "https://executor.test",
+    relayerApiKey: null,
+    proofManifest: undefined,
+  },
   getConnection: jest.fn(),
 }));
 jest.mock("@/extraction", () => ({
@@ -45,6 +51,7 @@ jest.mock("@/protocol/submit", () => ({
 }));
 
 const WALLET = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+const PREVIOUS_WALLET = "SysvarRent111111111111111111111111111111111";
 const FEATURE_COUNT = 308;
 
 const validateMock = jest.mocked(validateFeaturesRequest);
@@ -132,7 +139,7 @@ beforeEach(() => {
   authorizeMock.mockReset();
   submitVerifyMock.mockReset();
   jest.mocked(loadBaseline).mockReset();
-  jest.mocked(prepareBaseline).mockReset().mockResolvedValue({ serializedEnvelope: "sealed" });
+  jest.mocked(prepareBaseline).mockReset().mockResolvedValue(sealed);
   jest.mocked(persistPreparedBaseline).mockReset().mockResolvedValue(undefined);
   jest.mocked(generateSolanaProof).mockReset();
   Object.defineProperty(globalThis, "__DEV__", { value: false, configurable: true });
@@ -177,6 +184,8 @@ describe("single capture validation step", () => {
         receipt_purpose: "mint",
         baseline_reset: false,
         curve_trace: curve,
+        // An unsigned request names the challenge it answers.
+        challenge_nonce: new Array(32).fill(9),
       }),
     ]);
     // The phrase audio is sent once.
@@ -208,6 +217,8 @@ describe("single capture validation step", () => {
         commitmentNewHex: "cd".repeat(32),
       }),
     ).resolves.toEqual({ kind: "ok", outcome: ok });
+    // The signed authorization carries the nonce, so the body does not repeat it.
+    expect(signed).not.toHaveProperty("challenge_nonce");
     expect(signed).toMatchObject({
       projection_version: 2,
       receipt_purpose: "rebaseline",
@@ -276,6 +287,15 @@ describe("single capture validation step", () => {
   });
 });
 
+const sealed = { scope: { cluster: "devnet", wallet: WALLET }, serializedEnvelope: "sealed" };
+
+/** A validator answer whose commitment opens with the capture's fingerprint. */
+async function openedBy(features: ReturnType<typeof extracted>) {
+  const salt = BigInt("0x" + ok.saltHex!);
+  const commitment = await computeCommitment(simhash(features.normalized, 1), salt);
+  return { ...ok, commitmentHex: commitment.toString(16).padStart(64, "0") };
+}
+
 function pipelineInput<F>(
   overrides: Partial<PipelineInput<F>> & Pick<PipelineInput<F>, "validate">,
 ): PipelineInput<F> {
@@ -300,8 +320,9 @@ describe("verification pipeline", () => {
       onSigned?.();
       return { txSignature: "mint-signature", authToken: "token-1" };
     });
+    const outcome = await openedBy(extracted());
     const input = pipelineInput({
-      validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome: ok }),
+      validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
     });
     const features = input.extracted;
     await expect(runVerificationPipeline(input)).resolves.toEqual({
@@ -311,10 +332,16 @@ describe("verification pipeline", () => {
     const [args] = submitVerifyMock.mock.calls[0]!;
     expect(args.isFirstVerify).toBe(true);
     expect(args.signedReceipt).toBe(ok.signedReceipt);
-    expect(args.commitment).toEqual(bigintToBytes32(BigInt("0x" + ok.commitmentHex!)));
+    expect(args.commitment).toEqual(bigintToBytes32(BigInt("0x" + outcome.commitmentHex)));
     expect(args.nonce).toBeUndefined();
     expect(input.onAdvance).toHaveBeenCalledTimes(4);
-    expect(persistPreparedBaseline).toHaveBeenCalledWith({ serializedEnvelope: "sealed" });
+    expect(prepareBaseline).toHaveBeenCalledWith(
+      { cluster: "devnet", wallet: WALLET },
+      expect.objectContaining({ commitment: BigInt("0x" + outcome.commitmentHex).toString() }),
+      // A first verification reads no stored baseline, so an unreadable key may be replaced.
+      { replaceUnreadableKey: true },
+    );
+    expect(persistPreparedBaseline).toHaveBeenCalledWith(sealed);
     expect(loadBaseline).not.toHaveBeenCalled();
     // The feature arrays are cleared once the proof scope closes.
     expect(features.raw.every((value) => value === 0)).toBe(true);
@@ -335,18 +362,29 @@ describe("verification pipeline", () => {
     jest.mocked(generateSolanaProof).mockResolvedValue(proof);
     submitVerifyMock.mockResolvedValue({ txSignature: "update-signature", authToken: "token-1" });
     const proofNonce = jest.fn(async () => new Uint8Array(32).fill(7));
+    const opened = await openedBy(features);
+    const currentCommitment = bigintToBytes32(BigInt(123456789));
     const outcome = await runVerificationPipeline(
       pipelineInput({
-        chainIdentity: { projectionVersion: 1 },
+        chainIdentity: { projectionVersion: 1, currentCommitment },
         extracted: features,
         proofNonce,
         validate: async (): Promise<ValidationStepResult<never>> => ({
           kind: "ok",
-          outcome: ok,
+          outcome: opened,
         }),
       }),
     );
     expect(outcome).toEqual({ kind: "success", txSignature: "update-signature" });
+    // The stored envelope stays in use until the update confirms, so its key stays.
+    expect(jest.mocked(prepareBaseline).mock.calls[0]![2]).toEqual({
+      replaceUnreadableKey: false,
+    });
+    expect(loadBaseline).toHaveBeenCalledWith(
+      { cluster: "devnet", wallet: WALLET },
+      currentCommitment,
+      null,
+    );
     expect(proofNonce).toHaveBeenCalledTimes(1);
     const [args] = submitVerifyMock.mock.calls[0]!;
     expect(args.isFirstVerify).toBe(false);
@@ -369,14 +407,18 @@ describe("verification pipeline", () => {
     const proof = { proofBytes: new Uint8Array(256), publicInputs: [] };
     jest.mocked(generateSolanaProof).mockResolvedValue(proof);
     const proofNonce = jest.fn(async () => new Uint8Array(32).fill(7));
+    const opened = await openedBy(features);
     const outcome = await runVerificationPipeline(
       pipelineInput({
-        chainIdentity: { projectionVersion: 1 },
+        chainIdentity: {
+          projectionVersion: 1,
+          currentCommitment: bigintToBytes32(BigInt(123456789)),
+        },
         extracted: features,
         proofNonce,
         validate: async (): Promise<ValidationStepResult<never>> => ({
           kind: "ok",
-          outcome: { ...ok, signedReceipt: null },
+          outcome: { ...opened, signedReceipt: null },
         }),
       }),
     );
@@ -398,10 +440,14 @@ describe("verification pipeline", () => {
 
     const refusal = new Error("User rejected the request");
     submitVerifyMock.mockRejectedValueOnce(refusal);
+    const opened = await openedBy(extracted());
     await expect(
       runVerificationPipeline(
         pipelineInput({
-          validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome: ok }),
+          validate: async (): Promise<ValidationStepResult<never>> => ({
+            kind: "ok",
+            outcome: opened,
+          }),
         }),
       ),
     ).resolves.toEqual({ kind: "wallet-rejected" });
@@ -420,5 +466,224 @@ describe("verification pipeline", () => {
     );
     expect(outcome).toEqual({ kind: "cancelled" });
     expect(submitVerifyMock).not.toHaveBeenCalled();
+  });
+
+  test("an update with no baseline matching the chain commitment routes to baseline-missing", async () => {
+    jest.mocked(loadBaseline).mockResolvedValue(null);
+    const validate = jest.fn();
+    const currentCommitment = bigintToBytes32(BigInt(987654321));
+    const outcome = await runVerificationPipeline(
+      pipelineInput({
+        chainIdentity: { projectionVersion: 1, currentCommitment },
+        validate,
+      }),
+    );
+    expect(outcome).toEqual({ kind: "failed", bucket: "baseline-missing" });
+    expect(loadBaseline).toHaveBeenCalledWith(
+      { cluster: "devnet", wallet: WALLET },
+      currentCommitment,
+      null,
+    );
+    expect(validate).not.toHaveBeenCalled();
+    expect(generateSolanaProof).not.toHaveBeenCalled();
+    expect(submitVerifyMock).not.toHaveBeenCalled();
+  });
+
+  test("a reset reads the stored baseline for its wallet and proves nothing against it", async () => {
+    // The read moves a baseline an earlier build stored for every wallet to
+    // this wallet, where the reset's new baseline replaces it.
+    jest.mocked(loadBaseline).mockResolvedValue({
+      fingerprint: simhash(extracted().normalized, 1),
+      salt: "5",
+      commitment: "987654321",
+      timestamp: 1,
+      projectionVersion: 1,
+    });
+    jest
+      .mocked(submitReset)
+      .mockResolvedValue({ txSignature: "reset-signature", authToken: "token-1" });
+    const currentCommitment = bigintToBytes32(BigInt(987654321));
+    const outcome = await openedBy(extracted());
+    await expect(
+      runVerificationPipeline(
+        pipelineInput({
+          flowIntent: "reset",
+          chainIdentity: { projectionVersion: 1, currentCommitment },
+          validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
+        }),
+      ),
+    ).resolves.toEqual({ kind: "success", txSignature: "reset-signature" });
+    expect(loadBaseline).toHaveBeenCalledWith(
+      { cluster: "devnet", wallet: WALLET },
+      currentCommitment,
+      null,
+    );
+    expect(generateSolanaProof).not.toHaveBeenCalled();
+    expect(submitVerifyMock).not.toHaveBeenCalled();
+    expect(persistPreparedBaseline).toHaveBeenCalledWith(sealed);
+  });
+
+  test("refuses a validator commitment that the capture's fingerprint and salt do not open", async () => {
+    const outcome = await runVerificationPipeline(
+      pipelineInput({
+        validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome: ok }),
+      }),
+    );
+    // A fixed code reaches the report screen, and the failure is recorded.
+    expect(outcome).toEqual({ kind: "failed", bucket: "report-bug", message: "commitment_parity" });
+    expect(prepareBaseline).not.toHaveBeenCalled();
+    expect(submitVerifyMock).not.toHaveBeenCalled();
+    expect(persistPreparedBaseline).not.toHaveBeenCalled();
+  });
+
+  test("reports a baseline it cannot prepare with a fixed code", async () => {
+    jest.mocked(prepareBaseline).mockRejectedValue(new Error("Keystore unavailable"));
+    const outcome = await openedBy(extracted());
+    await expect(
+      runVerificationPipeline(
+        pipelineInput({
+          validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
+        }),
+      ),
+    ).resolves.toEqual({ kind: "failed", bucket: "report-bug", message: "baseline_prepare" });
+    expect(submitVerifyMock).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a reset", "reset" as const, false],
+    ["a rebaseline", "verify" as const, true],
+  ])(
+    "%s may replace a baseline key the store cannot read",
+    async (_name, flowIntent, rebaseline) => {
+      jest.mocked(loadBaseline).mockRejectedValue(new Error("Could not decrypt the stored item."));
+      jest
+        .mocked(submitReset)
+        .mockResolvedValue({ txSignature: "reset-signature", authToken: "token-1" });
+      jest
+        .mocked(submitRebaseline)
+        .mockResolvedValue({ txSignature: "rebaseline-signature", authToken: "token-1" });
+      const outcome = await openedBy(extracted());
+      await runVerificationPipeline(
+        pipelineInput({
+          flowIntent,
+          rebaselineRequired: rebaseline,
+          chainIdentity: { projectionVersion: 0, currentCommitment: bigintToBytes32(BigInt(5)) },
+          validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
+        }),
+      );
+      expect(jest.mocked(prepareBaseline).mock.calls[0]![2]).toEqual({
+        replaceUnreadableKey: true,
+      });
+    },
+  );
+
+  test("looks for the baseline of the wallet the identity migrated from", async () => {
+    jest.mocked(loadBaseline).mockResolvedValue(null);
+    const currentCommitment = bigintToBytes32(BigInt(987654321));
+    await runVerificationPipeline(
+      pipelineInput({
+        chainIdentity: { projectionVersion: 1, currentCommitment },
+        previousWallet: PREVIOUS_WALLET,
+        validate: jest.fn(),
+      }),
+    );
+    expect(loadBaseline).toHaveBeenCalledWith(
+      { cluster: "devnet", wallet: WALLET },
+      currentCommitment,
+      PREVIOUS_WALLET,
+    );
+  });
+
+  test("keeps the new baseline when the wallet changes during submission", async () => {
+    let cancelled = false;
+    submitVerifyMock.mockImplementation(async () => {
+      cancelled = true;
+      return { txSignature: "mint-signature", authToken: "token-1" };
+    });
+    const outcome = await openedBy(extracted());
+    await expect(
+      runVerificationPipeline(
+        pipelineInput({
+          isCancelled: () => cancelled,
+          validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
+        }),
+      ),
+    ).resolves.toEqual({ kind: "cancelled" });
+    // The chain now holds the new commitment, so the phone keeps what opens it.
+    expect(persistPreparedBaseline).toHaveBeenCalledWith(sealed);
+  });
+
+  test.each([
+    ["a reset", "reset" as const, false],
+    ["a rebaseline", "verify" as const, true],
+  ])(
+    "%s continues past a stored baseline the store cannot read",
+    async (_name, flowIntent, rebaseline) => {
+      jest.mocked(loadBaseline).mockRejectedValue(new Error("Could not decrypt the stored item."));
+      jest
+        .mocked(submitReset)
+        .mockResolvedValue({ txSignature: "reset-signature", authToken: "token-1" });
+      jest
+        .mocked(submitRebaseline)
+        .mockResolvedValue({ txSignature: "rebaseline-signature", authToken: "token-1" });
+      const outcome = await openedBy(extracted());
+      const result = await runVerificationPipeline(
+        pipelineInput({
+          flowIntent,
+          rebaselineRequired: rebaseline,
+          chainIdentity: { projectionVersion: 0, currentCommitment: bigintToBytes32(BigInt(5)) },
+          validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
+        }),
+      );
+      expect(result).toEqual({
+        kind: "success",
+        txSignature: rebaseline ? "rebaseline-signature" : "reset-signature",
+      });
+      expect(persistPreparedBaseline).toHaveBeenCalledWith(sealed);
+      const warnings = jest.mocked(devWarn).mock.calls.map((call) => String(call[0]));
+      expect(warnings.some((line) => line.includes("stored baseline unreadable"))).toBe(true);
+    },
+  );
+
+  test("an update still stops when the stored baseline cannot be read", async () => {
+    jest.mocked(loadBaseline).mockRejectedValue(new Error("Could not decrypt the stored item."));
+    await expect(
+      runVerificationPipeline(
+        pipelineInput({
+          chainIdentity: { projectionVersion: 1, currentCommitment: bigintToBytes32(BigInt(5)) },
+          validate: jest.fn(),
+        }),
+      ),
+    ).rejects.toThrow("Could not decrypt the stored item.");
+  });
+
+  test.each([
+    ["a reset", "reset" as const, false],
+    ["a rebaseline", "verify" as const, true],
+  ])("%s zeroes the stored fingerprint it decrypted", async (_name, flowIntent, rebaseline) => {
+    const stored = {
+      fingerprint: Array.from({ length: 256 }, () => 1),
+      salt: "5",
+      commitment: "5",
+      timestamp: 1,
+      projectionVersion: 0,
+    };
+    jest.mocked(loadBaseline).mockResolvedValue(stored);
+    jest
+      .mocked(submitReset)
+      .mockResolvedValue({ txSignature: "reset-signature", authToken: "token-1" });
+    jest
+      .mocked(submitRebaseline)
+      .mockResolvedValue({ txSignature: "rebaseline-signature", authToken: "token-1" });
+    const outcome = await openedBy(extracted());
+    await runVerificationPipeline(
+      pipelineInput({
+        flowIntent,
+        rebaselineRequired: rebaseline,
+        chainIdentity: { projectionVersion: 0, currentCommitment: bigintToBytes32(BigInt(5)) },
+        validate: async (): Promise<ValidationStepResult<never>> => ({ kind: "ok", outcome }),
+      }),
+    );
+    expect(stored.fingerprint.every((bit) => bit === 0)).toBe(true);
   });
 });

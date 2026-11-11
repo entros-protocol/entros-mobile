@@ -8,12 +8,12 @@ import {
   reasonDisposition,
   type VerificationReason,
 } from "@/services/reasons";
-import type { FailureBucket } from "@/state/types";
+import type { FailureBucket, FailureScreen } from "@/state/types";
 
 /** The failure screen a paired failure opens. */
 export interface PairedFailureScreen {
-  /** The failure screen's route params. `soft` is the retry hint screen, keyed by `reason`. */
-  params: Record<string, string>;
+  /** What the failure screen shows. `soft` is the retry hint screen, keyed by `reason`. */
+  screen: FailureScreen;
   /** The bucket local history records the attempt under, or null when it records nothing. */
   record: FailureBucket | null;
 }
@@ -75,9 +75,9 @@ function routeFor(failure: PairedFailure): FailureRoute {
 
 export function pairedFailureScreen(failure: PairedFailure): PairedFailureScreen {
   const route = routeFor(failure);
-  const params: Record<string, string> = { bucket: route.bucket };
-  if (route.reason) params.reason = route.reason;
-  if (route.retryAfterSec !== undefined) params.retryAfter = String(route.retryAfterSec);
-  if (route.message) params.message = route.message;
-  return { params, record: route.record && route.bucket !== "soft" ? route.bucket : null };
+  const screen: FailureScreen = { bucket: route.bucket };
+  if (route.reason) screen.reason = route.reason;
+  if (route.retryAfterSec !== undefined) screen.retryAfterSec = route.retryAfterSec;
+  if (route.message) screen.message = route.message;
+  return { screen, record: route.record && route.bucket !== "soft" ? route.bucket : null };
 }

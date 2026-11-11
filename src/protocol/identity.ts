@@ -14,7 +14,7 @@
 // fixed-offset reads so we transparently parse pre-realloc 551-byte and
 // post-realloc 583-byte accounts identically.
 
-import { type Connection, PublicKey } from "@solana/web3.js";
+import { type Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 import { bytesToHex } from "@noble/ciphers/utils.js";
 
 import { config } from "@/config";
@@ -86,10 +86,12 @@ export interface OnChainIdentity {
 
 /** Reads the user's `IdentityState` PDA. Tolerates the three account-size
  *  variants in the wild (legacy 207-byte minimum, post-reset 551-byte, and
- *  post-new-wallet 583-byte). Returns null if the account doesn't exist
- *  (first-time user pre-mint), the program ID env var is unset, or the
- *  account data is below the minimum size. Never throws — caller treats
- *  null as "no on-chain identity yet" and falls back to the cold-state UI. */
+ *  post-new-wallet 583-byte). Returns null if the account doesn't exist or
+ *  holds lamports alone (first-time user pre-mint), or the program ID env var
+ *  is unset. An account another program owns, or one below the minimum size,
+ *  also returns null, unless `failClosed` is set, which makes it throw. The
+ *  caller treats null as "no on-chain identity yet" and falls back to the
+ *  cold-state UI. */
 export async function fetchIdentityState(
   walletPubkey: PublicKey,
   connection: Connection,
@@ -109,6 +111,19 @@ export async function fetchIdentityState(
     return null;
   }
   if (!accountInfo) return null;
+  // Anyone can send lamports to the address before the mint creates the
+  // account. That leaves a System-owned account with no data, which is still
+  // no identity and must not stop the wallet from minting.
+  if (accountInfo.owner.equals(SystemProgram.programId) && accountInfo.data.length === 0) {
+    return null;
+  }
+  if (!accountInfo.owner.equals(programId)) {
+    if (failClosed) {
+      throw new Error("The identity account is not owned by the Entros Anchor program.");
+    }
+    devWarn("[Entros] IdentityState account has an unexpected owner");
+    return null;
+  }
   if (accountInfo.data.length < MIN_ACCOUNT_SIZE) {
     if (failClosed) throw new Error("The on-chain identity account is truncated.");
     devWarn(

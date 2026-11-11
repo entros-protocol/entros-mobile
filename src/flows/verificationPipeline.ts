@@ -58,52 +58,13 @@ import {
 } from "@/services/executor";
 import { setCommitment, takeCommitment } from "@/state/commitmentBuffer";
 import { setProof, takeProof } from "@/state/proofBuffer";
-import type { FailureBucket, VerifyIntent, WalletKind } from "@/state/types";
+import type { FailureBucket, VerifyIntent } from "@/state/types";
+import { WalletSession } from "@/wallet/session";
+
+export { WalletSession };
 
 export type ReceiptPurposeName = "mint" | "rebaseline" | "reset" | "update";
 export type ValidatedOutcome = Extract<ValidateOutcome, { kind: "ok" }>;
-
-/** The wallet a verification signs with. Tracks the MWA token as it rotates. */
-export class WalletSession {
-  private token: string;
-
-  constructor(
-    readonly address: string,
-    readonly kind: WalletKind,
-    authToken: string,
-    private readonly persist: (
-      authToken: string,
-      address: string,
-      kind: WalletKind,
-    ) => Promise<boolean>,
-    private readonly isCancelled: () => boolean = () => false,
-  ) {
-    this.token = authToken;
-  }
-
-  readonly assertActive = (): void => {
-    if (this.isCancelled()) throw new Error("Verification was cancelled.");
-  };
-
-  get authToken(): string {
-    return this.token;
-  }
-
-  /** Adopts a token an MWA call returned after `acceptRotated` stored it. */
-  adopt(authToken: string): void {
-    this.token = authToken;
-  }
-
-  /** Stores a rotated token. Throws when the connected wallet changed. */
-  readonly acceptRotated = async (authToken: string): Promise<void> => {
-    if (this.isCancelled()) throw new Error("Verification was cancelled.");
-    const accepted = await this.persist(authToken, this.address, this.kind);
-    if (!accepted || this.isCancelled()) {
-      throw new Error("The connected wallet changed during signing.");
-    }
-    this.token = authToken;
-  };
-}
 
 /** What the pipeline hands the validation step. */
 export interface ValidationRequest {
@@ -127,7 +88,9 @@ export interface PipelineInput<F> {
   wallet: WalletSession;
   flowIntent: VerifyIntent;
   projectionVersion: number;
-  chainIdentity: { projectionVersion: number } | null;
+  chainIdentity: { projectionVersion: number; currentCommitment: Uint8Array } | null;
+  /** The wallet the identity migrated from, when the chain records one. */
+  previousWallet?: string | null;
   rebaselineRequired: boolean;
   /** Zero-filled by the pipeline once validation and the proof are done. */
   extracted: ExtractedFeatures;
@@ -168,7 +131,9 @@ type ProofStage<F> =
     }
   | { kind: "failed"; failure: F }
   | { kind: "cancelled" }
-  | { kind: "drift"; bucket: FailureBucket };
+  | { kind: "drift"; bucket: FailureBucket }
+  /** A defect the person reports with `code`. Recorded as a failure. */
+  | { kind: "report"; code: string };
 
 /** Maps a parsed on-chain submission failure to its failure screen. */
 function outcomeForSubmitError<F>(parsed: ParsedSubmitError): PipelineOutcome<F> {
@@ -238,21 +203,48 @@ export async function runVerificationPipeline<F>(
     `[Entros] features=${result.raw.length} nz=${audioNZ}/${motionNZ}/${touchNZ} f0Frames=${result.f0Contour.length} accelFrames=${result.accelMagnitude.length}`,
   );
 
-  // Load the previous baseline before hashing. Skip this for reset cycles.
-  // submitReset takes only the new commitment, no ft_prev needed.
-  // First verifications also return null and skip proof
-  // generation; mint_anchor takes no proof either.
-  let previousBaseline =
-    flowIntent !== "reset" && chainIdentity && !rebaselineRequired ? await loadBaseline() : null;
+  // Load the stored baseline before hashing. A stored baseline whose
+  // commitment differs from the chain cannot open the update proof, so the
+  // load returns none. The load also moves a matching baseline that an
+  // earlier build stored for every wallet, or that the wallet the identity
+  // migrated from stored, to this wallet's entry. The new baseline of a reset
+  // or a rebaseline then replaces that entry. An entry that matched no chain
+  // commitment stays where it was.
+  // A reset and a rebaseline prove nothing against the stored baseline:
+  // submitReset takes only the new commitment. They are also the recovery
+  // paths, so a store that cannot read the old baseline does not stop them.
+  // A first verification has no identity on chain and nothing stored, and
+  // mint_anchor takes no proof.
+  const baselineScope = { cluster: config.cluster, wallet: wallet.address };
+  const provesAgainstStored = flowIntent !== "reset" && !rebaselineRequired;
+  let storedBaseline: Awaited<ReturnType<typeof loadBaseline>> = null;
+  if (chainIdentity) {
+    try {
+      storedBaseline = await loadBaseline(
+        baselineScope,
+        chainIdentity.currentCommitment,
+        input.previousWallet ?? null,
+      );
+    } catch (err) {
+      if (provesAgainstStored) throw err;
+      const name = err instanceof Error ? err.name : "unknown";
+      devWarn(`[Entros] stored baseline unreadable, continuing without it error=${name}`);
+    }
+  }
+  let previousBaseline = provesAgainstStored ? storedBaseline : null;
   if (
     flowIntent === "verify" &&
     chainIdentity &&
     !rebaselineRequired &&
     (!previousBaseline || previousBaseline.projectionVersion !== projectionVersion)
   ) {
+    storedBaseline?.fingerprint.fill(0);
     return { kind: "failed", bucket: "baseline-missing" };
   }
-  if (input.isCancelled()) return { kind: "cancelled" };
+  if (input.isCancelled()) {
+    storedBaseline?.fingerprint.fill(0);
+    return { kind: "cancelled" };
+  }
 
   // The 256-bit fingerprint and the previously-stored baseline fingerprint
   // live only inside this scope; they fall out of scope as soon as the
@@ -303,15 +295,15 @@ export async function runVerificationPipeline<F>(
         commitmentNewHex = Array.from(tbh.commitmentBytes)
           .map((b) => b.toString(16).padStart(2, "0"))
           .join("");
-        if (__DEV__) {
-          // A mismatch means the installed app and validator have drifted.
-          // Future rotation proofs would fail to open.
-          const localCheck = await computeCommitment(fingerprint, serverSalt);
-          if (localCheck !== serverCommitment) {
-            devWarn(
-              "[Entros] Commitment parity check failed: validator-derived commitment != local recomputation. Mobile and validator may be out of sync.",
-            );
-          }
+        // A mismatch means the installed app and validator have drifted.
+        // The next update proof could not open this commitment, so stop
+        // before the wallet signs it.
+        const localCheck = await computeCommitment(fingerprint, serverSalt);
+        if (localCheck !== serverCommitment) {
+          devWarn(
+            "[Entros] Commitment parity check failed: validator-derived commitment != local recomputation. Mobile and validator may be out of sync.",
+          );
+          return { kind: "report", code: "commitment_parity" };
         }
       }
 
@@ -329,17 +321,23 @@ export async function runVerificationPipeline<F>(
       });
       let preparedBaseline;
       try {
-        preparedBaseline = await prepareBaseline({
-          fingerprint: tbh.fingerprint,
-          salt: tbh.salt.toString(),
-          commitment: tbh.commitment.toString(),
-          timestamp: Date.now(),
-          projectionVersion,
-        });
+        preparedBaseline = await prepareBaseline(
+          baselineScope,
+          {
+            fingerprint: tbh.fingerprint,
+            salt: tbh.salt.toString(),
+            commitment: tbh.commitment.toString(),
+            timestamp: Date.now(),
+            projectionVersion,
+          },
+          // An update proves against the stored envelope until it confirms,
+          // so its key must stay. Every other flow needs nothing stored.
+          { replaceUnreadableKey: previousBaseline === null },
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         devWarn(`[Entros] baseline preparation failed: ${message}`);
-        return { kind: "drift", bucket: "report-bug" };
+        return { kind: "report", code: "baseline_prepare" };
       }
 
       // Generate the Groth16 proof on-device for re-verification only.
@@ -414,7 +412,10 @@ export async function runVerificationPipeline<F>(
       };
     })();
   } finally {
-    previousBaseline?.fingerprint.fill(0);
+    // Every flow decrypted the stored baseline, an update to prove against
+    // it and a reset or a rebaseline to replace it. None keeps it.
+    storedBaseline?.fingerprint.fill(0);
+    storedBaseline = null;
     previousBaseline = null;
     input.release?.();
     result.raw.fill(0);
@@ -425,6 +426,8 @@ export async function runVerificationPipeline<F>(
   if (stage.kind === "cancelled" || input.isCancelled()) return { kind: "cancelled" };
 
   if (stage.kind === "failed") return { kind: "validation-failed", failure: stage.failure };
+
+  if (stage.kind === "report") return { kind: "failed", bucket: "report-bug", message: stage.code };
 
   if (stage.kind === "drift") {
     // Pre-flight Hamming bounds rejection: drift past the consistency
@@ -534,14 +537,17 @@ export async function runVerificationPipeline<F>(
         () => input.onAdvance(), // → "submitting" once signed
       );
     }
-    if (input.isCancelled()) return { kind: "cancelled" };
 
+    // The chain now holds the new commitment. The prepared baseline names its
+    // own wallet, so it is written even when the screen has moved on;
+    // otherwise the phone could no longer open that commitment.
     try {
       await persistPreparedBaseline(preparedBaseline);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       devWarn(`[Entros] baseline persistence failed after confirmation: ${message}`);
     }
+    if (input.isCancelled()) return { kind: "cancelled" };
 
     devWarn(`[Entros] on-chain ok intent=${flowIntent} sig=${submitted.txSignature.slice(0, 12)}…`);
     return { kind: "success", txSignature: submitted.txSignature };
@@ -644,6 +650,8 @@ export async function prepareSingleCapture(
         wallet.adopt(authorized.authToken);
         outcome = authorized.outcome;
       } else {
+        // The executor checks an unsigned request against the exact challenge it names.
+        requestBody.challenge_nonce = Array.from(challenge.nonce);
         outcome = await validateFeaturesRequest(requestBody, {
           deadlineAtMs: challenge.expiresAtMs,
           signal: context.signal,

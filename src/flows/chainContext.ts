@@ -6,6 +6,7 @@ import { PublicKey } from "@solana/web3.js";
 
 import { getConnection } from "@/config";
 import { fetchIdentityState, type OnChainIdentity } from "@/protocol/identity";
+import { fetchMigrationRecord } from "@/protocol/migration";
 import { fetchProjectionPolicy } from "@/protocol/protocolConfig";
 import type { VerifyIntent } from "@/state/types";
 
@@ -14,6 +15,8 @@ import type { ReceiptPurposeName } from "./verificationPipeline";
 export interface ChainContext {
   projectionVersion: number;
   chainIdentity: OnChainIdentity | null;
+  /** The wallet the identity last migrated from, when the chain records one. */
+  previousWallet: string | null;
   /** The identity predates the current projection and must move to it. */
   rebaselineRequired: boolean;
   /** The receipt the transition needs. */
@@ -39,18 +42,21 @@ function receiptPurposeFor(
   return rebaselineRequired ? "rebaseline" : "update";
 }
 
-/** Reads the projection policy and the wallet's identity together. */
+/** Reads the projection policy, the wallet's identity and its migration record together. */
 export async function readChainContext(
   walletAddress: string,
   flowIntent: VerifyIntent,
 ): Promise<ChainContextResult> {
   let projectionPolicy;
   let chainIdentity;
+  let migration;
   try {
     const rpc = getConnection();
-    [projectionPolicy, chainIdentity] = await Promise.all([
+    const wallet = new PublicKey(walletAddress);
+    [projectionPolicy, chainIdentity, migration] = await Promise.all([
       fetchProjectionPolicy(rpc),
-      fetchIdentityState(new PublicKey(walletAddress), rpc, true),
+      fetchIdentityState(wallet, rpc, true),
+      fetchMigrationRecord(wallet, rpc, true),
     ]);
   } catch (error) {
     return {
@@ -73,6 +79,7 @@ export async function readChainContext(
     chain: {
       projectionVersion,
       chainIdentity,
+      previousWallet: migration?.previousWallet ?? null,
       rebaselineRequired,
       receiptPurpose: receiptPurposeFor(
         flowIntent,

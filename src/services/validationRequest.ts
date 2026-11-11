@@ -26,6 +26,12 @@ export interface ValidateFeaturesRequestBody extends ValidationDigestRequest {
   wallet_id: string;
   projection_version: number;
   wallet_authorization?: WalletAuthorization;
+  /**
+   * The 32-byte `/challenge` nonce an unsigned request answers, in the array
+   * form `/challenge` returns. A signed request carries it in
+   * `wallet_authorization` instead.
+   */
+  challenge_nonce?: number[];
   commitment_new_hex?: string;
   request_receipt: boolean;
   receipt_purpose?: "mint" | "rebaseline" | "reset" | "update";

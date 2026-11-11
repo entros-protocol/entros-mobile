@@ -1,5 +1,6 @@
-// HTTP client for paired-round sessions on the executor: open, commit and
-// finalize. It uses the executor base URL and API key the single capture uses.
+// HTTP client for paired-round sessions on the executor: the wallet
+// authorization grant, open, commit and finalize. It uses the executor base
+// URL and API key the single capture uses.
 //
 // Open retries a network error, 408, 429 and 5xx for a bounded window, and a
 // commit retries them until its round expires, each honouring `retry_after`.
@@ -25,8 +26,13 @@ import {
   isTransientStatus,
   PairedClientError,
   parseOpenResponse,
+  parsePairedAuthorizationGrant,
   refusalOf,
+  readPairedClock,
   retryUntil,
+  type PairedAuthorizationBody,
+  type PairedAuthorizationGrant,
+  type PairedClockReading,
   type PairedCommitResponse,
   type PairedFinalizeBody,
   type PairedHttpResponse,
@@ -54,6 +60,18 @@ export interface OpenedPairedSession {
   open: PairedOpenSession;
   /** The `now` clock reading at request start. Server durations are anchored conservatively to it. */
   startedAtMs: number;
+}
+
+export interface GrantedPairedAuthorization {
+  grant: PairedAuthorizationGrant;
+  /** Both clocks at request start. The grant's lifetime counts from them. */
+  requestedAt: PairedClockReading;
+}
+
+export interface PairedGrantRequestOptions {
+  signal?: AbortSignal;
+  /** Reads both clocks. Defaults to `performance.now` and `Date.now`. */
+  readClock?: () => PairedClockReading;
 }
 
 export interface PairedRequestOptions {
@@ -122,10 +140,10 @@ function clockOf(options: PairedRequestOptions): RetryClock {
   };
 }
 
-/** POSTs a serialized body. Throws on a network failure, a timeout or an abort. */
-async function postJson(
+/** Sends one request. Throws on a network failure, a timeout or an abort. */
+async function sendJson(
   target: Endpoint,
-  serializedBody: string,
+  request: { method: "GET" } | { method: "POST"; body: string },
   signal: AbortSignal | undefined,
   remainingMs = ROUND_REQUEST_TIMEOUT_MS,
 ): Promise<PairedHttpResponse> {
@@ -139,9 +157,8 @@ async function postJson(
   try {
     if (signal?.aborted) throw abortError();
     const response = await fetch(target.url, {
-      method: "POST",
+      ...request,
       headers: target.headers,
-      body: serializedBody,
       signal: controller.signal,
     });
     let body: unknown = null;
@@ -155,6 +172,16 @@ async function postJson(
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
   }
+}
+
+/** POSTs a serialized body. Throws on a network failure, a timeout or an abort. */
+function postJson(
+  target: Endpoint,
+  serializedBody: string,
+  signal: AbortSignal | undefined,
+  remainingMs?: number,
+): Promise<PairedHttpResponse> {
+  return sendJson(target, { method: "POST", body: serializedBody }, signal, remainingMs);
 }
 
 /** The failure a client error reports. A known reason from a bad response is kept. */
@@ -172,17 +199,51 @@ function failureOf(error: PairedClientError): PairedFailure {
 }
 
 /**
- * Opens a paired session and validates the first reveal. A 404 names a relayer
- * without paired sessions: the failure carries status 404 and reason
- * `unsupported_session`. Retries that run out report the last refusal.
+ * Requests the grant a wallet signs to authorize its paired sessions. One
+ * request, no retry: the person can ask again. A 404 names a relayer that asks
+ * for no authorization: the failure carries status 404.
+ */
+export async function requestPairedAuthorizationGrant(
+  wallet: string,
+  options: PairedGrantRequestOptions = {},
+): Promise<GrantedPairedAuthorization> {
+  const target = endpoint(`/paired/authorization?wallet=${encodeURIComponent(wallet)}`);
+  const requestedAt = (options.readClock ?? readPairedClock)();
+  let response: PairedHttpResponse;
+  try {
+    response = await sendJson(target, { method: "GET" }, options.signal);
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw new PairedServiceError({ reason: "validation_unavailable" });
+  }
+  try {
+    if (response.status < 200 || response.status > 299) throw refusalOf(response);
+    return { grant: parsePairedAuthorizationGrant(response.body), requestedAt };
+  } catch (error) {
+    if (error instanceof PairedClientError) throw new PairedServiceError(failureOf(error));
+    throw error;
+  }
+}
+
+/**
+ * Opens a paired session and validates the first reveal. `authorization` is
+ * the wallet's signed authorization, which a relayer that requires one checks
+ * before it opens anything. A 404 names a relayer without paired sessions: the
+ * failure carries status 404 and reason `unsupported_session`. Retries that
+ * run out report the last refusal.
  */
 export async function openPairedSession(
   wallet: string,
-  options: PairedRequestOptions = {},
+  options: PairedRequestOptions & { authorization?: PairedAuthorizationBody } = {},
 ): Promise<OpenedPairedSession> {
   const target = endpoint("/challenge/paired");
   const clock = clockOf(options);
-  const body = JSON.stringify({ wallet, tier: "trace", protocol_version: PAIRED_PROTOCOL_VERSION });
+  const body = JSON.stringify({
+    wallet,
+    tier: "trace",
+    protocol_version: PAIRED_PROTOCOL_VERSION,
+    ...(options.authorization ? { authorization: options.authorization } : {}),
+  });
   let startedAtMs = clock.now();
   try {
     const response = await retryUntil<PairedHttpResponse>(

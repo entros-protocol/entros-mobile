@@ -31,7 +31,7 @@ import {
 } from "@/flows/verificationPipeline";
 import { initialContext, reduce, stageCopy } from "@/flows/verifyMachine";
 import { devWarn } from "@/lib/log";
-import { isSupportedPairedProjectionVersion } from "@/paired";
+import { isPairedAuthorizationRefusal, isSupportedPairedProjectionVersion } from "@/paired";
 import { ValidateOutcome } from "@/services/executor";
 import type { PairedFailure } from "@/services/pairedErrors";
 import { tokenFor } from "@/services/playIntegrity";
@@ -40,6 +40,7 @@ import { useAppState } from "@/state/AppState";
 import { clearCapture, takeCapture } from "@/state/captureBuffer";
 import { clearChallenge, peekChallenge, takeChallenge } from "@/state/challengeBuffer";
 import { clearCommitment } from "@/state/commitmentBuffer";
+import { dropPairedAuthorization } from "@/state/pairedAuthorizationBuffer";
 import {
   clearPairedSession,
   takePairedSession,
@@ -62,6 +63,7 @@ export default function Processing() {
     fail,
     setForceOutcome,
     setFlowIntent,
+    setFailureScreen,
     recordAnchorRetry,
     updateAuthToken,
   } = useAppState();
@@ -137,21 +139,20 @@ export default function Processing() {
       if (!leave()) return;
       fail(bucket);
       setForceOutcome(null);
-      router.replace({
-        pathname: "/verify/failure",
-        params: message ? { bucket, message } : { bucket },
-      });
+      setFailureScreen(message ? { bucket, message } : { bucket });
+      router.replace("/verify/failure");
     };
 
     // Like failOut but does NOT record a failed VerificationEvent in history —
     // for pre-proof, capture-quality retries (Hamming drift / replay floor) that
     // never reached the chain. Matches the soft-reject philosophy: a transient
     // "try again" is not a verification failure. The failure screen is still
-    // driven entirely by the bucket param.
+    // driven entirely by the bucket.
     const failOutNoLog = (bucket: FailureBucket) => {
       if (!leave()) return;
       setForceOutcome(null);
-      router.replace({ pathname: "/verify/failure", params: { bucket } });
+      setFailureScreen({ bucket });
+      router.replace("/verify/failure");
     };
 
     // Soft-rejects don't count against the verification history (matches
@@ -161,20 +162,16 @@ export default function Processing() {
     const routeSoftReject = (reason: VerificationReason) => {
       if (!leave()) return;
       setForceOutcome(null);
-      router.replace({
-        pathname: "/verify/failure",
-        params: { bucket: "soft", reason },
-      });
+      setFailureScreen({ bucket: "soft", reason });
+      router.replace("/verify/failure");
     };
 
     const routeRateLimited = (retryAfterSec: number) => {
       if (!leave()) return;
       fail("rate-limited");
       setForceOutcome(null);
-      router.replace({
-        pathname: "/verify/failure",
-        params: { bucket: "rate-limited", retryAfter: String(retryAfterSec) },
-      });
+      setFailureScreen({ bucket: "rate-limited", retryAfterSec });
+      router.replace("/verify/failure");
     };
 
     const routeFromValidateOutcome = (outcome: Exclude<ValidateOutcome, { kind: "ok" }>) => {
@@ -223,18 +220,25 @@ export default function Processing() {
       }
     };
 
+    // The challenge of the authorization the paired session opened with.
+    let sentAuthorizationChallenge: string | null = null;
     const routePairedFailure = (failure: PairedFailure) => {
+      // The relayer no longer accepts this authorization, so the next attempt signs a new one.
+      if (sentAuthorizationChallenge && isPairedAuthorizationRefusal(failure.reason)) {
+        dropPairedAuthorization(walletId, sentAuthorizationChallenge);
+      }
       if (!leave()) return;
       devWarn(
         `[Entros] paired session failed reason=${failure.reason ?? "none"} status=${failure.status ?? "none"}`,
       );
-      const screen = pairedFailureScreen(failure);
+      const { screen, record } = pairedFailureScreen(failure);
       if (failure.reason === "anchor_retry") {
-        screen.params.attemptsRemaining = String(recordAnchorRetry());
+        screen.attemptsRemaining = recordAnchorRetry();
       }
-      if (screen.record) fail(screen.record);
+      if (record) fail(record);
       setForceOutcome(null);
-      router.replace({ pathname: "/verify/failure", params: screen.params });
+      setFailureScreen(screen);
+      router.replace("/verify/failure");
     };
 
     // Dev panel override: lets UI testers skip on-chain submission and
@@ -364,6 +368,7 @@ export default function Processing() {
           flowIntent,
           projectionVersion,
           chainIdentity: chain.chainIdentity,
+          previousWallet: chain.previousWallet,
           rebaselineRequired: chain.rebaselineRequired,
           extracted: single.extracted,
           validate: single.validate,
@@ -385,6 +390,7 @@ export default function Processing() {
 
     // Finalize a paired session whose three rounds the server accepted.
     const runPaired = async (handoff: PairedSessionHandoff) => {
+      sentAuthorizationChallenge = handoff.authorization?.challenge ?? null;
       // The session ends at the end the server last reported unless the
       // finalize request goes out first.
       sessionExpiry = setTimeout(
@@ -433,6 +439,7 @@ export default function Processing() {
           flowIntent,
           projectionVersion,
           chainIdentity: chain.chainIdentity,
+          previousWallet: chain.previousWallet,
           rebaselineRequired: chain.rebaselineRequired,
           extracted: paired.extracted,
           validate: paired.validate,

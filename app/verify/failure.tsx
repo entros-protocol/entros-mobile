@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
@@ -11,7 +11,7 @@ import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { Text } from "@/components/primitives/Text";
 import type { RetryableReason, VerificationReason } from "@/services/reasons";
 import { useAppState } from "@/state/AppState";
-import { FailureBucket } from "@/state/types";
+import { FailureBucket, FailureScreen } from "@/state/types";
 import { spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -59,6 +59,10 @@ const SOFT_HINT: Record<RetryableReason, string> = {
     "The verification service expected a different round. Start a new session.",
   session_busy:
     "The verification service was too busy to take this session. Nothing you did caused it. Start a new session.",
+  authorization_required:
+    "Your wallet authorization ended. Start a new session and approve the message in your wallet.",
+  authorization_invalid:
+    "Your wallet authorization ended. Start a new session and approve the message in your wallet.",
 };
 const SOFT_HINT_FALLBACK =
   "Something didn't come through cleanly. Give it another shot with natural movement and clear speech.";
@@ -70,7 +74,7 @@ interface SessionReasonCopy {
 
 // Copy for paired-session reasons that end on the wait or session-error
 // screens. A reason without an entry keeps its screen's own copy. A Map
-// matches own keys only, so a `reason` param such as "toString" finds nothing.
+// matches own keys only, so a reason such as "toString" finds nothing.
 const SESSION_REASON_COPY: ReadonlyMap<string, SessionReasonCopy> = new Map<
   VerificationReason,
   SessionReasonCopy
@@ -154,34 +158,15 @@ const hardBucketCopy: Record<
  *
  * Deliberately not an `in` check. `in` walks the prototype chain, so a
  * `bucket` of "toString" would select `Object.prototype.toString` and hand a
- * function to the copy lookup. `bucket` is Set-validated before it reaches
- * here today, so this is defence in depth rather than a live fix, but the
- * identical construction produced a real defect in the reason taxonomy and
- * costs nothing to close.
+ * function to the copy lookup. The bucket comes from typed app state today,
+ * so this is defence in depth rather than a live fix, but the identical
+ * construction produced a real defect in the reason taxonomy and costs
+ * nothing to close.
  */
 const HARD_BUCKET_KEYS: ReadonlySet<string> = new Set(Object.keys(hardBucketCopy));
 
-/** Every FailureBucket value, kept in sync with the type union in
- *  src/state/types.ts. Used to validate the screen's `bucket` param at
- *  runtime — params come from the URL/deeplink layer and TypeScript can't
- *  prove they conform without a runtime check. Adding a new bucket without
- *  updating this set means malformed deeplinks land on "generic" silently;
- *  the `Record<FailureBucket, ...>` types below force exhaustivity at
- *  compile-time so the failure mode is contained. */
-const ALL_FAILURE_BUCKETS: ReadonlySet<FailureBucket> = new Set<FailureBucket>([
-  "relayer-down",
-  "baseline-missing",
-  "rate-limited",
-  "chain-rate-limited",
-  "insufficient-funds",
-  "validator-mismatch",
-  "retry-now",
-  "capture-drift",
-  "report-bug",
-  "session-busy",
-  "session-error",
-  "generic",
-]);
+/** Shown when the screen opens with nothing set, such as after a restart. */
+const NO_FAILURE: FailureScreen = { bucket: "generic" };
 
 /** Buckets surfaced on the cyan-toned retry branch — transient or
  *  cooldown-windowed failures the user can recover from without protocol
@@ -271,14 +256,8 @@ const retryBucketConfig: Record<
 export default function VerifyFailure() {
   const router = useRouter();
   const { palette } = useTheme();
-  const params = useLocalSearchParams<{
-    bucket?: string;
-    reason?: string;
-    retryAfter?: string;
-    message?: string;
-    attemptsRemaining?: string;
-  }>();
-  const { setFlowIntent, clearAnchorRetries } = useAppState();
+  const { setFlowIntent, clearAnchorRetries, failureScreen } = useAppState();
+  const failure = failureScreen ?? NO_FAILURE;
   const cancel = () => {
     clearAnchorRetries();
     setFlowIntent("verify");
@@ -290,30 +269,28 @@ export default function VerifyFailure() {
   const [retryReady, setRetryReady] = useState(false);
 
   const handleCopyDiagnostics = useCallback(async () => {
-    const message = typeof params.message === "string" ? params.message : "";
-    const text = `Entros mobile error\nbucket=${params.bucket}\ncode=${message}`;
+    const text = `Entros mobile error\nbucket=${failure.bucket}\ncode=${failure.message ?? ""}`;
     try {
       await Clipboard.setStringAsync(text);
     } catch {
       // Clipboard module may be unavailable on the host; the user has the
       // info on screen either way.
     }
-  }, [params.bucket, params.message]);
+  }, [failure.bucket, failure.message]);
 
   // Soft-reject branch — friendly hint + Try Again. Cyan tone, RefreshIcon.
   // Soft-rejects are NOT logged in verification history (matches the web
   // flow's soft_failed transition — they're transient retries, not failures).
-  if (params.bucket === "soft") {
-    // Widened for the lookup: `reason` arrives from the URL/deeplink layer and
-    // can be any string, so casting it to a reason would be a lie. The
-    // exhaustiveness that matters is on the table's declaration; here anything
-    // unrecognised takes the fallback. Indexing an object literal with an
-    // attacker-chosen key can resolve to Object.prototype (`reason=toString`
-    // returns a function), so the result is type-checked, not just presence-
-    // checked, before it reaches a Text node.
-    const reason = typeof params.reason === "string" ? params.reason : "";
+  if (failure.bucket === "soft") {
+    // Widened for the lookup: any verification reason can arrive here, and
+    // only the retryable ones have a hint. The exhaustiveness that matters is
+    // on the table's declaration; here anything unrecognised takes the
+    // fallback. Indexing an object literal can resolve to Object.prototype
+    // (`toString` returns a function), so the result is type-checked, not
+    // just presence-checked, before it reaches a Text node.
+    const reason = failure.reason ?? "";
     const rawHint = (SOFT_HINT as Record<string, unknown>)[reason];
-    const remaining = Number(params.attemptsRemaining);
+    const remaining = failure.attemptsRemaining ?? Number.NaN;
     const qualityExhausted =
       reason === "anchor_retry" && (!Number.isFinite(remaining) || remaining <= 0);
     const hint = qualityExhausted
@@ -359,19 +336,9 @@ export default function VerifyFailure() {
   // Retry branch — cyan tone, RefreshIcon, optional live countdown.
   // Covers HTTP rate-limit, on-chain cooldown, and transient retry-now
   // (stale blockhash, wallet timeout, network blip, clock drift).
-  //
-  // `params.bucket` is `string | undefined` — the URL layer can deliver any
-  // string. Runtime-validate against the union before narrowing instead of
-  // a naive cast: malformed deeplinks fall to "generic" instead of leaking
-  // a bogus literal through to switch-case fallthrough.
-  const reasonCopy =
-    typeof params.reason === "string" ? SESSION_REASON_COPY.get(params.reason) : undefined;
+  const reasonCopy = failure.reason ? SESSION_REASON_COPY.get(failure.reason) : undefined;
 
-  const bucketParam = params.bucket;
-  const bucket: FailureBucket =
-    typeof bucketParam === "string" && ALL_FAILURE_BUCKETS.has(bucketParam as FailureBucket)
-      ? (bucketParam as FailureBucket)
-      : "generic";
+  const bucket: FailureBucket = failure.bucket;
   if (RETRY_BUCKETS.has(bucket)) {
     const retryKey = bucket as RetryBucket;
     const bucketConfig = retryBucketConfig[retryKey];
@@ -379,7 +346,7 @@ export default function VerifyFailure() {
       retryKey === "session-busy" && reasonCopy
         ? { ...bucketConfig, title: reasonCopy.title, settledSubtitle: reasonCopy.body }
         : bucketConfig;
-    const rawSec = Number(params.retryAfter ?? "0");
+    const rawSec = failure.retryAfterSec ?? 0;
     const safeSec = Number.isFinite(rawSec) && rawSec > 0 ? Math.ceil(rawSec) : 0;
     const showCountdown = safeSec > 0 && !retryReady;
     // "Try again" only renders when (a) the bucket allows immediate retry
@@ -440,7 +407,7 @@ export default function VerifyFailure() {
   // user-facing recovery is "send us this code". The clipboard write
   // is best-effort; on failure the user can still read the code on screen.
   if (bucket === "report-bug") {
-    const codeFromMessage = typeof params.message === "string" ? params.message : "";
+    const codeFromMessage = failure.message ?? "";
     return (
       <Screen>
         <View style={styles.wrap}>
@@ -482,7 +449,7 @@ export default function VerifyFailure() {
   // Session-error branch. The app and the service disagree about a paired
   // session, so a new session is the recovery and the code helps the team.
   if (bucket === "session-error") {
-    const codeFromMessage = typeof params.message === "string" ? params.message : "";
+    const codeFromMessage = failure.message ?? "";
     return (
       <Screen>
         <View style={styles.wrap}>
@@ -500,7 +467,7 @@ export default function VerifyFailure() {
               {reasonCopy?.title ?? "This session didn't go through"}
             </Text>
             <Text variant="body" tone="muted" align="center">
-              {params.reason === "paired_required"
+              {failure.reason === "paired_required"
                 ? reasonCopy?.body
                 : reasonCopy
                   ? `${reasonCopy.body} If it happens again, copy the code below and share it with the team.`
@@ -513,7 +480,7 @@ export default function VerifyFailure() {
             ) : null}
           </View>
           <View style={styles.footer}>
-            {params.reason === "paired_required" ? (
+            {failure.reason === "paired_required" ? (
               <Button label="OK" onPress={cancel} />
             ) : (
               <>

@@ -6,6 +6,9 @@
 // from the committed bytes, so the validator reproduces the same signal. The
 // joined session is levelled once. No round is levelled on its own.
 //
+// The request carries the wallet authorization the session opened with, which
+// a relayer that requires one checks before it charges an attempt.
+//
 // PRIVACY:
 // - Segment audio leaves the device in the finalize body, and the validation
 //   service must not persist it. A resend carries the same body.
@@ -30,6 +33,7 @@ import {
   PAIRED_PROJECTION_VERSION,
   PAIRED_PROTOCOL_VERSION,
   PAIRED_SAMPLE_RATE,
+  pairedAuthorizationBody,
   type PairedCaptureTiming,
   type SupportedPairedProjectionVersion,
 } from "@/paired";
@@ -216,6 +220,9 @@ async function preparePairedVerificationInner(
       baselineReset: context.flowIntent === "reset",
       projectionVersion,
       ...(token ? { attestationToken: token } : {}),
+      ...(handoff.authorization
+        ? { authorization: pairedAuthorizationBody(handoff.authorization) }
+        : {}),
     });
     context.onFinalize?.();
     let outcome;
