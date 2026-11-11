@@ -656,7 +656,34 @@ describe("finalize body", () => {
     const body = buildFinalizeBody({ open, commits, ...extraction });
     expect(body).not.toHaveProperty("study");
     expect(body).not.toHaveProperty("attestation");
+    expect(body).not.toHaveProperty("authorization");
     expect(JSON.stringify(body)).not.toContain("undefined");
+  });
+
+  test("carries the wallet authorization and the compatibility evidence it is given", () => {
+    const { open, commits } = runSession();
+    const authorization = {
+      challenge: "22".repeat(32),
+      expires_at: 1_800_000_000,
+      origin: "4b".repeat(16),
+      mac: "92".repeat(32),
+      signature_hex: "cb".repeat(64),
+    };
+    const compatibilityEvidence = {
+      projection_version: 1,
+      feature_schema_version: 4,
+      features: [0.5, 0.25],
+    };
+    const body = buildFinalizeBody({
+      open,
+      commits,
+      ...extraction,
+      projectionVersion: 2,
+      authorization,
+      compatibilityEvidence,
+    });
+    expect(body.authorization).toEqual(authorization);
+    expect(body.compatibility_evidence).toEqual(compatibilityEvidence);
   });
 
   test("refuses an incomplete session or an empty token", () => {

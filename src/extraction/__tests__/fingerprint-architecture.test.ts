@@ -69,24 +69,29 @@ describe("mobile Node source-path fingerprint architecture measurement", () => {
     manifest = await buildFingerprintArchitectureManifest();
   }, MANIFEST_TIMEOUT_MS);
 
-  test("pins the canonical Pulse fixture byte contract", () => {
-    const first = createFingerprintArchitectureFixture();
-    const second = createFingerprintArchitectureFixture();
+  // Building the fixture twice takes seconds on a loaded machine, past the default timeout.
+  test(
+    "pins the canonical Pulse fixture byte contract",
+    () => {
+      const first = createFingerprintArchitectureFixture();
+      const second = createFingerprintArchitectureFixture();
 
-    expect(fingerprintArchitectureFixtureDigest(first)).toBe(
-      EXPECTED_FINGERPRINT_ARCHITECTURE_FIXTURE_SHA256,
-    );
-    expect(fingerprintArchitectureFixtureDigest(second)).toBe(
-      EXPECTED_FINGERPRINT_ARCHITECTURE_FIXTURE_SHA256,
-    );
-    expect(first).toEqual(second);
-    expect(second).not.toBe(first);
-    expect(second.sourcePcm).not.toBe(first.sourcePcm);
-    expect(second.motion).not.toBe(first.motion);
-    expect(second.motion[0]).not.toBe(first.motion[0]);
-    expect(second.touch).not.toBe(first.touch);
-    expect(second.touch[0]).not.toBe(first.touch[0]);
-  });
+      expect(fingerprintArchitectureFixtureDigest(first)).toBe(
+        EXPECTED_FINGERPRINT_ARCHITECTURE_FIXTURE_SHA256,
+      );
+      expect(fingerprintArchitectureFixtureDigest(second)).toBe(
+        EXPECTED_FINGERPRINT_ARCHITECTURE_FIXTURE_SHA256,
+      );
+      expect(first).toEqual(second);
+      expect(second).not.toBe(first);
+      expect(second.sourcePcm).not.toBe(first.sourcePcm);
+      expect(second.motion).not.toBe(first.motion);
+      expect(second.motion[0]).not.toBe(first.motion[0]);
+      expect(second.touch).not.toBe(first.touch);
+      expect(second.touch[0]).not.toBe(first.touch[0]);
+    },
+    MANIFEST_TIMEOUT_MS,
+  );
 
   test("uses the source touch trace for legacy projections and canonicalizes projection 2", () => {
     const source = sourceTouchSamples();

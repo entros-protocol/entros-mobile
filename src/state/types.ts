@@ -1,3 +1,5 @@
+import type { VerificationReason } from "@/services/reasons";
+
 export type WalletKind = "phantom" | "solflare";
 
 /** UX bucket for the /verify/failure screen. Maps from the parser's
@@ -18,6 +20,18 @@ export type FailureBucket =
   | "session-busy" // paired session limit: open session, finalize, open budget, capacity; countdown
   | "session-error" // paired protocol disagreement; CTA = start a new session, copy diagnostics
   | "generic"; // last resort
+
+/** What /verify/failure shows. In-app navigation sets it in app state before
+ *  opening the screen, so no URL chooses the screen or its text. `soft` is
+ *  the retry hint screen, keyed by `reason`. */
+export interface FailureScreen {
+  bucket: FailureBucket | "soft";
+  reason?: VerificationReason;
+  retryAfterSec?: number;
+  /** Diagnostic code shown on the report screens. */
+  message?: string;
+  attemptsRemaining?: number;
+}
 
 /** Whether the next verify cycle should mint/update the anchor (verify) or
  *  call reset_identity_state (reset). Set by the "Reset baseline" CTA on

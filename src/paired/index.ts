@@ -51,3 +51,19 @@ export {
   type RetryClock,
   type SupportedPairedProjectionVersion,
 } from "./client";
+
+export {
+  isPairedAuthorizationRefusal,
+  PAIRED_AUTHORIZATION_MARGIN_MS,
+  pairedAuthorizationBody,
+  pairedAuthorizationMessage,
+  pairedAuthorizationUsable,
+  pairedElapsedMs,
+  parsePairedAuthorizationGrant,
+  readPairedClock,
+  signedPairedAuthorization,
+  type PairedAuthorization,
+  type PairedAuthorizationBody,
+  type PairedAuthorizationGrant,
+  type PairedClockReading,
+} from "./authorization";

@@ -7,9 +7,9 @@
 // the .zkey is required.
 //
 // We bundle the .zkey into the JS asset graph (require()'d from
-// `assets/circuits/`) and materialize to expo-file-system's document
-// directory on first use. The materialized path is cached in-process so
-// subsequent verify cycles in the same session skip the I/O.
+// `assets/circuits/`) and copy it into a document-directory folder named by
+// its SHA-256. Every use checks the copy against that hash, so a key from an
+// earlier release or a changed file is never handed to the prover.
 //
 // PRIVACY: the .zkey is a public proving key — contains the trusted-setup
 // output, no secrets. Bundling + materializing it carries no privacy risk.
@@ -21,50 +21,36 @@ import { bytesToHex, randomBytes } from "@noble/hashes/utils";
 import { type NativeProofManifest, validateNativeProofManifest } from "./request";
 
 export const ZKEY_FILENAME = "entros_hamming_final.zkey";
+/** SHA-256 of the bundled entros_hamming proving key. A new key needs a new value. */
+const ZKEY_SHA256 = "d162ea965646e52e636994ef5416cf36b599fc5ad13cd7529d6141f321101769";
 
-let cachedZkeyPath: string | null = null;
-
-/** Returns a raw filesystem path (no `file://` scheme) to a materialized
- *  copy of entros_hamming.zkey, copying from the bundled JS asset on first
- *  call. Cached in-process. The native mopro module reads the path via
- *  `std::path::Path::new(...)` + `std::fs::File::open` on the Rust side,
- *  which doesn't parse URI schemes — we strip `file://` here so callers
- *  can pass the result straight to `generateCircomProof`. */
+/** Returns a raw filesystem path (no `file://` scheme) to a copy of the
+ *  bundled entros_hamming proving key whose SHA-256 matches the pinned value.
+ *  The native mopro module reads the path via `std::path::Path::new(...)` +
+ *  `std::fs::File::open` on the Rust side, which doesn't parse URI schemes,
+ *  so callers can pass the result straight to `generateCircomProof`. */
 export async function getZkeyPath(): Promise<string> {
-  if (cachedZkeyPath) return cachedZkeyPath;
-
-  const documentDir = FileSystem.documentDirectory;
-  if (!documentDir) {
-    throw new Error("expo-file-system documentDirectory unavailable on this platform");
-  }
-  const destUri = `${documentDir}${ZKEY_FILENAME}`;
-
-  const info = await FileSystem.getInfoAsync(destUri);
-  if (!info.exists) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-    const moduleId = require("../../assets/circuits/entros_hamming_final.zkey");
-    const asset = Asset.fromModule(moduleId);
-    await asset.downloadAsync();
-    if (!asset.localUri) {
-      throw new Error("Failed to materialize entros_hamming.zkey asset");
-    }
-    await FileSystem.copyAsync({ from: asset.localUri, to: destUri });
-  }
-
-  cachedZkeyPath = stripFileScheme(destUri);
-  return cachedZkeyPath;
+  return loadVerifiedArtifact(
+    `hamming-${ZKEY_SHA256}`,
+    ZKEY_FILENAME,
+    ZKEY_SHA256,
+    async (destination) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      const moduleId = require("../../assets/circuits/entros_hamming_final.zkey");
+      const asset = Asset.fromModule(moduleId);
+      await asset.downloadAsync();
+      if (!asset.localUri) {
+        throw new Error("Failed to materialize entros_hamming.zkey asset");
+      }
+      await FileSystem.copyAsync({ from: asset.localUri, to: destination });
+    },
+  );
 }
 
 const stripFileScheme = (uri: string): string =>
   uri.startsWith("file://") ? uri.slice("file://".length) : uri;
 
-/** Drop the cached zkey path. Useful if the document directory was wiped
- *  out-of-band (rare; only really happens with `expo-dev-client` reset). */
-export function resetZkeyPathCache(): void {
-  cachedZkeyPath = null;
-}
-
-const boundLoads = new Map<string, Promise<string>>();
+const artifactLoads = new Map<string, Promise<string>>();
 const boundFilename = "entros_request_bound_v1_final.zkey";
 
 async function matchesArtifact(uri: string, fingerprint: string): Promise<boolean> {
@@ -80,7 +66,35 @@ async function matchesArtifact(uri: string, fingerprint: string): Promise<boolea
   }
 }
 
-async function newArtifactDestination(directory: string): Promise<string> {
+interface ArtifactDestination {
+  attemptDirectory: string;
+  path: string;
+}
+
+/** Deletes `uri`. A failed delete leaves it for a later load to skip. */
+async function deleteQuietly(uri: string): Promise<void> {
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // Every load checks the hash of what it uses, so a leftover is never served.
+  }
+}
+
+/** Deletes the flat copy an earlier build kept, when one is present. */
+async function removeFlatCopy(uri: string): Promise<void> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists || info.isDirectory) return;
+  } catch {
+    return;
+  }
+  await deleteQuietly(uri);
+}
+
+async function newArtifactDestination(
+  directory: string,
+  filename: string,
+): Promise<ArtifactDestination> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const attemptDirectory = `${directory}attempt-${bytesToHex(randomBytes(16))}/`;
     if ((await FileSystem.getInfoAsync(attemptDirectory)).exists) continue;
@@ -90,20 +104,35 @@ async function newArtifactDestination(directory: string): Promise<string> {
       if ((await FileSystem.getInfoAsync(attemptDirectory)).exists) continue;
       throw error;
     }
-    const destination = `${attemptDirectory}${boundFilename}`;
-    if (!(await FileSystem.getInfoAsync(destination)).exists) return destination;
+    const path = `${attemptDirectory}${filename}`;
+    if (!(await FileSystem.getInfoAsync(path)).exists) return { attemptDirectory, path };
   }
   throw new Error("Cannot allocate a new proving artifact destination.");
 }
 
-export async function getBoundZkeyPath(manifest: NativeProofManifest): Promise<string> {
-  const checked = validateNativeProofManifest(manifest);
-  const fingerprint = checked.zkey.sha256;
-  const pending = boundLoads.get(fingerprint);
+/**
+ * Returns a path to a copy of an artifact whose SHA-256 is `fingerprint`,
+ * inside a document-directory folder that `directoryName` names. An existing
+ * copy is used only after its hash matches. Otherwise `materialize` writes a
+ * new copy to a fresh attempt directory, which is checked before use. Any
+ * copy whose write fails or that fails the check is deleted with its attempt
+ * directory, so later loads do not hash it again. Bytes are never overwritten
+ * in place.
+ *
+ * Earlier builds kept the artifact directly in the document directory under
+ * the same filename. Once a verified copy exists, that flat file is deleted.
+ */
+async function loadVerifiedArtifact(
+  directoryName: string,
+  filename: string,
+  fingerprint: string,
+  materialize: (destination: string) => Promise<void>,
+): Promise<string> {
+  const pending = artifactLoads.get(directoryName);
   if (pending) return pending;
   const load = async (): Promise<string> => {
     if (!FileSystem.documentDirectory) throw new Error("Native artifact storage is unavailable.");
-    const directory = `${FileSystem.documentDirectory}request-bound-v1-${fingerprint}/`;
+    const directory = `${FileSystem.documentDirectory}${directoryName}/`;
     const info = await FileSystem.getInfoAsync(directory);
     if (info.exists && !info.isDirectory)
       throw new Error("Native artifact storage is not a directory.");
@@ -111,34 +140,68 @@ export async function getBoundZkeyPath(manifest: NativeProofManifest): Promise<s
       await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
     }
     const entries = await FileSystem.readDirectoryAsync(directory);
-    const candidates = [
-      `${directory}${boundFilename}`,
+    const candidates: { path: string; attemptDirectory?: string }[] = [
+      { path: `${directory}${filename}` },
       ...entries
         .filter((entry) => /^attempt-[0-9a-f]{32}$/.test(entry))
         .sort()
-        .map((entry) => `${directory}${entry}/${boundFilename}`),
+        .map((entry) => ({
+          path: `${directory}${entry}/${filename}`,
+          attemptDirectory: `${directory}${entry}/`,
+        })),
     ];
+    const flatCopy = `${FileSystem.documentDirectory}${filename}`;
     for (const candidate of candidates) {
-      if (await matchesArtifact(candidate, fingerprint)) return stripFileScheme(candidate);
+      if (await matchesArtifact(candidate.path, fingerprint)) {
+        await removeFlatCopy(flatCopy);
+        return stripFileScheme(candidate.path);
+      }
+      // A copy that fails its hash is never used, so later loads skip hashing it.
+      await deleteQuietly(candidate.path);
+      if (candidate.attemptDirectory) await deleteQuietly(candidate.attemptDirectory);
     }
 
-    const destination = await newArtifactDestination(directory);
-    if (checked.zkey.uri.startsWith("file://")) {
-      await FileSystem.copyAsync({ from: checked.zkey.uri, to: destination });
-    } else {
-      const response = await FileSystem.downloadAsync(checked.zkey.uri, destination);
-      if (response.status !== 200) throw new Error("The proving artifact download failed.");
+    const destination = await newArtifactDestination(directory, filename);
+    const discard = async () => {
+      await deleteQuietly(destination.path);
+      await deleteQuietly(destination.attemptDirectory);
+    };
+    try {
+      await materialize(destination.path);
+    } catch (error) {
+      await discard();
+      throw error;
     }
-    if (!(await matchesArtifact(destination, fingerprint))) {
-      throw new Error("The native proving artifact does not match its manifest.");
+    if (!(await matchesArtifact(destination.path, fingerprint))) {
+      await discard();
+      throw new Error("The native proving artifact does not match its expected SHA-256.");
     }
-    return stripFileScheme(destination);
+    await removeFlatCopy(flatCopy);
+    return stripFileScheme(destination.path);
   };
   const promise = load();
-  boundLoads.set(fingerprint, promise);
+  artifactLoads.set(directoryName, promise);
   try {
     return await promise;
   } finally {
-    boundLoads.delete(fingerprint);
+    artifactLoads.delete(directoryName);
   }
+}
+
+export async function getBoundZkeyPath(manifest: NativeProofManifest): Promise<string> {
+  const checked = validateNativeProofManifest(manifest);
+  const fingerprint = checked.zkey.sha256;
+  return loadVerifiedArtifact(
+    `request-bound-v1-${fingerprint}`,
+    boundFilename,
+    fingerprint,
+    async (destination) => {
+      if (checked.zkey.uri.startsWith("file://")) {
+        await FileSystem.copyAsync({ from: checked.zkey.uri, to: destination });
+      } else {
+        const response = await FileSystem.downloadAsync(checked.zkey.uri, destination);
+        if (response.status !== 200) throw new Error("The proving artifact download failed.");
+      }
+    },
+  );
 }

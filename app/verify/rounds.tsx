@@ -30,7 +30,13 @@ import {
   type PairedSessionController,
 } from "@/flows/pairedSession";
 import { holdSingleCaptureChallenge } from "@/flows/singleCaptureChallenge";
-import { advanceReached, PAIRED_PROJECTION_VERSION, toGridPoint } from "@/paired";
+import {
+  advanceReached,
+  isPairedAuthorizationRefusal,
+  PAIRED_PROJECTION_VERSION,
+  pairedAuthorizationBody,
+  toGridPoint,
+} from "@/paired";
 import { audioPermissionGranted, requestAudioPermission } from "@/sensor/audio";
 import { startContinuousRecording } from "@/sensor/continuousAudio";
 import { MotionRecorder, startMotionRecording } from "@/sensor/motion";
@@ -38,6 +44,10 @@ import { startTouchRecording, TouchRecorder } from "@/sensor/touch";
 import type { PairedFailure } from "@/services/pairedErrors";
 import { commitPairedRound, openPairedSession, requestPairedCue } from "@/services/pairedExecutor";
 import { useAppState } from "@/state/AppState";
+import {
+  dropPairedAuthorization,
+  usablePairedAuthorization,
+} from "@/state/pairedAuthorizationBuffer";
 import { setPairedSession } from "@/state/pairedSessionBuffer";
 import { fontFamily, fontSize, spacing } from "@/theme/tokens";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -47,7 +57,7 @@ const MAX_CANVAS_SIZE = 320;
 export default function VerifyRounds() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { connection, fail, setForceOutcome } = useAppState();
+  const { connection, fail, setForceOutcome, setFailureScreen } = useAppState();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   // Square, and small enough on a short screen to leave room for the word and
   // the meters.
@@ -95,6 +105,9 @@ export default function VerifyRounds() {
       return;
     }
     captureWalletRef.current = walletId;
+    // The intro screen had the wallet sign this. The session opens and
+    // finalizes with the same one.
+    const authorization = usablePairedAuthorization(walletId);
     let settled = false;
     let cancelled = false;
     const isActive = () => !cancelled && mountedRef.current && walletRef.current === walletId;
@@ -115,11 +128,16 @@ export default function VerifyRounds() {
     };
 
     const showFailure = (failure: PairedFailure) => {
+      // The relayer no longer accepts this authorization, so the next attempt signs a new one.
+      if (authorization && isPairedAuthorizationRefusal(failure.reason)) {
+        dropPairedAuthorization(walletId, authorization.challenge);
+      }
       if (!isActive()) return;
-      const screen = pairedFailureScreen(failure);
-      if (screen.record) fail(screen.record);
+      const { screen, record } = pairedFailureScreen(failure);
+      if (record) fail(record);
       setForceOutcome(null);
-      router.replace({ pathname: "/verify/failure", params: screen.params });
+      setFailureScreen(screen);
+      router.replace("/verify/failure");
     };
 
     const routeFailure = (failure: PairedFailure) => {
@@ -171,14 +189,18 @@ export default function VerifyRounds() {
       }
       // Hand the session to the processing screen. The buffer holds it for one
       // read and clears.
-      setPairedSession({ rounds, motion: sensors.motion, touch: sensors.touch });
+      setPairedSession({ rounds, motion: sensors.motion, touch: sensors.touch, authorization });
       router.replace("/verify/processing");
     };
 
     const session = createPairedSession(
       {
         startRecorder: (onFrame, onFailure) => startContinuousRecording({ onFrame, onFailure }),
-        open: (wallet, signal) => openPairedSession(wallet, { signal }),
+        open: (wallet, signal) =>
+          openPairedSession(wallet, {
+            signal,
+            ...(authorization ? { authorization: pairedAuthorizationBody(authorization) } : {}),
+          }),
         cue: (open, reveal, wallet, deadline, signal) =>
           requestPairedCue(open, reveal, wallet, deadline, { signal }),
         commit: (commit, deadlineMs, signal) => commitPairedRound(commit, deadlineMs, { signal }),

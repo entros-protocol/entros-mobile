@@ -57,6 +57,11 @@ export type VerificationReason =
   | "session_not_ready"
   | "round_not_outstanding"
   | "session_busy"
+  // Paired authorization. The relayer serves a paired session only with the
+  // wallet's signed authorization, and this one is absent, expired or not
+  // accepted. The wallet signs a new one, then a new session can open.
+  | "authorization_required"
+  | "authorization_invalid"
   // Paired session limits. Opening another session now is refused.
   | "finalize_in_progress"
   | "session_active"
@@ -123,6 +128,8 @@ const DISPOSITIONS = {
   session_not_ready: "retry",
   round_not_outstanding: "retry",
   session_busy: "retry",
+  authorization_required: "retry",
+  authorization_invalid: "retry",
   finalize_in_progress: "wait",
   session_active: "wait",
   session_budget_exhausted: "wait",
@@ -238,6 +245,9 @@ export const CLIENT_ORIGIN_REASONS: ReadonlySet<VerificationReason> = new Set([
   "session_not_ready",
   "round_not_outstanding",
   "session_busy",
+  // The relayer refused the request before it judged anything.
+  "authorization_required",
+  "authorization_invalid",
   "finalize_in_progress",
   "session_active",
   "session_budget_exhausted",

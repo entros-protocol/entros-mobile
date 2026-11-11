@@ -29,6 +29,7 @@ import {
 } from "@/sensor/audio";
 import { MotionRecorder, startMotionRecording } from "@/sensor/motion";
 import { startTouchRecording, TouchRecorder } from "@/sensor/touch";
+import { useAppState } from "@/state/AppState";
 import { setCapture } from "@/state/captureBuffer";
 import { peekChallenge } from "@/state/challengeBuffer";
 import { fontFamily, fontSize, radii, spacing } from "@/theme/tokens";
@@ -42,6 +43,7 @@ type Phase = "countdown" | "capturing";
 export default function VerifyCapture() {
   const router = useRouter();
   const { palette } = useTheme();
+  const { setFailureScreen } = useAppState();
   // Snapshot the buffer once on mount via the lazy-init form of useState —
   // peekChallenge() runs exactly once and the result is stable across
   // renders. Null here means /verify/intro didn't run (dev nav / deep link);
@@ -130,10 +132,8 @@ export default function VerifyCapture() {
       touchRef.current = null;
       if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : "Could not start sensors.";
-      router.replace({
-        pathname: "/verify/failure",
-        params: { bucket: "generic", message },
-      });
+      setFailureScreen({ bucket: "generic", message });
+      router.replace("/verify/failure");
     }
   }
 
@@ -151,13 +151,11 @@ export default function VerifyCapture() {
 
       if (!audioCapture || !motionCapture || !touchCapture) {
         if (!mountedRef.current) return;
-        router.replace({
-          pathname: "/verify/failure",
-          params: {
-            bucket: "generic",
-            message: "Sensor capture incomplete. Please try again.",
-          },
+        setFailureScreen({
+          bucket: "generic",
+          message: "Sensor capture incomplete. Please try again.",
         });
+        router.replace("/verify/failure");
         return;
       }
 
@@ -176,10 +174,8 @@ export default function VerifyCapture() {
       touchRef.current = null;
       if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : "Capture failed.";
-      router.replace({
-        pathname: "/verify/failure",
-        params: { bucket: "generic", message },
-      });
+      setFailureScreen({ bucket: "generic", message });
+      router.replace("/verify/failure");
     }
   }
 

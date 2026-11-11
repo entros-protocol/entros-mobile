@@ -117,6 +117,7 @@ function handoff(commits?: PairedRoundCommit[]): PairedSessionHandoff {
     },
     motion: structuredClone(motion),
     touch: structuredClone(touch),
+    authorization: null,
   };
 }
 
@@ -160,6 +161,36 @@ beforeEach(() => {
 });
 
 describe("paired finalize", () => {
+  test("sends the wallet authorization the session opened with, and none without one", async () => {
+    finalizeMock.mockResolvedValue(okOutcome());
+    const authorization = {
+      wallet: WALLET,
+      challenge: "22".repeat(32),
+      expiresAt: 1_800_000_000,
+      origin: "4b".repeat(16),
+      mac: "92".repeat(32),
+      signatureHex: "cb".repeat(64),
+      // Past its margin for a new session. Finalize still sends it.
+      lifetimeMs: 1,
+      requestedAt: { monotonicMs: 0, wallMs: 0 },
+    };
+    const signed = await preparePairedVerification({ ...handoff(), authorization }, context());
+    if (signed.kind !== "ready") throw new Error("expected a prepared session");
+    await signed.validate(request);
+    expect((finalizeMock.mock.calls[0]![0] as PairedFinalizeBody).authorization).toEqual({
+      challenge: authorization.challenge,
+      expires_at: authorization.expiresAt,
+      origin: authorization.origin,
+      mac: authorization.mac,
+      signature_hex: authorization.signatureHex,
+    });
+
+    const unsigned = await preparePairedVerification(handoff(), context());
+    if (unsigned.kind !== "ready") throw new Error("expected a prepared session");
+    await unsigned.validate(request);
+    expect(finalizeMock.mock.calls[1]![0]).not.toHaveProperty("authorization");
+  });
+
   test("requests the token over the attestation digest of the vectors' session", async () => {
     // The vector segments are too short to extract, but the request starts first.
     const session = traceSession();
@@ -316,7 +347,10 @@ describe("paired finalize", () => {
         message_hex: message.toString("hex"),
       };
     };
-    const prepared = await preparePairedVerification(session, context({ receiptPurpose: "update" }));
+    const prepared = await preparePairedVerification(
+      session,
+      context({ receiptPurpose: "update" }),
+    );
     if (prepared.kind !== "ready") throw new Error("expected a prepared session");
 
     finalizeMock.mockResolvedValueOnce(okOutcome({ signed_receipt: receiptV4(finalDigest) }));

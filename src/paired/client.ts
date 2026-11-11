@@ -15,7 +15,12 @@ import {
   type SignedReceiptDto,
 } from "@/protocol/receipt";
 import { bytesToBase64 } from "@/sensor/encode";
-import type { ClientSignals } from "@/services/validationAuthorization";
+import type {
+  ClientSignals,
+  ProjectionCompatibilityEvidence,
+} from "@/services/validationAuthorization";
+
+import type { PairedAuthorizationBody } from "./authorization";
 
 import {
   audioDigest,
@@ -210,6 +215,10 @@ export interface PairedFinalizeBody {
   client_signals: ClientSignals;
   baseline_reset: boolean;
   attestation?: { platform: "play_integrity"; token: string };
+  /** Projection 1 evidence that a projection 2 baseline write must carry. */
+  compatibility_evidence?: ProjectionCompatibilityEvidence;
+  /** The wallet's authorization for paired sessions. */
+  authorization?: PairedAuthorizationBody;
 }
 
 function invalid(field: string, reason = "invalid_field"): PairedClientError {
@@ -731,6 +740,10 @@ export interface FinalizeInput {
   projectionVersion?: SupportedPairedProjectionVersion;
   /** A Play Integrity token over the attestation digest. */
   attestationToken?: string;
+  /** Projection 1 evidence, for a projection 2 request that writes a baseline. */
+  compatibilityEvidence?: ProjectionCompatibilityEvidence;
+  /** The authorization the session opened with. */
+  authorization?: PairedAuthorizationBody;
 }
 
 /** Builds the finalize request. Segments go in round order, as the rounds committed them. */
@@ -770,6 +783,8 @@ export function buildFinalizeBody(input: FinalizeInput): PairedFinalizeBody {
   if (input.attestationToken !== undefined) {
     body.attestation = { platform: "play_integrity", token: input.attestationToken };
   }
+  if (input.compatibilityEvidence) body.compatibility_evidence = input.compatibilityEvidence;
+  if (input.authorization) body.authorization = input.authorization;
   return body;
 }
 

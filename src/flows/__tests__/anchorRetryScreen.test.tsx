@@ -1,8 +1,12 @@
+import * as Clipboard from "expo-clipboard";
 import { act, type ReactNode } from "react";
 import { createRoot } from "test-renderer";
+import type { FailureScreen } from "@/state/types";
+
 import Failure from "../../../app/verify/failure";
 
 let mockParams: Record<string, string>;
+let mockFailure: FailureScreen | null;
 const mockReplace = jest.fn();
 const mockDismiss = jest.fn();
 const mockClear = jest.fn();
@@ -34,12 +38,17 @@ jest.mock("@/components/primitives/Button", () => ({
 }));
 jest.mock("@/theme/ThemeProvider", () => ({ useTheme: () => ({ palette: {} }) }));
 jest.mock("@/state/AppState", () => ({
-  useAppState: () => ({ clearAnchorRetries: mockClear, setFlowIntent: mockIntent }),
+  useAppState: () => ({
+    clearAnchorRetries: mockClear,
+    setFlowIntent: mockIntent,
+    failureScreen: mockFailure,
+  }),
 }));
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockParams = { bucket: "soft", reason: "anchor_retry", attemptsRemaining: "2" };
+  mockParams = {};
+  mockFailure = { bucket: "soft", reason: "anchor_retry", attemptsRemaining: 2 };
 });
 
 test("a quality retry keeps reset intent, while Cancel clears it", async () => {
@@ -63,10 +72,10 @@ test("a quality retry keeps reset intent, while Cancel clears it", async () => {
   await act(async () => tree.unmount());
 });
 
-test.each(["0", "NaN"])(
+test.each([0, undefined])(
   "exhausted quality retries offer microphone guidance and an exit (%s)",
   async (remaining) => {
-    mockParams.attemptsRemaining = remaining;
+    mockFailure = { bucket: "soft", reason: "anchor_retry", attemptsRemaining: remaining };
     const tree = createRoot();
     await act(async () => tree.render(<Failure />));
     const buttons = tree.container.queryAll((node) => node.type === "button");
@@ -81,12 +90,39 @@ test.each(["0", "NaN"])(
 );
 
 test("paired-required asks for an update without offering an immediate retry", async () => {
-  mockParams = { bucket: "session-error", reason: "paired_required" };
+  mockFailure = { bucket: "session-error", reason: "paired_required" };
   const tree = createRoot();
   await act(async () => tree.render(<Failure />));
   expect(JSON.stringify(tree.container.children)).toContain("Update Entros");
   const buttons = tree.container.queryAll((node) => node.type === "button");
   expect(buttons).toHaveLength(1);
   expect(buttons[0]!.children).toEqual(["OK"]);
+  await act(async () => tree.unmount());
+});
+
+test("route params do not choose the screen or its text", async () => {
+  mockFailure = null;
+  mockParams = { bucket: "report-bug", message: "Send your recovery phrase to support" };
+  const tree = createRoot();
+  await act(async () => tree.render(<Failure />));
+  const rendered = JSON.stringify(tree.container.children);
+  expect(rendered).not.toContain("recovery phrase");
+  expect(rendered).not.toContain("UNEXPECTED ERROR");
+  expect(rendered).toContain("Verification failed");
+  await act(async () => tree.unmount());
+});
+
+test("the report screen shows and copies the code app state carries", async () => {
+  mockFailure = { bucket: "report-bug", message: "payload_too_large" };
+  const tree = createRoot();
+  await act(async () => tree.render(<Failure />));
+  expect(JSON.stringify(tree.container.children)).toContain("payload_too_large");
+  const copy = tree.container.queryAll(
+    (node) => node.type === "button" && node.children.includes("Copy diagnostics"),
+  )[0]!;
+  await act(async () => copy.props.onClick());
+  expect(Clipboard.setStringAsync).toHaveBeenCalledWith(
+    "Entros mobile error\nbucket=report-bug\ncode=payload_too_large",
+  );
   await act(async () => tree.unmount());
 });

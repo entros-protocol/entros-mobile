@@ -27,10 +27,11 @@ export const SecureKeys = {
   WALLET_ADDRESS: "wallet.address",
   WALLET_LABEL: "wallet.label",
   WALLET_KIND: "wallet.kind",
-  // The encrypted baseline and its key use separate secure-store entries.
-  // Both entries must be present to decrypt the baseline.
-  BASELINE_ENVELOPE: "baseline.envelope",
-  BASELINE_KEY: "baseline.key",
+  // The single baseline entry earlier builds kept for every wallet. Current
+  // builds key the baseline by wallet and cluster (src/identity/baseline.ts)
+  // and read these entries only to move them to their wallet.
+  LEGACY_BASELINE_ENVELOPE: "baseline.envelope",
+  LEGACY_BASELINE_KEY: "baseline.key",
 } as const;
 
 export type SecureKey = (typeof SecureKeys)[keyof typeof SecureKeys];

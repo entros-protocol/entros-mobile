@@ -41,6 +41,12 @@ outline when speech readiness does not trigger. It retains the same server evide
 The interface uses controller readiness and deadlines. Wallet changes cancel the active attempt.
 Physical-device acceptance remains required before release.
 
+Before the first round, the wallet signs one message that authorizes its paired sessions. The
+message opens with a plain statement that it moves no funds and approves no transaction. The
+client sends that authorization when it opens a session and when it finalizes one. The signature
+serves later attempts until it expires. The client counts its lifetime on both the monotonic and
+the wall clock, so time the device spends asleep still counts. The client keeps it in memory only.
+
 ## Privacy boundary
 
 Raw motion samples and full-resolution touch samples stay in application memory. The client clears them after processing.
@@ -48,6 +54,11 @@ Raw motion samples and full-resolution touch samples stay in application memory.
 Phrase audio leaves the device for transient transcription and acoustic validation. The client also sends derived features and bounded request metadata.
 
 The local baseline contains the fingerprint, salt, commitment, and timestamp. The client encrypts it through device-protected storage.
+It keeps one baseline for each wallet on each cluster. It uses a stored baseline only when its commitment equals the wallet's on-chain commitment.
+After an identity migrates to a new wallet, the client moves the earlier wallet's baseline to the new wallet when it matches the chain.
+A reset in Settings erases the connected wallet's own baseline at once. The app then adopts no other stored baseline for that wallet until the wallet stores a new one.
+
+A link from another app opens the home screen only. No link selects a screen or supplies its content.
 
 Protocol transactions persist commitments, proofs on re-verification, and account state. They do not contain raw sensor streams.
 
