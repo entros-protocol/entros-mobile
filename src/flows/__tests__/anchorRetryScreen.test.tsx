@@ -126,3 +126,28 @@ test("the report screen shows and copies the code app state carries", async () =
   );
   await act(async () => tree.unmount());
 });
+
+test("capture-drift shows honest mismatch copy with 7-day reset guidance and Reset baseline CTA", async () => {
+  mockFailure = { bucket: "capture-drift" };
+  const tree = createRoot();
+  await act(async () => tree.render(<Failure />));
+  const rendered = JSON.stringify(tree.container.children);
+  expect(rendered).toContain("did not match your stored baseline");
+  expect(rendered).toContain("7-day cooldown");
+  expect(rendered).not.toMatch(/rushed|steady|closely match|Hamming|\b96\b|\bbits\b|—/i);
+
+  const tryAgain = tree.container.queryAll(
+    (node) => node.type === "button" && node.children.includes("Try again"),
+  )[0]!;
+  await act(async () => tryAgain.props.onClick());
+  expect(mockReplace).toHaveBeenCalledWith("/verify/intro");
+  expect(mockIntent).not.toHaveBeenCalled();
+
+  const resetBtn = tree.container.queryAll(
+    (node) => node.type === "button" && node.children.includes("Reset baseline"),
+  )[0]!;
+  await act(async () => resetBtn.props.onClick());
+  expect(mockIntent).toHaveBeenCalledWith("reset");
+  expect(mockReplace).toHaveBeenCalledWith("/verify/intro");
+  await act(async () => tree.unmount());
+});
