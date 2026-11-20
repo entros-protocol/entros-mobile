@@ -238,7 +238,7 @@ const retryBucketConfig: Record<
     countdownPrefix: "",
     countdownSuffix: "",
     settledSubtitle:
-      "That capture didn't closely match your usual pattern. It often happens after an interrupted or rushed recording. Try again with a steady, uninterrupted capture.",
+      "This verification did not match your stored baseline. Try another capture, or reset your baseline if this repeats. Baseline resets carry a 7-day cooldown.",
     allowsImmediateRetry: true,
   },
   "session-busy": {
@@ -391,6 +391,16 @@ export default function VerifyFailure() {
             {showTryAgain ? (
               <>
                 <Button label="Try again" onPress={() => router.replace("/verify/intro")} />
+                {retryKey === "capture-drift" ? (
+                  <Button
+                    label="Reset baseline"
+                    variant="danger"
+                    onPress={() => {
+                      setFlowIntent("reset");
+                      router.replace("/verify/intro");
+                    }}
+                  />
+                ) : null}
                 <Button label="Cancel" variant="ghost" onPress={cancel} />
               </>
             ) : (
