@@ -1,5 +1,7 @@
 # entros-mobile
 
+> **Status:** This repository holds a paused secondary R&D Android and Solana Mobile devnet client with zero active release schedule. Entros paused mobile client development and lists active engineering priorities at [entros.io/roadmap](https://entros.io/roadmap).
+
 Native mobile verification client for the [Entros Protocol](https://entros.io). The application targets Android and the Solana Mobile ecosystem.
 
 Entros is designed to prove live human control of a returning protocol identity. This client is a devnet implementation, not a mainnet release.
